@@ -1,27 +1,14 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
-import { runConsumerUpdate } from "../../../../src/release/cli.ts";
 import { releaseVersion } from "../../../../src/release/version.ts";
-import { runUpdate } from "../../../../src/update/cli.ts";
 
-import { type Command, die, makeCli } from "./cli-context.ts";
-import { decisionCommands, decisionErrors } from "./cli-decisions.ts";
-import { runHarness } from "./cli-harness.ts";
-import { journalCommands, journalErrors } from "./cli-journal.ts";
-import { laneCommands } from "./cli-lanes.ts";
-import { messengerCommands, messengerErrors } from "./cli-messenger.ts";
-import { opsCommands } from "./cli-ops.ts";
-import { prCommands, prErrors } from "./cli-pr.ts";
-import { ConfigError, loadConfig } from "./config.ts";
+import type { Command } from "./cli-context.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { LaunchError } from "./launch.ts";
-import { Registry } from "./registry.ts";
-import { realClock, run } from "./run.ts";
 
 const USAGE = `dori <command> [options]
 
   harness <command> [args...]          dispatch every upstream harness command (up, inbox, duty, review, merge, loop, backlog, migrate...)
-  update <command> [options]           verified releases: check, install, status, rollback [--version TAG] [--from DIST]
+  update <command> [options]           verified releases: check, install, status, rollback, cache [--version TAG] [--from DIST]
   upstream <command> --config FILE     maintainer staging: check, stage, watch, status, snapshot, restore, recover, restart
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
@@ -95,14 +82,20 @@ const USAGE = `dori <command> [options]
   inbound-lag [--limit N]              receive-lag percentiles from state/telegram-lag.jsonl (the meter behind the INBOUND lines)`;
 
 const [command = "", ...rest] = process.argv.slice(2);
-if (command === "harness") process.exit(await runHarness(rest));
+// Command-selected imports keep unrelated graphs out of short-lived CLI processes.
+if (command === "harness") process.exit(await (await import("./cli-harness.ts")).runHarness(rest));
 if (command === "--version") {
   console.log(releaseVersion);
   process.exit(0);
 }
-if (command === "update") process.exit(await runConsumerUpdate(rest));
-if (command === "upstream") process.exit(await runUpdate(rest));
+if (command === "update") process.exit(await (await import("../../../../src/release/cli.ts")).runConsumerUpdate(rest));
+if (command === "upstream") process.exit(await (await import("../../../../src/update/cli.ts")).runUpdate(rest));
 
+const { die, makeCli } = await import("./cli-context.ts");
+const { ConfigError, loadConfig } = await import("./config.ts");
+const { Registry } = await import("./registry.ts");
+const { realClock, run } = await import("./run.ts");
+// Preserve config/native admission before argument parsing or any command execution.
 const config = await loadConfig().catch((e: unknown) =>
   e instanceof ConfigError ? die(e.message) : Promise.reject(e),
 );
@@ -164,14 +157,53 @@ const flags = parseArgs({
   },
 });
 
-const commands: Readonly<Record<string, Command>> = {
-  ...journalCommands,
-  ...laneCommands,
-  ...opsCommands,
-  ...messengerCommands,
-  ...decisionCommands,
-  ...prCommands,
-};
+let commands: Readonly<Record<string, Command>> = {};
+switch (command) {
+  case "report":
+  case "lesson":
+  case "worklog":
+  case "checkpoint":
+  case "checkpoints":
+    commands = (await import("./cli-journal.ts")).journalCommands;
+    break;
+  case "launch":
+  case "adopt":
+  case "claim-done":
+  case "object-done":
+  case "close":
+  case "pause":
+  case "resume":
+  case "tell":
+    commands = (await import("./cli-lanes.ts")).laneCommands;
+    break;
+  case "sync":
+  case "boot":
+  case "verify-pr":
+  case "watch":
+  case "freshness":
+  case "dead-panes":
+  case "guard":
+  case "heavy":
+  case "can-launch":
+    commands = (await import("./cli-ops.ts")).opsCommands;
+    break;
+  case "send":
+  case "presence":
+  case "inbound":
+  case "thread":
+  case "react":
+  case "channel":
+  case "inbound-lag":
+  case "transcribe":
+    commands = (await import("./cli-messenger.ts")).messengerCommands;
+    break;
+  case "decision":
+    commands = (await import("./cli-decisions.ts")).decisionCommands;
+    break;
+  case "pr":
+    commands = (await import("./cli-pr.ts")).prCommands;
+    break;
+}
 const handler = Object.hasOwn(commands, command) ? commands[command] : undefined;
 
 try {
@@ -181,6 +213,12 @@ try {
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
+  // Import the original classes only on failure; cross-group errors keep their existing identity and formatting.
+  const { LaunchError } = await import("./launch.ts");
+  const { messengerErrors } = await import("./cli-messenger.ts");
+  const { journalErrors } = await import("./cli-journal.ts");
+  const { decisionErrors } = await import("./cli-decisions.ts");
+  const { prErrors } = await import("./cli-pr.ts");
   if (
     e instanceof LaunchError ||
     [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
