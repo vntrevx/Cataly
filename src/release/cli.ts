@@ -20,7 +20,6 @@ import { supportsReleaseProfile } from "./manifest.ts";
 import { consumerReleaseHome } from "./runtime.ts";
 import { hasConsumerState, loadInstalled, recoverInstalled, verifyRelease } from "./state.ts";
 import type { ReleaseManifest } from "./types.ts";
-
 const USAGE = `dori update <check|install|status|rollback|cache> [--version vX.Y.Z] [--from DIST] [--home PATH] [--runtime hc|herdr]
   auto <status|enable|disable>  manage daily stable-release checks at consumer OMP launch
   check       verify an available public release without activating it
@@ -32,14 +31,12 @@ const USAGE = `dori update <check|install|status|rollback|cache> [--version vX.Y
 Default check/install selects the latest stable GitHub release. Explicit tags also allow previews.
 --from reads local release assets; first installation may still fetch the exact public omp-ulw pin.
 Activation holds while Dori is live. Stop Dori yourself before installing or rolling back.`;
-
 const identity = (manifest: ReleaseManifest) => ({
   tag: manifest.tag,
   commit: manifest.commit,
   sourceHash: manifest.source.hash,
   prerelease: manifest.prerelease,
 });
-
 export async function runConsumerUpdate(argv: string[]): Promise<number> {
   if (argv[0] === "auto") return runAutomaticCommand(argv.slice(1));
   let releaseLock: (() => void) | undefined;
@@ -89,11 +86,19 @@ export async function runConsumerUpdate(argv: string[]): Promise<number> {
     realDirectory(paths.dori);
     realDirectory(paths.root);
     if (command === "cache") {
-      const roots = [paths.dori, process.env["OMP_DORI_HOME"] || join(homedir(), ".omp-dori")];
+      const roots = [
+        join(paths.home, ".dori"),
+        join(paths.home, ".omp-dori"),
+        paths.dori,
+        installedHome,
+        process.env["DORI_HOME"],
+        process.env["OMP_DORI_HOME"],
+        ...(args.values.reference ?? []),
+      ].filter((path): path is string => Boolean(path));
       const entries = reportNativeCache(
         paths.home,
         [resolve(import.meta.dir, "../..")],
-        [...roots, ...(args.values.reference ?? []).map((path) => resolve(path))],
+        [...new Set(roots.map((path) => resolve(path)))],
       );
       console.log(JSON.stringify({ removes: "nothing", entries }, null, 2));
       return 0;
@@ -242,5 +247,4 @@ export async function runConsumerUpdate(argv: string[]): Promise<number> {
     releaseLock?.();
   }
 }
-
 if (import.meta.main) process.exit(await runConsumerUpdate(process.argv.slice(2)));
