@@ -10,6 +10,16 @@
 
 - Linux host admission now checks visible ancestor cgroup memory budgets as well as host memory. `guard` and `can-launch` distinguish hard-limit headroom from v2 `memory.high` throttling headroom, support hierarchical v1 limits, discount clean unmapped file cache while retaining raw charged counters, and preserve readable budgets when another reading is unavailable. macOS sampling and existing disk/session protections are unchanged.
 
+- `dori inbound telegram` keeps its offset durable across a power loss, not only a process kill: the staged file is `fsync`ed before the rename and the directory after it, so the rename can no longer commit over data still in the page cache and leave an empty file that reads back as offset 0 — the 24-hour replay the previous entry closed for a kill.
+
+- `dori inbound telegram` stores the offset as `<botId> <offset>`. Update ids are per bot, so a cursor left by a different `DORI_TELEGRAM_TOKEN` made `getUpdates` confirm — and discard — every update the new bot had waiting, silently and permanently. A mismatch is now reported and restarted from 0; a bare offset from an older install still loads.
+
+- `dori inbound telegram` reports a failed save even after a load warning: the two shared one `warned` flag, so a torn offset at start made every later persistence failure invisible for the life of the run.
+
+- `dori inbound telegram --loop N` polls once per N minutes instead of N minutes after the 25s long-poll, which made the documented `--loop 1` an 85s cycle. A one-shot drain that cannot poll now exits non-zero instead of printing a warning and reporting no messages.
+
+- `dori inbound-lag` no longer retries a rotation that already failed for every later record: the size counter kept its pre-rotation value, so each message paid a rename that could not land.
+
 - `dori inbound telegram` no longer replays up to 24 hours of updates after a torn offset write: the offset is staged and renamed, so a kill or a full disk leaves the previous one whole, and an offset that reads back empty, unparseable or negative is reported and treated as 0 instead of passing as a legitimate 0 (an empty file was `Number("")`, which every check accepted). A write that cannot land keeps the offset in memory for the rest of the run and warns once, so what was already delivered is not delivered again.
 
 - `dori inbound-lag` measures an edit from `edit_date` rather than the original message's date, so editing an old message no longer records the message's age as receive lag; the two edits already in this host's meter read 10.9s and 61.6s that way. The meter also rotates to `telegram-lag.jsonl.1` past 4 MiB keeping one previous file, and a window that does not fit the live file reads the rest from that one; the live file is read first and `.1` only supplies what it cannot, so a rotation whose previous file alone fills the window no longer reports pre-rotation readings and omits every message since. A rotation landing while `inbound-lag` runs, or a receiver stopped between the rename and its next append, leaves only `.1`, which the reader now takes as the window instead of aborting on the missing live path.

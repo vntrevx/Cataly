@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
@@ -116,4 +117,27 @@ test("a window that straddles a rotation still reads the requested number of rec
   const older = live.length < 10 ? readLagTail(`${path}.1`, 10 - live.length) : [];
   expect(live.length + older.length).toBe(10);
   expect([...older, ...live].every((line) => lagOfLine(line) === 1000)).toBe(true);
+});
+
+test("a rotation that failed once is not retried for every later record", () => {
+  // The size counter keeps its pre-rotation value, so `bytes + len > bound` stays true forever: without
+  // this guard every message pays a rename that is known to fail, for the life of the process.
+  const path = join(state.dir, "norotate-once.jsonl");
+  mkdirSync(`${path}.1`, { recursive: true });
+  // Count only this file's rotation attempts: the module object is shared with everything else running.
+  // The original is snapshotted before the spy, because an ESM import binding would follow the spy.
+  const realRename = fs.renameSync;
+  let renames = 0;
+  const spy = spyOn(fs, "renameSync").mockImplementation(((from: string, to: string) => {
+    if (String(to) === `${path}.1`) renames++;
+    return realRename(from, to);
+  }) as typeof fs.renameSync);
+  try {
+    const record = inboundLagLog(path, () => {}, 200);
+    for (let i = 0; i < 6; i++) record({ ...base, date: 1_700_000_000 }, 1_700_000_001_000);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(renames).toBe(1);
+  expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(6);
 });

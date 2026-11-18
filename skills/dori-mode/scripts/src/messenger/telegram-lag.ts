@@ -66,19 +66,27 @@ export const inboundLagLog = (
 ): ((i: TgInbound, nowMs: number) => void) => {
   let failed = false;
   let rotatedFailed = false;
+  // Once a rotation has failed it will fail the same way for every later record, so it is not retried:
+  // the file is allowed to grow, as the one warning says, instead of costing a doomed rename per message.
+  let rotationOff = false;
+  let dirReady = false;
   // The file's size, read once and then tracked: a stat per message would cost more than the write.
   let bytes: number | undefined;
   return (i, nowMs) => {
     try {
-      mkdirSync(dirname(path), { recursive: true });
+      if (!dirReady) {
+        mkdirSync(dirname(path), { recursive: true });
+        dirReady = true;
+      }
       bytes ??= statSync(path, { throwIfNoEntry: false })?.size ?? 0;
       const line = `${JSON.stringify(inboundLagRecord(i, nowMs))}\n`;
-      if (bytes + Buffer.byteLength(line) > rotateBytes) {
+      if (!rotationOff && bytes + Buffer.byteLength(line) > rotateBytes) {
         try {
           // Replace the previous file in one step: a reader sees either the old or the new one.
           renameSync(path, `${path}.1`);
           bytes = 0;
         } catch (e) {
+          rotationOff = true;
           if (!rotatedFailed) {
             rotatedFailed = true;
             warn(`inbound lag log ${path} could not rotate (${e instanceof Error ? e.message : String(e)}); growing`);

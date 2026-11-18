@@ -67,17 +67,25 @@ export const telegramInboundLoop = async (
   emit: (inbound: TgInbound) => void = () => {},
   warn: (message: string) => void = () => {},
   sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+  now: () => number = () => Date.now(),
 ): Promise<void> => {
   for (;;) {
+    const started = now();
     let polled: { inbound: readonly TgInbound[]; updates: number } | undefined;
     try {
       polled = await pollTelegramInbound(tg, store, opts, emit);
     } catch (e) {
+      // One-shot has no next poll to succeed with, so a failed drain is the run's result: throwing
+      // makes the process exit non-zero instead of reporting "no messages" for a rejected token.
+      if (loopMin <= 0) throw e;
       warn(e instanceof Error ? e.message : String(e));
     }
     if (loopMin <= 0) return; // one-shot: one bounded drain
     if (polled !== undefined && polled.updates > 0) continue; // more may be waiting behind this batch
-    await sleep(loopMin * 60_000);
+    // `--loop N` is one poll per N minutes, not N minutes on top of the 25s long-poll that just
+    // returned empty: subtracting the poll's own duration is the difference between 60s and 85s
+    // between polls for the documented `--loop 1`.
+    await sleep(Math.max(0, loopMin * 60_000 - (now() - started)));
   }
 };
 

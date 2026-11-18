@@ -143,3 +143,62 @@ test("the receiver refuses a non-positive owner id instead of dropping every mes
     });
   }
 }, 60_000);
+
+test("the cursor is stored with the bot that produced it", () => {
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  expect(readFileSync(path, "utf8")).toBe("111 500");
+  expect(fileTgInboundStore(path, "111").load()).toBe(500);
+});
+
+test("a cursor left by another bot is not carried over, because it would confirm away that bot's updates", () => {
+  // update_ids are per bot and a bot's are far below another bot's, so a carried offset makes
+  // getUpdates confirm — and discard — everything the new bot has waiting, silently.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(48000);
+  const warns: string[] = [];
+  const orig = console.log;
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    expect(fileTgInboundStore(path, "222").load()).toBe(0);
+  } finally {
+    console.log = orig;
+  }
+  expect(warns).toHaveLength(1);
+  expect(warns[0]).toContain("belongs to bot 111, not 222");
+});
+
+test("a bare offset from before the bot was recorded still loads", () => {
+  // An existing install must not restart from 0 on upgrade; the next save records the bot.
+  const path = join(state.dir, "telegram-offset");
+  writeFileSync(path, "4242");
+  expect(fileTgInboundStore(path, "111").load()).toBe(4242);
+  fileTgInboundStore(path, "111").save(4243);
+  expect(readFileSync(path, "utf8")).toBe("111 4243");
+});
+
+test("a load warning does not silence the save warning", () => {
+  // One flag for both meant a torn offset at start made every later save failure invisible, and the
+  // run looked healthy while persisting nothing.
+  const path = join(state.dir, "telegram-offset");
+  writeFileSync(path, "");
+  const store = fileTgInboundStore(path, "111");
+  const warns: string[] = [];
+  const orig = console.log;
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    expect(store.load()).toBe(0); // warns: not a stored offset
+    rmSync(path);
+    mkdirSync(path); // the rename cannot land, as on a read-only or full filesystem
+    store.save(7);
+    expect(store.load()).toBe(7); // memory carries this run
+  } finally {
+    console.log = orig;
+  }
+  expect(warns.filter((w) => w.includes("not a stored offset"))).toHaveLength(1);
+  expect(warns.filter((w) => w.includes("continuing from memory"))).toHaveLength(1);
+});

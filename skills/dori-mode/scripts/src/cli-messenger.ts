@@ -92,12 +92,11 @@ const presence: Command = async ({ key }) => {
 };
 
 const telegramInbound = async (stateDir: string, minutes: number): Promise<void> => {
-  const tg = new Telegram(
-    fetchHttp,
-    realClock,
-    process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"),
-  );
-  const store = fileTgInboundStore(`${stateDir}/telegram-offset`);
+  const token = process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set");
+  const tg = new Telegram(fetchHttp, realClock, token);
+  // The cursor belongs to the bot that produced it: a token swapped for a different bot must not
+  // carry an offset that would confirm away every update the new bot has waiting.
+  const store = fileTgInboundStore(`${stateDir}/telegram-offset`, token.split(":")[0]);
   const num = (name: string): number => {
     try {
       return envInt(name, process.env[name]);
