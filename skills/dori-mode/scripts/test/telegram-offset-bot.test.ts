@@ -144,3 +144,50 @@ test("a first save records the bot before the offset, so a crash cannot leave an
   rmSync(path, { recursive: true, force: true });
   expect(fileTgInboundStore(path, "222").load()).toBe(0);
 });
+
+test("a transition to another bot leaves a marker that fails closed under the old token too", () => {
+  // Bot A's sidecar, a poll under B, and the sidecar replacement failing. Without the marker the sidecar
+  // still names A, so a rollback to A matches it and accepts B's cursor — confirming away A's updates.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  const orig = console.log;
+  const warns: string[] = [];
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    // Under B: `load()` sees A's sidecar and refuses the offset, so this run starts from 0.
+    const underB = fileTgInboundStore(path, "222");
+    expect(underB.load()).toBe(0);
+    // The sidecar can no longer be replaced, as when it is squatted by a directory mid-run.
+    rmSync(`${path}.bot`);
+    mkdirSync(`${path}.bot`);
+    underB.save(600);
+  } finally {
+    console.log = orig;
+  }
+  // The marker survives the failed transition, and both tokens now refuse the pair.
+  expect(existsSync(`${path}.pending`)).toBe(true);
+  for (const token of ["111", "222"]) expect(fileTgInboundStore(path, token).load()).toBe(0);
+  // A fresh process reports why; the store above had already spent its one load warning.
+  const fresh: string[] = [];
+  const orig2 = console.log;
+  console.log = (s?: unknown) => {
+    fresh.push(String(s));
+  };
+  try {
+    fileTgInboundStore(path, "111").load();
+  } finally {
+    console.log = orig2;
+  }
+  expect(fresh.some((w) => w.includes("mid-transition"))).toBe(true);
+});
+
+test("a completed transition clears its marker so the next start resumes normally", () => {
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  fileTgInboundStore(path, "222").save(600);
+  expect(existsSync(`${path}.pending`)).toBe(false);
+  expect(readFileSync(`${path}.bot`, "utf8")).toBe("222");
+  expect(fileTgInboundStore(path, "222").load()).toBe(600);
+});

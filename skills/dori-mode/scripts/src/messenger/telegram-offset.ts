@@ -1,4 +1,14 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 /**
@@ -94,6 +104,16 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
   return {
     load(): number {
       if (handled !== undefined) return handled;
+      // A bot transition writes a marker before it touches either file and removes it after both have
+      // landed. While it exists the pair is not a settled snapshot, and the sidecar may name the bot a
+      // rollback would use, so nothing here can be trusted under any token.
+      if (existsSync(`${path}.pending`)) {
+        warn(
+          "load",
+          `telegram-offset at ${path} was mid-transition to another bot (${path}.pending); restarting from 0 rather than trusting a cursor and a bot that may disagree`,
+        );
+        return 0;
+      }
       let text: string;
       try {
         text = readFileSync(path, "utf8").trim();
@@ -167,32 +187,38 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
       // A token whose prefix is not digits is a malformed token, not a bot id: recording it would make
       // every later start fail closed on a sidecar that can never match. Leave it absent instead.
       const bot = botId !== undefined && BOT_ID.test(botId) ? botId : undefined;
-      const tag = (): void => {
-        if (bot === undefined || bot === sidecarBot) return;
+      const tag = (): boolean => {
+        if (bot === undefined) return false;
+        if (bot === sidecarBot) return true;
         try {
           writeWhole(`${path}.bot`, bot);
           sidecarBot = bot;
+          return true;
         } catch (error) {
           warn(
             "save",
             `telegram-offset bot id at ${path}.bot not saved (${String((error as Error).message)}); a token swap will not be detected`,
           );
+          return false;
         }
       };
-      // Which file goes first decides what a crash between the two leaves, and the two cases want
-      // opposite orders:
-      //
-      // - The bot changed (a sidecar exists and names another bot). Write the offset first, so a crash
-      //   leaves the new offset beside the OLD bot id — a mismatch the next start replays from 0. The
-      //   reverse order would leave a stale offset wearing this bot's name, which confirms away
-      //   updates that were never delivered.
-      // - There is no sidecar yet (a fresh install, or an upgrade from a release that never wrote one).
-      //   Write the bot first: a crash then leaves a sidecar with no offset to misattribute (a fresh
-      //   install has no offset file, so the next start is simply fresh), and on an upgrade it asserts
-      //   the bot that actually owned the legacy offset. Writing the offset first would leave an
-      //   untagged cursor, which the next start accepts under any token — the hole this closes.
+      // With no sidecar yet (a fresh install, or an upgrade from a release that never wrote one) the bot
+      // goes first: a crash then leaves a sidecar with nothing to misattribute, and on an upgrade it
+      // asserts the bot that owned the legacy offset. Writing the offset first would leave an untagged
+      // cursor, which the next start accepts under any token.
       const changed = sidecarBot !== undefined && bot !== undefined && sidecarBot !== bot;
       if (!changed) tag();
+      // The transition marker is written first and removed last. A crash anywhere between leaves it
+      // behind, and the next start refuses the pair: the sidecar may still name the old bot, which a
+      // rollback would then match and accept a cursor that is not its own.
+      if (changed) {
+        try {
+          writeWhole(`${path}.pending`, bot);
+        } catch {
+          // Without the marker the transition cannot be made safe, so nothing else is written.
+          return;
+        }
+      }
       try {
         writeWhole(path, String(offset));
       } catch (error) {
@@ -203,7 +229,15 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return;
       }
-      if (changed) tag();
+      // Clear the marker only once the sidecar really names this bot. A failed replacement leaves it,
+      // which costs one restart from 0 — the safe direction, since the pair still disagrees.
+      if (changed && tag()) {
+        try {
+          rmSync(`${path}.pending`, { force: true });
+        } catch {
+          // a leftover marker only costs one restart from 0
+        }
+      }
     },
   };
 };
