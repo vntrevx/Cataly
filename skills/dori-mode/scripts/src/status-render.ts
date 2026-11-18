@@ -48,23 +48,21 @@ export const renderStatus = (snapshot: StatusSnapshot): string => {
 export const renderBoard = (snapshot: StatusSnapshot, home: string, limit: number): string => {
   // An unquoted local path has no reliable whitespace boundary. Keep web links, but omit the rest of its text segment.
   const clean = (text: string) =>
-    line(
-      text
-        .split(/((?<![\p{L}\p{N}_./\\])https?:\/\/[^\s<>"']+)/giu)
-        .map((part, index) =>
-          index % 2
-            ? part
-            : scrubForThread(
-                part
-                  .split(home)
-                  .join("~/")
-                  .replace(/(?:~[\\/]|(?<![\p{L}\p{N}_./\\])(?:[A-Za-z]:[\\/]|\\\\|\/))[\s\S]*/u, "(local path)"),
-                home,
-              ),
-        )
-        .filter(Boolean)
-        .join(" "),
-    )
+    line(text)
+      .split(/((?<![\p{L}\p{N}_./\\])https?:\/\/[^\s<>"']+)/giu)
+      .map((part, index) =>
+        index % 2
+          ? part
+          : scrubForThread(
+              part
+                .split(home)
+                .join("~/")
+                .replace(/(?:~[\\/]|(?<![\p{L}\p{N}_./\\])(?:[A-Za-z]:[\\/]|\\\\|\/))[\s\S]*/u, "(local path)"),
+              home,
+            ),
+      )
+      .filter(Boolean)
+      .join(" ")
       .replace(/@/g, "(at)")
       .replace(/\$\(/g, "$ (");
   const lines = [

@@ -35,6 +35,14 @@ test.each([
   ["/home/test", "//server/Shared Folder/PRIVATE_SUFFIX.txt"],
   ["/home/test", "/tmp/https://example.test/PRIVATE_SUFFIX.txt"],
   ["/home/Alice\u00a0Smith", "/home/Alice\u00a0Smith/PRIVATE_SUFFIX.txt"],
+  ["/home/test", "\u001b[32m/tmp/PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "\u001b[32mC:\\Users\\Alice Smith\\PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "\u001b[32m\\\\server\\Shared Folder\\PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "\u001b[32m//server/Shared Folder/PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "C:\u001b[32m\\Users\\Alice Smith\\PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "\u001b]8;;https://example.test/\u0007/tmp/PRIVATE_SUFFIX.txt\u001b]8;;\u0007"],
+  ["/home/test", "\u001b[38;2;255;0;0m/tmp/PRIVATE_SUFFIX.txt\u001b[0m"],
+  ["/home/test", "\u009b32m/tmp/PRIVATE_SUFFIX.txt\u009b0m"],
 ])("board hides the complete spaced path %s -> %s", async (home, path) => {
   const url = "https://example.test/home/reports/test?ref=1";
   new Reports(state.dir).report(lane.key, "milestone", `Build passed. Evidence: ${path} ${url}`, now);
@@ -43,6 +51,28 @@ test.each([
   expect(body).not.toContain("Smith");
   expect(body).toContain("Build passed");
   expect(body).toContain(url);
+});
+
+test.each([0, 1, 8, 0x7f, 0x85, 0x2028, 0x2029])("board separates URL and local path at control %s", async (code) => {
+  const url = "https://example.test/evidence";
+  new Reports(state.dir).report(
+    lane.key,
+    "milestone",
+    `Build passed ${url}${String.fromCodePoint(code)}/srv/Alice Smith/PRIVATE_SUFFIX.txt`,
+    now,
+  );
+  const body = renderBoard(await laneStatus(deps()), "/home/test", 1960);
+  expect(body).not.toContain("PRIVATE_SUFFIX");
+  expect(body).not.toContain("Smith");
+  expect(body).toContain(url);
+});
+
+test("board preserves ANSI-colored evidence URLs after normalization", async () => {
+  const url = "https://example.test/home/reports/test?ref=1";
+  new Reports(state.dir).report(lane.key, "milestone", `Build passed. \u001b[32m${url}\u001b[0m`, now);
+  const body = renderBoard(await laneStatus(deps()), "/home/test", 1960);
+  expect(body).toContain(url);
+  expect(body).not.toContain("\u001b");
 });
 
 test.each([
