@@ -72,3 +72,24 @@ test("a load warning does not silence the save warning", () => {
   expect(warns.filter((w) => w.includes("not a stored offset"))).toHaveLength(1);
   expect(warns.filter((w) => w.includes("continuing from memory"))).toHaveLength(1);
 });
+
+test("a sidecar that exists but cannot be read fails closed instead of trusting an unknown bot", () => {
+  // Only a missing sidecar is the pre-upgrade case. An unreadable one is exactly the situation where
+  // the token may have changed, and accepting the offset there could confirm away this bot's updates.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  rmSync(`${path}.bot`);
+  mkdirSync(`${path}.bot`); // present but unreadable as a file
+  const warns: string[] = [];
+  const orig = console.log;
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    expect(fileTgInboundStore(path, "222").load()).toBe(0);
+  } finally {
+    console.log = orig;
+  }
+  expect(warns).toHaveLength(1);
+  expect(warns[0]).toContain("is unreadable");
+});

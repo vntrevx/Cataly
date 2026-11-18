@@ -116,14 +116,22 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
       }
       const [, inlineBot, storedOffset] = stored;
       // The bot is recorded beside the offset in its own file, so the offset keeps the bare format
-      // older releases parse. A missing record is a fresh or pre-upgrade install: accept the offset.
+      // older releases parse. Only a missing record is a fresh or pre-upgrade install; a record that
+      // exists but cannot be read is the case where the token may have changed, so it fails closed
+      // rather than accepting an offset that could confirm away this bot's pending updates.
       let botText: string | undefined;
       try {
         botText = readFileSync(`${path}.bot`, "utf8").trim();
-      } catch {
-        // absent is normal; any other failure is caught by the same fallback, which is permissive
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          warn(
+            "load",
+            `telegram-offset at ${path}.bot is unreadable (${String((error as Error).message)}); restarting from 0 rather than trusting an offset whose bot is unknown`,
+          );
+          return 0;
+        }
       }
-      sidecarBot = botText === "" ? undefined : botText;
+      sidecarBot = botText === undefined || botText === "" ? undefined : botText;
       const recordedBot = inlineBot ?? sidecarBot;
       const n = Number(storedOffset);
       if (!Number.isSafeInteger(n) || n < 0) {
