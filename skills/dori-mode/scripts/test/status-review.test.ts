@@ -53,19 +53,22 @@ test.each([
   expect(body).toContain(url);
 });
 
-test.each([0, 1, 8, 0x7f, 0x85, 0x2028, 0x2029])("board separates URL and local path at control %s", async (code) => {
-  const url = "https://example.test/evidence";
-  new Reports(state.dir).report(
-    lane.key,
-    "milestone",
-    `Build passed ${url}${String.fromCodePoint(code)}/srv/Alice Smith/PRIVATE_SUFFIX.txt`,
-    now,
-  );
-  const body = renderBoard(await laneStatus(deps()), "/home/test", 1960);
-  expect(body).not.toContain("PRIVATE_SUFFIX");
-  expect(body).not.toContain("Smith");
-  expect(body).toContain(url);
-});
+test.each([0, 1, 8, 0x7f, 0x85, 0x2028, 0x2029, 0xad, 0x200b, 0x200c, 0x200d, 0x202e, 0x2060, 0x2066, 0xfeff])(
+  "board separates URL and local path at control %s",
+  async (code) => {
+    const url = "https://example.test/evidence";
+    new Reports(state.dir).report(
+      lane.key,
+      "milestone",
+      `Build passed ${url}${String.fromCodePoint(code)}/srv/Alice Smith/PRIVATE_SUFFIX.txt`,
+      now,
+    );
+    const body = renderBoard(await laneStatus(deps()), "/home/test", 1960);
+    expect(body).not.toContain("PRIVATE_SUFFIX");
+    expect(body).not.toContain("Smith");
+    expect(body).toContain(url);
+  },
+);
 
 test("board preserves ANSI-colored evidence URLs after normalization", async () => {
   const url = "https://example.test/home/reports/test?ref=1";

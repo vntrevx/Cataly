@@ -1,7 +1,7 @@
 import { scrubForThread } from "./freshness.ts";
 import type { StatusSnapshot } from "./status.ts";
 
-const line = (text: string) => Bun.stripANSI(text).replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ");
+const line = (text: string) => Bun.stripANSI(text).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
 export const renderStatus = (snapshot: StatusSnapshot): string => {
   const lines: string[] = [];
