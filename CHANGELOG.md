@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Linux host sampling now reads load and memory directly from `/proc`, avoiding two `cat` children and three failed macOS command attempts per sample. Disk and session sampling, unknown-value behavior, and non-Linux probes are unchanged.
+
+- The skill CLI loads command implementations on demand, avoiding updater, messenger and lane graphs for successful journal commands and all configuration/command graphs for `--version`. Ordinary commands retain configuration and consumer-native admission before execution; usage, exit codes and original error classes remain unchanged.
+
 - A freshness tick parses each unchanged lane report journal once and reuses a quiet supervision activity observation. Journal changes still invalidate the per-tick memo; reports, usage hooks and alert delivery still trigger a post-effect observation so their writes cannot count as lane progress.
 
 - Automatic CI now runs only the Linux `check`, `e2e-herdr` and `e2e-hc` jobs; the automatic macOS job is removed. Exact-commit release validation and contributor requirements use the same three required jobs. Existing macOS tests and consumer verification scripts remain available for manual QA.

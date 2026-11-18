@@ -15,6 +15,8 @@ const runner: Runner = async (argv) => {
 };
 const noCache = "file 0\nshmem 0\nfile_mapped 0\nfile_dirty 0\nfile_writeback 0\n";
 const files = (parent: Record<string, string> = {}) => ({
+  "/proc/loadavg": "0.5 0.4 0.3 1/200 999",
+  "/proc/meminfo": "MemTotal: 1000 kB\nMemAvailable: 800 kB\n",
   "/proc/self/cgroup": "0::/account/worker\n",
   "/proc/self/mountinfo": "29 20 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
   "/sys/fs/cgroup/account/worker/memory.current": "10",
