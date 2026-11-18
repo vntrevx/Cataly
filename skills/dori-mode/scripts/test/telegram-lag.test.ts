@@ -4,13 +4,13 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
 import {
-  inboundLagLog,
   inboundLagRecord,
   type InboundLagRecord,
   lagOfLine,
   readLagTail,
   summarizeLag,
 } from "../src/messenger/telegram-lag.ts";
+import { inboundLagLog } from "../src/messenger/telegram-lag-log.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Http, HttpResponse } from "../src/messenger/http.ts";
-import { inboundLagLog } from "../src/messenger/telegram-lag.ts";
+import { inboundLagLog } from "../src/messenger/telegram-lag-log.ts";
 import { pollTelegramInbound } from "../src/messenger/telegram-inbound.ts";
 import { fileTgInboundStore } from "../src/messenger/telegram-offset.ts";
 import { Telegram } from "../src/messenger/telegram.ts";

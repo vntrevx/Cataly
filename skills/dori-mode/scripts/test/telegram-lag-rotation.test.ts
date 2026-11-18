@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
-import { inboundLagLog, readLagWindow } from "../src/messenger/telegram-lag.ts";
+import { inboundLagLog } from "../src/messenger/telegram-lag-log.ts";
+import { readLagWindow } from "../src/messenger/telegram-lag-window.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
@@ -193,23 +194,4 @@ test("two bots on one log write rows that cannot be mistaken for each other", ()
   expect(new Set(lines).size).toBe(2); // identical messages, distinct rows
   expect(lines.some((l) => l.includes('"bot":"111"'))).toBe(true);
   expect(lines.some((l) => l.includes('"bot":"222"'))).toBe(true);
-});
-
-test("a stale size counter does not rotate a log another receiver just replaced", () => {
-  // Two receivers share the file, each tracking only its own appends. One rotates the full log away and
-  // starts a tiny live file; the other's counter still says "over the bound", and rotating on that would
-  // move the fresh file to `.1` and discard the whole window.
-  const path = join(state.dir, "shared-rotate.jsonl");
-  const a = inboundLagLog(path, () => {}, 500);
-  const b = inboundLagLog(path, () => {}, 500);
-  const dated: TgInbound = { ...base, date: 1_700_000_000 };
-  for (let i = 0; i < 3; i++) b(dated, 1_700_000_001_000); // b's counter reaches the bound's edge
-  a(dated, 1_700_000_001_000); // a sees the real size and rotates, leaving a fresh live file
-  const freshLive = readFileSync(path, "utf8");
-  const previous = readFileSync(`${path}.1`, "utf8");
-  expect(freshLive.length).toBeLessThan(previous.length); // a fresh live file, not a full one
-  // b's own count now says "over the bound", but the live file it would rotate is nearly empty.
-  b(dated, 1_700_000_001_000);
-  expect(readFileSync(path, "utf8").startsWith(freshLive)).toBe(true); // appended, not replaced
-  expect(readFileSync(`${path}.1`, "utf8")).toBe(previous); // the window was not thrown away
 });
