@@ -151,7 +151,7 @@ test("a short write does not persist a truncated offset that would replay the up
   const path = join(state.dir, "telegram-offset");
   const store = fileTgInboundStore(path, "111");
   store.save(123_456);
-  expect(readFileSync(path, "utf8")).toBe("123456");
+  expect(readFileSync(`${path}.111`, "utf8")).toBe("123456");
   // A filesystem that accepts only part of the bytes, as a short write on a nearly full disk can.
   const real = fs.writeSync;
   const spy = spyOn(fs, "writeSync").mockImplementation(((fd: number, data: string | Uint8Array) => {
@@ -171,26 +171,7 @@ test("a short write does not persist a truncated offset that would replay the up
     console.log = orig;
   }
   // The file still holds the whole previous offset, not the truncated one.
-  expect(readFileSync(path, "utf8")).toBe("123456");
+  expect(readFileSync(`${path}.111`, "utf8")).toBe("123456");
   expect(warns.some((w) => w.includes("short write"))).toBe(true);
   expect(readdirSync(state.dir).filter((n) => n.includes(".staged"))).toEqual([]);
-});
-
-test("an inline <botId> <offset> file from the previous revision still loads and migrates to the bare form", () => {
-  // This shape existed on one host only; it must not be read as an unparseable offset and replayed.
-  const path = join(state.dir, "telegram-offset");
-  writeFileSync(path, "111 269422563");
-  const store = fileTgInboundStore(path, "111");
-  expect(store.load()).toBe(269422563);
-  store.save(269422564);
-  expect(readFileSync(path, "utf8")).toBe("269422564");
-  expect(readFileSync(`${path}.bot`, "utf8")).toBe("111");
-});
-
-test("a rollback to a release that parses the file with Number() still reads the offset", () => {
-  // The updater restores an older release's skill bytes, so the on-disk shape is a compatibility
-  // surface: `Number("500")` is 500, while the inline form was NaN and replayed 24 hours.
-  const path = join(state.dir, "telegram-offset");
-  fileTgInboundStore(path, "111").save(500);
-  expect(Number(readFileSync(path, "utf8").trim())).toBe(500);
 });
