@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { LANE_KEY } from "./registry.ts";
@@ -86,7 +86,15 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
 // each other's state. The last event is the persisted progress state; no
 // second mutable snapshot can race with this journal or registry done claims.
 export class Reports {
-  constructor(readonly stateDir: string) {}
+  private readonly memo: Map<string, { readonly stamp: string; readonly progress: Progress | null }> | undefined;
+
+  // A freshness tick may reuse a parsed journal until any writer changes it. Other readers remain uncached.
+  constructor(
+    readonly stateDir: string,
+    options: { readonly memo?: boolean } = {},
+  ) {
+    this.memo = options.memo ? new Map() : undefined;
+  }
 
   path(key: string): string {
     if (!LANE_KEY.test(key)) throw new ReportError(`invalid lane key: ${key}`);
@@ -96,6 +104,11 @@ export class Reports {
   read(key: string): Progress | null {
     const path = this.path(key);
     if (!existsSync(path)) return null;
+    // Stamp before reading: an append racing the read causes a fresh parse on the next call, not stale reuse.
+    const stat = this.memo ? statSync(path, { bigint: true }) : undefined;
+    const stamp = stat ? `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : "";
+    const memo = this.memo?.get(path);
+    if (memo?.stamp === stamp) return memo.progress;
     let progress: Progress | null = null;
     let lastReport: Report | null = null;
     for (const [index, line] of readFileSync(path, "utf8").split("\n").entries()) {
@@ -114,6 +127,7 @@ export class Reports {
         progress = { state: event.state, lastReport, lastEvent: event };
       }
     }
+    this.memo?.set(path, { stamp, progress });
     return progress;
   }
 

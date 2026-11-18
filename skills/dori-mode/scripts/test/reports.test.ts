@@ -1,5 +1,16 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { freshnessTick } from "../src/freshness.ts";
 import { parseEvent, ReportError, Reports, reportLine } from "../src/reports.ts";
@@ -128,6 +139,67 @@ test("the lane journal directory is private (0700), like the 0600 journal", () =
   } finally {
     process.umask(umask);
     state.done();
+  }
+});
+
+test.each([false, true])("an inaccessible journal ancestor stays absent (memo=%s)", (memo) => {
+  const lanes = join(state.dir, "lanes");
+  mkdirSync(lanes, { recursive: true });
+  // A loop makes the ancestor unreachable on every UID, unlike a chmod-based permissions fixture.
+  symlinkSync(lane.key, join(lanes, lane.key));
+  expect(new Reports(state.dir, { memo }).read(lane.key)).toBeNull();
+});
+
+test("a memoizing reader shares unchanged reads but sees external appends and repeats corrupt-line errors", () => {
+  const tick = new Reports(state.dir, { memo: true });
+  expect(tick.read(lane.key)).toBeNull();
+  reports.report(lane.key, "milestone", "one", T0);
+  const reads = spyOn(fs, "readFileSync");
+  const journalReads = () => reads.mock.calls.filter((call) => call[0] === reports.path(lane.key)).length;
+  try {
+    expect(tick.read(lane.key)?.lastReport?.text).toBe("one");
+    expect(tick.read(lane.key)?.lastReport?.text).toBe("one");
+    expect(journalReads()).toBe(1);
+    new Reports(state.dir).report(lane.key, "question", "two", T0 + 1);
+    expect(tick.read(lane.key)?.state).toBe("blocked");
+    expect(journalReads()).toBe(2);
+    appendFileSync(reports.path(lane.key), "{partial\n");
+    expect(() => tick.read(lane.key)).toThrow("reports.jsonl:3:");
+    expect(() => tick.read(lane.key)).toThrow("reports.jsonl:3:");
+    expect(journalReads()).toBe(4);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
+test("memoized progress sees an atomic same-size replacement even with the old mtime", () => {
+  reports.report(lane.key, "milestone", "one", T0);
+  const tick = new Reports(state.dir, { memo: true });
+  expect(tick.read(lane.key)?.lastReport?.text).toBe("one");
+  const path = reports.path(lane.key);
+  const original = statSync(path);
+  const replacement = path + ".replacement";
+  writeFileSync(replacement, readFileSync(path, "utf8").replace('"one"', '"two"'));
+  utimesSync(replacement, original.atime, original.mtime);
+  renameSync(replacement, path);
+  expect(tick.read(lane.key)?.lastReport?.text).toBe("two");
+});
+
+test("a quiet freshness tick reads the lane journal once and runs git status once", async () => {
+  const world = newWorld();
+  world.screen = "Working (1m)\n❯ ";
+  const deps = depsFor(world, fakeClock(T0 + MIN), state.dir);
+  await deps.registry.write({ ...lane, cwd: "/repo", lastReplyAt: T0 + MIN });
+  reports.report(lane.key, "milestone", "started", T0);
+  await freshnessTick(deps, "/home/test");
+  const reads = spyOn(fs, "readFileSync");
+  try {
+    world.calls = [];
+    expect(await freshnessTick(deps, "/home/test")).toEqual([]);
+    expect(reads.mock.calls.filter((call) => call[0] === reports.path(lane.key))).toHaveLength(1);
+    expect(world.calls.filter((call) => call[0] === "git" && call.includes("status"))).toHaveLength(1);
+  } finally {
+    reads.mockRestore();
   }
 });
 

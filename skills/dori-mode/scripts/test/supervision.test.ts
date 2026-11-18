@@ -161,6 +161,45 @@ describe("supervision", () => {
     }
   });
 
+  test("a file the usage hook writes in the lane's cwd is not the lane's progress", async () => {
+    const f = fixture({ usageArgv: ["usage"] });
+    try {
+      const cache = join(f.dir, "usage-cache.json");
+      const run: Runner = async (argv, opts) => {
+        if (argv[0] === "usage") {
+          writeFileSync(cache, "{}");
+          utimesSync(cache, new Date(f.clock.at), new Date(f.clock.at));
+        }
+        return f.deps.run(argv, opts);
+      };
+      f.setDirty("?? usage-cache.json\0");
+      const supervisor = new Supervision({ ...f.deps, run }, { usageArgv: ["usage"] });
+      const activeLane = { ...lane, cwd: f.dir };
+      await supervisor.sweep(activeLane, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      expect((await supervisor.sweep(activeLane, "Running 41m")).state).toBe("stalled");
+    } finally {
+      f.done();
+    }
+  });
+
+  test("a file written by alert delivery is not the lane's progress", async () => {
+    const f = fixture();
+    try {
+      f.setDirty("?? alert-cache.json\0");
+      const supervisor = new Supervision(
+        { ...f.deps, alert: () => writeFileSync(join(f.dir, "alert-cache.json"), "{}") },
+        { defaults: { tokens: 10 } },
+      );
+      const activeLane = { ...lane, cwd: f.dir };
+      await supervisor.sweep(activeLane, "Running 21m");
+      f.clock.at += 20 * 60_000;
+      expect((await supervisor.sweep(activeLane, "Running 41m")).state).toBe("stalled");
+    } finally {
+      f.done();
+    }
+  });
+
   test("changes under node_modules or outside the lane's cwd are not activity", async () => {
     const f = fixture();
     try {

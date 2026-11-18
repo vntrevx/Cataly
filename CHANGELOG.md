@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A freshness tick parses each unchanged lane report journal once and reuses a quiet supervision activity observation. Journal changes still invalidate the per-tick memo; reports, usage hooks and alert delivery still trigger a post-effect observation so their writes cannot count as lane progress.
+
 - Automatic CI now runs only the Linux `check`, `e2e-herdr` and `e2e-hc` jobs; the automatic macOS job is removed. Exact-commit release validation and contributor requirements use the same three required jobs. Existing macOS tests and consumer verification scripts remain available for manual QA.
 
 - Monitor stdout/stderr use bounded incremental line framing and 64 KiB delivery batches. Oversized lines or rendered messages are preserved in private temporary files with explicit path/size notices instead of being truncated or accumulated in memory; storage/read failures stop the child and report potentially incomplete output. Normal filters, UTF-8, EOF, stop and session ownership behavior remain intact.

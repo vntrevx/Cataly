@@ -155,6 +155,7 @@ export class Supervision {
     // A question also reads as blocked; only this same ceiling blocker as the latest report makes a new one a repeat.
     const blocker = violations.join("; ");
     const reported = progress?.lastReport?.kind === "blocker" && progress.lastReport.text === blocker;
+    let appended = true;
     if (!terminal && violations.length && !reported) {
       this.reports.report(lane.key, "blocker", blocker, now);
     } else if (!terminal && hung && (!progress || progress.state === "running")) {
@@ -173,7 +174,7 @@ export class Supervision {
         state: "running",
         text: "Fresh report, checkpoint, or file activity observed",
       });
-    }
+    } else appended = false;
     // Deliver before saving, so only alerts that reached the callback count as sent; a failed one is sent again next sweep.
     const undelivered = new Map<string, string>();
     for (const message of freshAlerts) {
@@ -183,12 +184,15 @@ export class Supervision {
         undelivered.set(message, error instanceof Error ? error.message : String(error));
       }
     }
-    // Save the post-blocker signature so our own report does not count as progress.
+    // Reports and hook side effects are not lane progress; a quiet sweep can reuse its first observation.
     const observation: Observation = {
       at: now,
       timer: timer?.seconds ?? null,
       timerKind: timer?.kind ?? null,
-      activity: await this.activity(lane),
+      activity:
+        appended || this.options.usageArgv?.length || (freshAlerts.length && this.deps.alert)
+          ? await this.activity(lane)
+          : activity,
       activeAt,
       alerts: alerts.filter((message) => !undelivered.has(message)),
     };

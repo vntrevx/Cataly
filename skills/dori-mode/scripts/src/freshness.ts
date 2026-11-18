@@ -102,7 +102,7 @@ const remember = (deps: FlowDeps, key: string, patch: Partial<Lane>) =>
 export const freshnessTick = async (deps: FlowDeps, home: string): Promise<SweepAct[]> => {
   const acts: SweepAct[] = [];
   const now = deps.clock.now();
-  const reports = new Reports(deps.config.stateDir);
+  const reports = new Reports(deps.config.stateDir, { memo: true });
   const supervision = new Supervision({ ...deps, stateDir: deps.config.stateDir, reports }, deps.config.supervision);
   for (const lane of await deps.registry.open()) {
     if (statusOf(lane) === "paused") {
