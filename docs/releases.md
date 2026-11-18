@@ -212,7 +212,7 @@ An authentication, configuration or intent failure exits nonzero with a sanitize
 The consumer API runs before normal Dori config loading. Use the local `bin/dori` for an isolated home:
 
 ```text
-dori update <check|install|status|rollback> [--version TAG] [--from DIST] [--home PATH] [--runtime hc|herdr]
+dori update <check|install|status|rollback|cache> [--version TAG] [--from DIST] [--home PATH] [--runtime hc|herdr]
 ```
 
 For example, after obtaining a compatible asset set in `download_dir`:
@@ -233,6 +233,9 @@ The commands below remain explicit operations. New builds also include the launc
 | `dori update status` | Inspect installed state and reconcile an interrupted activation journal |
 | `dori update rollback` | Verify and restore the retained previous release |
 | `dori update rollback --version v0.1.2` | Assert that the retained rollback target is exactly this tag |
+| `dori update cache [--reference DIR]...` | Report native cache identities, references and exclusive bytes; removes nothing (`--prune` is refused) |
+
+`cache` prints `"removes": "nothing"`. It scans the current platform/architecture under the user home cache, sources and files under the primary/side homes and explicit reference roots, receipts, symbolic links, process arguments and same-user working directories (`/proc` on Linux, `lsof` elsewhere). Unreadable locks, unresolved links, unscanned linked directories and unavailable working directories are reported conservatively in `protectedBy`; unreadable reference files or a failed process listing fail the report. References outside the scanned roots and process uses other than arguments/working directories are not covered. Root working directories are not inspected. `bytes` counts logical inode bytes whose hard links all lie within the entry, not allocated filesystem blocks. The scan takes no writer lock: an empty `protectedBy` is a point-in-time observation, never permission to remove an identity. No cache directory is removed or quarantined.
 
 `status` and `rollback` do not accept `--from`. Rollback is a retained-source operation; use `install --from DIST` to select a local candidate. Network `check`/`install` without `--version` selects stable latest only. No consumer command ports upstream, runs review models, fetches arbitrary `main`, publishes GitHub changes or grants repository write access.
 

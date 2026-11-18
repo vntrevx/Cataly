@@ -14,18 +14,21 @@ import {
   regularFile,
 } from "./files.ts";
 import { installBundle, preflightInstallation, rollbackRelease } from "./install.ts";
+import { reportNativeCache } from "./native-cache.ts";
 import { prerequisites } from "./provision.ts";
 import { supportsReleaseProfile } from "./manifest.ts";
 import { consumerReleaseHome } from "./runtime.ts";
 import { hasConsumerState, loadInstalled, recoverInstalled, verifyRelease } from "./state.ts";
 import type { ReleaseManifest } from "./types.ts";
 
-const USAGE = `dori update <check|install|status|rollback> [--version vX.Y.Z] [--from DIST] [--home PATH] [--runtime hc|herdr]
+const USAGE = `dori update <check|install|status|rollback|cache> [--version vX.Y.Z] [--from DIST] [--home PATH] [--runtime hc|herdr]
   auto <status|enable|disable>  manage daily stable-release checks at consumer OMP launch
   check       verify an available public release without activating it
   install     verify and install a fixed release; no messenger, watcher, model or service is started
   status      print verified installed and retained previous release identities
   rollback    verify and restore the retained previous release (--version may assert its tag)
+  cache       report native cache identities, references and exclusive bytes; removes nothing
+              --reference DIR adds a root to scan (repeatable)
 Default check/install selects the latest stable GitHub release. Explicit tags also allow previews.
 --from reads local release assets; first installation may still fetch the exact public omp-ulw pin.
 Activation holds while Dori is live. Stop Dori yourself before installing or rolling back.`;
@@ -50,6 +53,8 @@ export async function runConsumerUpdate(argv: string[]): Promise<number> {
         from: { type: "string" },
         home: { type: "string" },
         runtime: { type: "string" },
+        prune: { type: "boolean" },
+        reference: { type: "string", multiple: true },
         help: { type: "boolean", short: "h" },
       },
     });
@@ -58,7 +63,7 @@ export async function runConsumerUpdate(argv: string[]): Promise<number> {
       return 0;
     }
     const command = args.positionals[0];
-    if (args.positionals.length !== 1 || !["check", "install", "status", "rollback"].includes(command ?? ""))
+    if (args.positionals.length !== 1 || !["check", "install", "status", "rollback", "cache"].includes(command ?? ""))
       throw new Error(USAGE);
     if (args.values.version !== undefined && !/^v\d+\.\d+\.\d+$/.test(args.values.version))
       throw new Error("--version must be an exact vX.Y.Z tag");
@@ -70,12 +75,29 @@ export async function runConsumerUpdate(argv: string[]): Promise<number> {
       (command === "rollback" && args.values.from)
     )
       throw new Error("--from applies to check/install; status takes no selection");
+    if (args.values.prune) throw new Error("cache only reports; --prune is not supported and nothing is removed");
+    if (
+      (command === "cache" &&
+        (args.values.from !== undefined || args.values.version !== undefined || args.values.runtime !== undefined)) ||
+      (command !== "cache" && args.values.reference)
+    )
+      throw new Error("cache takes only --home and --reference");
     const installedHome = consumerReleaseHome(realpathSync(resolve(import.meta.dir, "../..")));
     const selected = args.values.home ?? installedHome ?? process.env["DORI_HOME"] ?? join(homedir(), ".dori");
     if (!isAbsolute(selected)) throw new Error("--home / DORI_HOME must be an absolute installation home");
     const paths = consumerPaths(homedir(), selected);
     realDirectory(paths.dori);
     realDirectory(paths.root);
+    if (command === "cache") {
+      const roots = [paths.dori, process.env["OMP_DORI_HOME"] || join(homedir(), ".omp-dori")];
+      const entries = reportNativeCache(
+        paths.home,
+        [resolve(import.meta.dir, "../..")],
+        [...roots, ...(args.values.reference ?? []).map((path) => resolve(path))],
+      );
+      console.log(JSON.stringify({ removes: "nothing", entries }, null, 2));
+      return 0;
+    }
     if (!hasConsumerState(paths) && lstatSync(join(paths.dori, ".omp-dori"), { throwIfNoEntry: false }))
       throw new Error("Unmanaged source installation; use a separate release home or the documented stopped migration");
     let runtime = args.values.runtime;

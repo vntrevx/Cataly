@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { nativeDirectory, nativeLauncher, type NativeReceipt } from "../src/release/native.ts";
+import { type ProcessCwds, processCwds } from "../src/release/process-cwd.ts";
 import { readSourceBundle, type SourceBundle } from "../src/release/source-bundle.ts";
 import { digest } from "../src/update/source.ts";
 
@@ -9,7 +10,21 @@ const NATIVE_VIEWER_FIXTURE = "isolated viewer admission bytes, not an applicati
 
 export function fixtureGit(cwd: string, ...argv: string[]): string {
   const result = Bun.spawnSync(
-    ["/bin/sh", "-c", 'umask 077; exec "$@"', "dori-source-fixture", "git", "-c", "core.hooksPath=/dev/null", ...argv],
+    // Keep fixture Git children from outliving the call with a cwd inside the cache being inspected.
+    [
+      "/bin/sh",
+      "-c",
+      'umask 077; exec "$@"',
+      "dori-source-fixture",
+      "git",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "gc.auto=0",
+      "-c",
+      "maintenance.auto=false",
+      ...argv,
+    ],
     {
       cwd,
       env: {
@@ -126,3 +141,9 @@ export function nativeCacheFixture(source: string, home: string, upstream: strin
   writeFileSync(join(directory, "receipt.json"), JSON.stringify(receipt), { mode: 0o600 });
   return receipt;
 }
+
+/** Ignore unrelated unreadable host processes; dedicated regressions use the real reader for that case. */
+export const ownProcessCwds = (pids: readonly string[]): ProcessCwds | null => {
+  const read = processCwds(pids);
+  return read && { cwds: read.cwds, unreadable: [] };
+};
