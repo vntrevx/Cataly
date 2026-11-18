@@ -1,4 +1,6 @@
 /** dori send, presence, inbound, thread, react and transcribe: the messengers. */
+import { readFileSync } from "node:fs";
+
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
 import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
@@ -95,8 +97,17 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   const token = process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set");
   const tg = new Telegram(fetchHttp, realClock, token);
   // The cursor belongs to the bot that produced it: a token swapped for a different bot must not
-  // carry an offset that would confirm away every update the new bot has waiting.
-  const store = fileTgInboundStore(`${stateDir}/telegram-offset`, token.split(":")[0]);
+  // carry an offset that would confirm away every update the new bot has waiting. The pre-split shared
+  // cursor is only adopted when the previous revision's `<path>.bot` names this same bot.
+  const botId = token.split(":")[0];
+  const legacyBot = ((): string | undefined => {
+    try {
+      return readFileSync(`${stateDir}/telegram-offset.bot`, "utf8").trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const store = fileTgInboundStore(`${stateDir}/telegram-offset`, botId, legacyBot);
   const num = (name: string): number => {
     try {
       return envInt(name, process.env[name]);
@@ -114,7 +125,12 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
   console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
   // The INBOUND line stays exactly as monitors parse it; receive lag goes to its own jsonl.
-  const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
+  const recordLag = inboundLagLog(
+    `${stateDir}/telegram-lag.jsonl`,
+    (m) => console.log(`WARN ${m}`.slice(0, 300)),
+    undefined,
+    botId,
+  );
   await telegramInboundLoop(
     tg,
     store,

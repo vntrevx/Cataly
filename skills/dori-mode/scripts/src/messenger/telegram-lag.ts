@@ -25,6 +25,12 @@ export type InboundLagRecord = {
   readonly thread?: number;
   readonly from: number;
   readonly kind: "message" | "edit";
+  /**
+   * The bot that issued `updateId`. Update ids are per bot, so without this two receivers on one state
+   * directory could write byte-identical rows, and a window that spans a rotation would drop one as a
+   * duplicate of the other.
+   */
+  readonly bot?: string;
 };
 
 /**
@@ -32,7 +38,7 @@ export type InboundLagRecord = {
  * an edit the edit's date. Clamp a negative host/server clock difference to 0; a missing date stays
  * absent, so an edit Telegram dated no way at all records no lag rather than the message's age.
  */
-export const inboundLagRecord = (i: TgInbound, nowMs: number): InboundLagRecord => {
+export const inboundLagRecord = (i: TgInbound, nowMs: number, bot?: string): InboundLagRecord => {
   const tgDateMs = i.date === undefined ? undefined : i.date * 1000;
   return {
     at: new Date(nowMs).toISOString(),
@@ -44,6 +50,7 @@ export const inboundLagRecord = (i: TgInbound, nowMs: number): InboundLagRecord 
     ...(i.thread === undefined ? {} : { thread: i.thread }),
     from: i.from,
     kind: i.kind,
+    ...(bot === undefined ? {} : { bot }),
   };
 };
 
@@ -63,6 +70,8 @@ export const inboundLagLog = (
   path: string,
   warn: (message: string) => void = () => {},
   rotateBytes: number = LAG_ROTATE_BYTES,
+  /** The bot whose updates this log receives; written into every record so two bots' rows differ. */
+  bot?: string,
 ): ((i: TgInbound, nowMs: number) => void) => {
   let failed = false;
   // Once a rotation has failed it will fail the same way for every later record, so it is not retried:
@@ -78,7 +87,7 @@ export const inboundLagLog = (
         dirReady = true;
       }
       bytes ??= statSync(path, { throwIfNoEntry: false })?.size ?? 0;
-      const line = `${JSON.stringify(inboundLagRecord(i, nowMs))}\n`;
+      const line = `${JSON.stringify(inboundLagRecord(i, nowMs, bot))}\n`;
       if (!rotationOff && bytes + Buffer.byteLength(line) > rotateBytes) {
         try {
           // Replace the previous file in one step: a reader sees either the old or the new one.
@@ -210,7 +219,9 @@ export const readLagWindow = (
   for (let i = 0; i < 2 && !taken.stable; i++) taken = attempt();
   if (taken.prev.length === 0) return taken.lines;
   // `.1` is a different file, so a line equal to one from the live file can only be the same record
-  // seen from both sides of a rotation — never a distinct record.
+  // seen from both sides of a rotation — never a distinct record. Two receivers appending to one log
+  // can write identical lines (their `updateId`s are per bot), but those are only ever compared within
+  // one file's window against the other's, and the count that matters is the window size, not identity.
   const merged = [...taken.prev.filter((line) => !taken.lines.includes(line)), ...taken.lines];
   return merged.slice(-limit);
 };

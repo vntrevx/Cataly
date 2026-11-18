@@ -29,7 +29,12 @@ const BOT_ID = /^\d+$/;
  * seed for a bot's own file and never written again. A rollback to an older release therefore finds the
  * cursor it left, which replays rather than discards.
  */
-export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore => {
+export const fileTgInboundStore = (
+  path: string,
+  botId?: string,
+  /** The bot that owned the pre-split shared cursor, when the caller can prove it. */
+  legacyBotId?: string,
+): TgInboundStore => {
   // One warning per failure kind per process: load() runs on every poll, and a broken meter must not
   // flood the receiver log. Load and save are separate flags because a start that warns about a torn
   // offset must still report that it cannot persist the new one.
@@ -103,18 +108,26 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         handled = own;
         return own;
       }
-      // First start for this bot: adopt the shared file an earlier release wrote, if it is still there.
-      // A shared cursor cannot be attributed to a bot, so it is only a starting point — the next save
-      // writes this bot's own file and the shared one is never touched again.
+      // First start for this bot. The shared file an earlier release wrote cannot be attributed to a
+      // bot, and adopting it blindly is the very discard this split exists to prevent: an install whose
+      // token changed before the upgrade would hand the new bot a cursor above its queued update ids.
+      // So it is only a seed when the caller can say which bot owned it — `legacyBotId` — and otherwise
+      // the bot starts at 0, which replays its retained window instead of confirming it away.
       if (cursorPath !== path && !existsSync(cursorPath)) {
         const legacy = readStored(path);
-        if (legacy !== undefined) {
+        if (legacy !== undefined && legacyBotId === owner) {
           warn(
             "load",
-            `telegram-offset at ${path} predates per-bot cursors; adopting ${legacy} for bot ${owner ?? "?"} into ${cursorPath}`,
+            `telegram-offset at ${path} predates per-bot cursors; adopting ${legacy} for bot ${owner} into ${cursorPath}`,
           );
           handled = legacy;
           return legacy;
+        }
+        if (legacy !== undefined) {
+          warn(
+            "load",
+            `telegram-offset at ${path} predates per-bot cursors and its bot is unrecorded; starting bot ${owner ?? "?"} from 0 rather than trusting a cursor that may belong to another bot`,
+          );
         }
       }
       return 0;

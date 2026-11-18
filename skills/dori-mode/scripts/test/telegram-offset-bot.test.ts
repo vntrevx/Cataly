@@ -50,19 +50,32 @@ test("a fresh bot starts at 0 rather than inheriting another bot's cursor", () =
   expect(fileTgInboundStore(path, "222").load()).toBe(0);
 });
 
-test("the shared file an earlier release wrote seeds the first bot once, and is never written again", () => {
+test("the shared file seeds the first bot only when its bot is verifiable, and is never written again", () => {
   // `path` is every pre-split install's cursor. A rollback to such a release reads it with Number(...),
   // so it must keep the value that release left; only a copy moves into the per-bot file.
   const path = join(state.dir, "telegram-offset");
   writeFileSync(path, "269422565");
   const warns = quiet(() => {
-    expect(fileTgInboundStore(path, "111").load()).toBe(269422565);
+    expect(fileTgInboundStore(path, "111", "111").load()).toBe(269422565);
   });
   expect(warns.some((w) => w.includes("predates per-bot cursors"))).toBe(true);
-  fileTgInboundStore(path, "111").save(269422566);
+  fileTgInboundStore(path, "111", "111").save(269422566);
   expect(readFileSync(`${path}.111`, "utf8")).toBe("269422566");
   expect(readFileSync(path, "utf8")).toBe("269422565"); // untouched for the old release
   expect(Number(readFileSync(path, "utf8").trim())).toBe(269422565);
+});
+
+test("an unverifiable shared cursor is not adopted, because it may belong to another bot", () => {
+  // A token changed before the upgrade: the shared cursor is the OLD bot's, and adopting it would make
+  // getUpdates confirm — and discard — everything the new bot has waiting.
+  const path = join(state.dir, "telegram-offset");
+  writeFileSync(path, "269422565");
+  const warns = quiet(() => {
+    expect(fileTgInboundStore(path, "222").load()).toBe(0);
+    // A record naming a different bot is equally not this bot's.
+    expect(fileTgInboundStore(path, "333", "111").load()).toBe(0);
+  });
+  expect(warns.filter((w) => w.includes("its bot is unrecorded")).length).toBeGreaterThan(0);
 });
 
 test("a torn or unparseable cursor file is reported instead of read as offset 0", () => {

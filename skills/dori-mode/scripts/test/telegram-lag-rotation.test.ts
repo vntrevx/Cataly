@@ -178,3 +178,19 @@ test("a rotation that leaves a full previous file does not freeze the window on 
   const read = (p: string): string[] => (p.endsWith(".1") ? prev : live);
   expect(readLagWindow(join(state.dir, "full.jsonl"), 3, read, () => 1)).toEqual([...prev.slice(-1), ...live]);
 });
+
+test("two bots on one log write rows that cannot be mistaken for each other", () => {
+  // update ids are per bot, so without the bot in the record two receivers could write byte-identical
+  // rows and a window spanning a rotation would drop one as a duplicate.
+  const path = join(state.dir, "shared.jsonl");
+  const a = inboundLagLog(path, () => {}, 1_000_000, "111");
+  const b = inboundLagLog(path, () => {}, 1_000_000, "222");
+  const dated: TgInbound = { ...base, date: 1_700_000_000, updateId: 90 };
+  a(dated, 1_700_000_001_000);
+  b(dated, 1_700_000_001_000);
+  const lines = readFileSync(path, "utf8").trim().split("\n");
+  expect(lines).toHaveLength(2);
+  expect(new Set(lines).size).toBe(2); // identical messages, distinct rows
+  expect(lines.some((l) => l.includes('"bot":"111"'))).toBe(true);
+  expect(lines.some((l) => l.includes('"bot":"222"'))).toBe(true);
+});
