@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Manual `dori close` now applies the same uncommitted/unpushed-work guard as automatic completion before marking a lane closed or touching its thread, session or worktrees. The watcher's final close also rechecks work and preserves a late refusal as an objection. Clean lane-owned worktrees remain independent of a dirty human checkout; non-git lanes and existing Done-signal, delivery-lock and status-race checks are preserved.
+
 - Linux host sampling now reads load and memory directly from `/proc`, avoiding two `cat` children and three failed macOS command attempts per sample. Disk and session sampling, unknown-value behavior, and non-Linux probes are unchanged.
 
 - The skill CLI loads command implementations on demand, avoiding updater, messenger and lane graphs for successful journal commands and all configuration/command graphs for `--version`. Ordinary commands retain configuration and consumer-native admission before execution; usage, exit codes and original error classes remain unchanged.

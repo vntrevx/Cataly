@@ -17,6 +17,8 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 3. If the Dori does not object within 5 minutes, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote.
 4. Closing marks your thread done (when a thread hook is configured), closes your tab, and removes your worktrees.
 
+The lead can close sooner with `dori close <key>`, but this is not a bypass: it also requires live Done signals and no uncommitted tracked changes or unpushed commits. Unreadable git state in a lane-owned worktree blocks closure. If the lane owns no worktree, its working directory is checked instead; a non-git directory is allowed. A refusal leaves the lane, session and thread unchanged.
+
 ## If the Dori objects, or a check fails
 
 You get `[LEAD] not done: <reasons>; keep working, claim again when fixed` in your pane, and the lane goes back to not-done. This happens when:
