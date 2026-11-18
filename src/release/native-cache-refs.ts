@@ -10,7 +10,7 @@ const OVERLAP = 64;
 const SKIP: Record<string, true> = { ".git": true, node_modules: true };
 
 /** Walk without following links; `visit` sees every directory, every symbolic link and every regular file. */
-function walk(root: string, visit: (path: string, kind: "directory" | "file" | "link") => void): void {
+function walk(root: string, visit: (path: string, kind: "directory" | "file" | "link" | "skipped") => void): void {
   const stack = [root];
   while (stack.length) {
     const path = stack.pop()!;
@@ -19,7 +19,10 @@ function walk(root: string, visit: (path: string, kind: "directory" | "file" | "
     if (stat.isSymbolicLink()) visit(path, "link");
     else if (stat.isFile()) visit(path, "file");
     else if (stat.isDirectory()) {
-      if (path !== root && Object.hasOwn(SKIP, basename(path))) continue;
+      if (path !== root && Object.hasOwn(SKIP, basename(path))) {
+        visit(path, "skipped");
+        continue;
+      }
       visit(path, "directory");
       for (const name of readdirSync(path)) stack.push(join(path, name));
     }
@@ -45,9 +48,9 @@ function readWindows(path: string, read: (text: string) => void): void {
 /**
  * What uses each identity: a source under `sources`/`roots` binds it, a file of any size under `roots` (wrappers,
  * consumer state, deployment records/toolchains) names it, or a running process names it. What this scan cannot
- * confirm is reported against every identity: a source lock that cannot be read, a link that cannot be read or leads to
- * an unscanned directory, and process working directories that cannot be read. An unreadable process table or reference
- * file throws instead of reporting nothing as used.
+ * confirm is reported against every identity: skipped subtrees, a source lock that cannot be read, a link that cannot
+ * be read or leads to an unscanned directory, and unreadable process working directories. An unreadable process table
+ * or reference file throws instead of reporting nothing as used.
  */
 export function protections(
   cache: string,
@@ -98,6 +101,10 @@ export function protections(
   // A root given as a link (a `--reference` alias) is walked at its real path, so its contents are read.
   for (const root of rootsReal)
     walk(root, (path, kind) => {
+      if (kind === "skipped") {
+        if (!walked(path)) all(`unscanned directory ${path}`);
+        return;
+      }
       if (kind === "directory") return bind(path, path);
       if (kind === "file") return readWindows(path, (text) => names(text, `reference ${path}`));
       // A link into the cache (an `omp` on PATH, a release's toolchain link) keeps its target, through link chains too.

@@ -25,9 +25,9 @@ function cache() {
     rmSync(f.source, { recursive: true });
     return receipt;
   };
-  const reasons = () =>
+  const reasons = (scanned: readonly string[] = [refs]) =>
     Object.fromEntries(
-      reportNativeCache(home, [], [refs], ownProcessCwds).map((entry) => [entry.directory, entry.protectedBy]),
+      reportNativeCache(home, [], scanned, ownProcessCwds).map((entry) => [entry.directory, entry.protectedBy]),
     );
   return { root, refs, native, reasons };
 }
@@ -41,6 +41,34 @@ test.each(["node_modules", ".git"])(
     expect(c.reasons()[linked.directory]).toEqual([`link ${join(c.refs, name)}`]);
   },
 );
+
+test.each(["node_modules", ".git"])("a skipped %s subtree is unknown until explicitly scanned", (name) => {
+  const c = cache();
+  const wrapped = c.native("wrapped");
+  const free = c.native("free");
+  const skipped = join(c.refs, name);
+  mkdirSync(join(skipped, ".bin"), { recursive: true });
+  symlinkSync(wrapped.omp, join(skipped, ".bin/omp"));
+  const hidden = c.reasons();
+  const unknown = `unscanned directory ${skipped}`;
+  expect(hidden[wrapped.directory]).toEqual([unknown]);
+  expect(hidden[free.directory]).toEqual([unknown]);
+  // Explicit roots are walked even when their basename would be skipped below another root.
+  const scanned = c.reasons([c.refs, skipped]);
+  expect(scanned[wrapped.directory]).toEqual([`link ${join(skipped, ".bin/omp")}`]);
+  expect(scanned[free.directory]).toEqual([]);
+  const alias = join(c.root, "scan-alias");
+  symlinkSync(skipped, alias);
+  expect(c.reasons([c.refs, alias])).toEqual(scanned);
+  // Opting into an outer subtree must not hide a still-skipped nested subtree.
+  const nested = join(skipped, name === ".git" ? "node_modules" : ".git");
+  mkdirSync(nested);
+  symlinkSync(free.omp, join(nested, "omp"));
+  expect(c.reasons([c.refs, alias])[free.directory]).toEqual([`unscanned directory ${nested}`]);
+  const complete = c.reasons([c.refs, alias, nested]);
+  expect(complete[free.directory]).toEqual([`link ${join(nested, "omp")}`]);
+  expect(complete[wrapped.directory]).toEqual([`link ${join(skipped, ".bin/omp")}`]);
+});
 
 test("a reference file larger than any limit is read whole, directly or behind a link", () => {
   const c = cache();
@@ -78,6 +106,7 @@ test("a linked directory the scan does not walk is reported against every identi
     [
       `link to an unscanned directory ${join(c.refs, "release")}`,
       `link to an unscanned directory ${join(c.refs, "active")}`,
+      `unscanned directory ${join(c.refs, "node_modules")}`,
     ].sort(),
   );
 });
