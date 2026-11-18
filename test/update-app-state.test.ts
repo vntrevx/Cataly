@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readMonitorManifests } from "../skills/dori-mode/scripts/src/boot-monitors.ts";
-import { fileTgInboundStore } from "../skills/dori-mode/scripts/src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../skills/dori-mode/scripts/src/messenger/telegram-offset.ts";
 import { Registry, type Lane } from "../skills/dori-mode/scripts/src/registry.ts";
 import { Store } from "../src/store.ts";
 import { applicationManifest } from "../src/update/app-state.ts";

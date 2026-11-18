@@ -161,3 +161,44 @@ test("inbound-lag CLI limits nonblank records before skipping missing dates and 
   expect((await invoke("1")).code).toBe(1);
   expect((await invoke("0")).code).toBe(1);
 });
+
+test("the lag file rotates at the size bound, keeping one previous file", () => {
+  const path = join(state.dir, "rotate.jsonl");
+  // A bound small enough that a few records cross it, so the rotation itself is what is tested.
+  const record = inboundLagLog(path, () => {}, 400);
+  const dated: TgInbound = { ...base, date: 1_700_000_000 };
+  for (let i = 0; i < 12; i++) record(dated, 1_700_000_001_000);
+  expect(statSync(path).size).toBeLessThanOrEqual(400);
+  const previous = readFileSync(`${path}.1`, "utf8");
+  const current = readFileSync(path, "utf8");
+  // One previous file is kept, so older rotations are gone by design; what must hold is that the
+  // newest records are in the live file and the file that was replaced still holds some.
+  expect(previous.trim().split("\n").length).toBeGreaterThan(0);
+  expect(current.trim().split("\n").length).toBeGreaterThan(0);
+  const last = current.trim().split("\n").at(-1) ?? "";
+  expect(last).toContain('"updateId":90');
+});
+
+test("a rotation that cannot land is warned once and the file keeps growing", () => {
+  const path = join(state.dir, "norotate.jsonl");
+  // A directory where the previous file should go: the rename fails, as it would on a full disk.
+  mkdirSync(`${path}.1`, { recursive: true });
+  const warns: string[] = [];
+  const record = inboundLagLog(path, (m) => warns.push(m), 200);
+  for (let i = 0; i < 6; i++) record({ ...base, date: 1_700_000_000 }, 1_700_000_001_000);
+  expect(warns.filter((w) => w.includes("could not rotate"))).toHaveLength(1);
+  expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(6);
+});
+
+test("a window that straddles a rotation still reads the requested number of records", async () => {
+  const path = join(state.dir, "straddle.jsonl");
+  // Each file holds about ten records at this bound, so the window spans the rotation.
+  const record = inboundLagLog(path, () => {}, 2000);
+  const dated: TgInbound = { ...base, date: 1_700_000_000 };
+  for (let i = 0; i < 12; i++) record(dated, 1_700_000_001_000);
+  // What `dori inbound-lag` does: the live file first, then the previous one for the remainder.
+  const live = readLagTail(path, 10);
+  const older = live.length < 10 ? readLagTail(`${path}.1`, 10 - live.length) : [];
+  expect(live.length + older.length).toBe(10);
+  expect([...older, ...live].every((line) => lagOfLine(line) === 1000)).toBe(true);
+});

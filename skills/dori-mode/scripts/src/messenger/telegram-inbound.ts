@@ -1,6 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-
+import type { TgInboundStore } from "./telegram-offset.ts";
 import type { Telegram } from "./telegram.ts";
 
 /** `message` for a new message, `edit` when the owner edited an earlier one. */
@@ -21,7 +19,11 @@ export type TgInbound = {
   readonly from: number;
   readonly username?: string;
   readonly text?: string;
-  /** Telegram's message date in unix seconds: what receive-lag is measured against. */
+  /**
+   * What receive-lag is measured against, in unix seconds: the message's own date, or for an edit the
+   * edit's date. Absent when the payload carried none, which leaves the lag unrecorded rather than
+   * reporting the age of the message that was edited.
+   */
   readonly date?: number;
   readonly media?: TgMedia;
 };
@@ -48,8 +50,6 @@ export const envInt = (name: string, raw: string | undefined): number => {
   if (!Number.isSafeInteger(n)) throw new Error(`${name} must be an integer, got: ${JSON.stringify(raw)}`);
   return n;
 };
-
-export type TgInboundStore = { load(): number; save(offset: number): void };
 
 /**
  * The inbound watch loop. Without `--loop` (loopMin <= 0) it is one-shot: a single
@@ -81,36 +81,6 @@ export const telegramInboundLoop = async (
   }
 };
 
-export const fileTgInboundStore = (path: string): TgInboundStore => {
-  // load() runs on every poll; a corrupt file must warn once, not once per poll.
-  let warned = false;
-  return {
-    load(): number {
-      try {
-        const n = Number(readFileSync(path, "utf8").trim());
-        if (!Number.isSafeInteger(n) || n < 0) {
-          // A corrupt offset must not silently replay the whole history.
-          if (!warned) {
-            warned = true;
-            // stdout like every other inbound WARN, so a monitor filtering stdout sees it.
-            console.log(`WARN telegram-offset at ${path} is unparseable (${n}); restarting from 0 (warned once)`);
-          }
-          return 0;
-        }
-        return n;
-      } catch {
-        return 0; // no file yet: a fresh start, not a warning
-      }
-    },
-    save(offset: number): void {
-      // The state dir may not exist yet on a fresh install; without this the first save
-      // fails with ENOENT and the same update is re-printed every tick.
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, String(offset));
-    },
-  };
-};
-
 type TgFile = { readonly file_id?: string };
 type TgUser = {
   readonly id: number;
@@ -129,6 +99,8 @@ type TgMessage = {
   readonly caption?: string;
   /** Unix seconds Telegram recorded the message; absent on some old or edited payloads. */
   readonly date?: number;
+  /** Unix seconds Telegram recorded the edit; absent when the update carries no edit_date. */
+  readonly edit_date?: number;
   readonly location?: unknown;
   readonly voice?: TgFile;
   readonly audio?: TgFile;
@@ -227,6 +199,9 @@ export const pollTelegramInbound = async (
     const source = m!.chat!.type === "private" ? "dm" : "topic";
     const thread = source === "topic" ? (threadOf(m!) ?? 1) : threadOf(m!);
     const replyTo = replyOf(m!);
+    // An edit is measured from when it was edited: `date` is the original message's age, so an old
+    // message edited now would otherwise record hours of "receive lag" that never happened.
+    const lagDate = kind === "edit" ? m!.edit_date : m!.date;
     const media = mediaOf(m!);
     const inbound: TgInbound = {
       kind,
@@ -239,7 +214,7 @@ export const pollTelegramInbound = async (
       from: m!.from!.id,
       ...(m!.from!.username === undefined ? {} : { username: m!.from!.username }),
       ...(m!.text === undefined && m!.caption === undefined ? {} : { text: m!.text ?? m!.caption }),
-      ...(m!.date === undefined ? {} : { date: m!.date }),
+      ...(lagDate === undefined ? {} : { date: lagDate }),
       ...(media === undefined ? {} : { media }),
     };
     emit(inbound); // may throw: offset stays before this update, so it is polled again

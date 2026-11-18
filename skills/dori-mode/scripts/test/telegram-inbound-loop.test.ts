@@ -3,12 +3,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
-import {
-  fileTgInboundStore,
-  pollTelegramInbound,
-  type TgInbound,
-  telegramInboundLoop,
-} from "../src/messenger/telegram-inbound.ts";
+import { pollTelegramInbound, type TgInbound, telegramInboundLoop } from "../src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../src/messenger/telegram-offset.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = 5250;

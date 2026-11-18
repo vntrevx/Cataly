@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { TgInbound } from "./telegram-inbound.ts";
@@ -28,8 +28,9 @@ export type InboundLagRecord = {
 };
 
 /**
- * Build the record for one message from Telegram's recorded message date, including an edit's
- * original date. Clamp a negative host/server clock difference to 0; a missing date stays absent.
+ * Build the record for one message from the date that message is measured against: its own, or for
+ * an edit the edit's date. Clamp a negative host/server clock difference to 0; a missing date stays
+ * absent, so an edit Telegram dated no way at all records no lag rather than the message's age.
  */
 export const inboundLagRecord = (i: TgInbound, nowMs: number): InboundLagRecord => {
   const tgDateMs = i.date === undefined ? undefined : i.date * 1000;
@@ -46,8 +47,13 @@ export const inboundLagRecord = (i: TgInbound, nowMs: number): InboundLagRecord 
   };
 };
 
+/** The size one lag file may reach before it is rotated to `<path>.1`, replacing the previous one. */
+export const LAG_ROTATE_BYTES = 4 * 1024 * 1024;
+
 /**
- * Append one record per line to `path`, creating the directory on first write.
+ * Append one record per line to `path`, creating the directory on first write, and rotate the file
+ * to `<path>.1` once it passes `rotateBytes` so the meter cannot grow without bound. One previous
+ * file is kept, which is what `readLagTail` needs to fill a window that straddles a rotation.
  *
  * stdout stays the INBOUND line alone: this file is the meter, and a write failure must never
  * cost a message, so an unreadable or unwritable file is reported once by the caller's warn and
@@ -56,12 +62,31 @@ export const inboundLagRecord = (i: TgInbound, nowMs: number): InboundLagRecord 
 export const inboundLagLog = (
   path: string,
   warn: (message: string) => void = () => {},
+  rotateBytes: number = LAG_ROTATE_BYTES,
 ): ((i: TgInbound, nowMs: number) => void) => {
   let failed = false;
+  let rotatedFailed = false;
+  // The file's size, read once and then tracked: a stat per message would cost more than the write.
+  let bytes: number | undefined;
   return (i, nowMs) => {
     try {
       mkdirSync(dirname(path), { recursive: true });
-      appendFileSync(path, `${JSON.stringify(inboundLagRecord(i, nowMs))}\n`, { encoding: "utf8", mode: 0o600 });
+      bytes ??= statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+      const line = `${JSON.stringify(inboundLagRecord(i, nowMs))}\n`;
+      if (bytes + Buffer.byteLength(line) > rotateBytes) {
+        try {
+          // Replace the previous file in one step: a reader sees either the old or the new one.
+          renameSync(path, `${path}.1`);
+          bytes = 0;
+        } catch (e) {
+          if (!rotatedFailed) {
+            rotatedFailed = true;
+            warn(`inbound lag log ${path} could not rotate (${e instanceof Error ? e.message : String(e)}); growing`);
+          }
+        }
+      }
+      appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
+      bytes += Buffer.byteLength(line);
     } catch (e) {
       // One warning, not one per message: a broken meter must not flood the receiver log.
       if (failed) return;

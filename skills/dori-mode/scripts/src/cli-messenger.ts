@@ -11,7 +11,8 @@ import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
-import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { envInt, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "./messenger/telegram-offset.ts";
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
@@ -107,6 +108,9 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
     }
   };
   const ownerId = num("DORI_TELEGRAM_OWNER_ID");
+  // A Telegram user id is positive. A negative or zero owner id matches nobody, so the receiver would
+  // start, print INBOUND_READY and then silently drop every message; refuse it instead.
+  if (ownerId <= 0) die("DORI_TELEGRAM_OWNER_ID must be a positive user id");
   // One warning per process: a token that cannot react must not flood the receiver log on every message.
   let reactWarned = false;
   const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
@@ -189,7 +193,11 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
     const lags: number[] = [];
     let skipped = 0;
     // Read enough blocks from the end for the requested nonblank records, including malformed ones.
-    for (const line of readLagTail(path, limit)) {
+    // A rotated meter keeps one previous file: when the current one does not fill the window, the
+    // older records come from `<path>.1`, so a rotation does not shrink the sample to a handful.
+    const lines = readLagTail(path, limit);
+    const older = lines.length < limit && existsSync(`${path}.1`) ? readLagTail(`${path}.1`, limit - lines.length) : [];
+    for (const line of [...older, ...lines]) {
       const lag = lagOfLine(line);
       if (lag === undefined) {
         skipped++; // a truncated last line from a kill mid-write is expected
