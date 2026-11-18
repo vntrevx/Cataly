@@ -1,0 +1,152 @@
+import { dirname, join } from "node:path";
+import { readMonitorManifests } from "./boot-monitors.ts";
+import { Checkpoints, type Checkpoint } from "./checkpoints.ts";
+import { Decisions } from "./decisions.ts";
+import { type Decision, settled } from "./decisions-record.ts";
+import type { FlowDeps } from "./done-flow.ts";
+import type { PaneState } from "./lane-state.ts";
+import { type Lane, LANE_KEY, type LaneStatus, sessionOf, statusOf } from "./registry.ts";
+import { type Progress, Reports } from "./reports.ts";
+import { runtimesOf } from "./run.ts";
+import { trustedPaneState } from "./session-id.ts";
+
+export class StatusError extends Error {}
+
+type RuntimeStatus = Pick<PaneState, "agentStatus" | "goal" | "approvalPending" | "updatedAt">;
+export type StatusLane = {
+  readonly key: string;
+  readonly title: string;
+  readonly thread: string;
+  readonly status: LaneStatus;
+  readonly openedAt: string;
+  readonly closedAt: string | null;
+  readonly runtime: RuntimeStatus | null;
+  readonly progress: Progress | null;
+  readonly checkpoint: Checkpoint | null;
+  readonly lastSweepNote: string | null;
+  readonly lastNudgeAt: number | null;
+  readonly lastPostedAt: number | null;
+  readonly decisions: number | null;
+  readonly errors: readonly string[];
+};
+export type StatusSnapshot = {
+  readonly observedAt: string;
+  readonly lanes: readonly StatusLane[];
+  readonly decisions: number | null;
+  readonly monitors: {
+    readonly recorded: number | null;
+    readonly suspended: number | null;
+    readonly expired: number | null;
+  };
+  readonly errors: readonly string[];
+};
+
+/** Only observations: never sweep, observe, run hooks, write a journal, or read a private session transcript. */
+export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSnapshot> => {
+  if (key !== undefined && !LANE_KEY.test(key)) throw new StatusError("invalid lane key");
+  const all =
+    key === undefined ? await deps.registry.open() : [await deps.registry.read(key)].filter((l) => l !== null);
+  if (key !== undefined && !all.length) throw new StatusError(`no registered lane ${key}`);
+  const now = deps.clock.now();
+  const errors: string[] = [];
+  let open: Decision[] = [];
+  let decisionsKnown = true;
+  try {
+    const decisions = new Decisions(deps.config.stateDir).read();
+    decisionsKnown = decisions.problems.length === 0;
+    errors.push(...decisions.problems.map(() => "decision journal damaged"));
+    open = decisions.items.filter((d) => settled(d) === undefined);
+  } catch {
+    decisionsKnown = false;
+    errors.push("decision journal unreadable");
+  }
+  const reports = new Reports(deps.config.stateDir);
+  const checkpoints = new Checkpoints(deps.config.stateDir);
+  const lanes: StatusLane[] = [];
+  for (const lane of all.sort((a, b) => a.thread.localeCompare(b.thread) || a.key.localeCompare(b.key))) {
+    const problems: string[] = [];
+    let progress: Progress | null = null;
+    let checkpoint: Checkpoint | null = null;
+    let runtime: RuntimeStatus | null = null;
+    try {
+      progress = reports.read(lane.key);
+    } catch {
+      problems.push("report journal unreadable");
+    }
+    try {
+      checkpoint = checkpoints.read(lane.key).at(-1) ?? null;
+    } catch {
+      problems.push("checkpoint journal unreadable");
+    }
+    const ref = sessionOf(lane);
+    if (ref && !lane.session && statusOf(lane) !== "closed") problems.push("runtime unbound; run dori sync --write");
+    if (ref && lane.session && statusOf(lane) !== "closed") {
+      try {
+        const state = await trustedPaneState(deps.run, deps.config.stateDir, ref, runtimesOf(deps));
+        if (state && lane.session === state.sessionId) {
+          const { agentStatus, goal, approvalPending, updatedAt } = state;
+          runtime = { ...(agentStatus ? { agentStatus } : {}), goal, approvalPending, updatedAt };
+        }
+      } catch {
+        problems.push("runtime observation unavailable");
+      }
+    }
+    lanes.push({
+      key: lane.key,
+      title: lane.title,
+      thread: lane.thread,
+      status: statusOf(lane),
+      openedAt: lane.openedAt,
+      closedAt: lane.closedAt ?? null,
+      runtime,
+      progress,
+      checkpoint,
+      lastSweepNote: lane.lastFreshnessNote ?? null,
+      lastNudgeAt: lane.lastNudgeAt ?? null,
+      lastPostedAt: lane.lastAutoReplyAt ?? null,
+      decisions: decisionsKnown ? open.filter((d) => d.lane === lane.key).length : null,
+      errors: problems,
+    });
+  }
+  const env = deps.env ?? process.env;
+  const sessionDirs = [env["PI_SESSION_DIR"], env["PI_SESSION_FILE"] && dirname(env["PI_SESSION_FILE"])];
+  const { manifests, errors: monitorErrors } = readMonitorManifests(
+    deps.config.sessionsDir,
+    sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
+    join(deps.config.stateDir, "monitors"),
+  );
+  errors.push(...monitorErrors.map(() => "monitor metadata unreadable"));
+  const monitors = manifests.flatMap((m) => m.data.monitors);
+  return {
+    observedAt: new Date(now).toISOString(),
+    lanes,
+    decisions: decisionsKnown ? (key === undefined ? open.length : open.filter((d) => d.lane === key).length) : null,
+    monitors: {
+      recorded: monitorErrors.length ? null : monitors.length,
+      suspended: monitorErrors.length ? null : monitors.filter((m) => m.suspended).length,
+      expired: monitorErrors.length
+        ? null
+        : monitors.filter((m) => m.expiresAt !== undefined && m.expiresAt <= now).length,
+    },
+    errors,
+  };
+};
+
+/** Historical elapsed time, not a completion promise. Groups use an explicit key prefix, not inferred dates. */
+export const laneEta = (lanes: readonly Lane[], prefix: string) => {
+  const minutes = lanes
+    .filter((l) => l.key.startsWith(prefix) && l.closedAt)
+    .flatMap((l) => {
+      const elapsed = (Date.parse(l.closedAt ?? "") - Date.parse(l.openedAt)) / 60_000;
+      return Number.isFinite(elapsed) && elapsed >= 0 ? [elapsed] : [];
+    })
+    .sort((a, b) => a - b);
+  const n = minutes.length;
+  return {
+    prefix,
+    samples: n,
+    medianMinutes: n < 3 ? null : ((minutes[Math.floor((n - 1) / 2)] ?? 0) + (minutes[Math.floor(n / 2)] ?? 0)) / 2,
+    minMinutes: n < 3 ? null : minutes[0],
+    maxMinutes: n < 3 ? null : minutes[n - 1],
+  };
+};
