@@ -180,7 +180,9 @@ test("a transition to another bot leaves a marker that fails closed under the ol
   } finally {
     console.log = orig2;
   }
-  expect(fresh.some((w) => w.includes("mid-transition"))).toBe(true);
+  // The sidecar is a directory here, so the sidecar check fails closed before the marker is reached;
+  // either way the pair is refused, which is what this test is about.
+  expect(fresh.some((w) => w.includes("restarting from 0"))).toBe(true);
 });
 
 test("a completed transition clears its marker so the next start resumes normally", () => {
@@ -190,4 +192,40 @@ test("a completed transition clears its marker so the next start resumes normall
   expect(existsSync(`${path}.pending`)).toBe(false);
   expect(readFileSync(`${path}.bot`, "utf8")).toBe("222");
   expect(fileTgInboundStore(path, "222").load()).toBe(600);
+});
+
+test("a cursor is not written when its bot could not be recorded", () => {
+  // A bare cursor with no sidecar is accepted under any token by the next start, so a failed tag must
+  // stop the cursor write rather than leaving the pair half-recorded.
+  const path = join(state.dir, "telegram-offset");
+  mkdirSync(`${path}.bot`, { recursive: true }); // the sidecar cannot be written
+  const store = fileTgInboundStore(path, "111");
+  const orig = console.log;
+  console.log = () => {};
+  try {
+    store.save(900);
+    expect(store.load()).toBe(900); // memory carries this run
+  } finally {
+    console.log = orig;
+  }
+  expect(existsSync(path)).toBe(false); // no untagged cursor on disk
+});
+
+test("a marker left by an interrupted transition is cleared by a later save", () => {
+  // Otherwise every start returns 0 before reading anything, forever, and a one-shot drain can never
+  // get past the first batch.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  writeFileSync(`${path}.pending`, "111");
+  const store = fileTgInboundStore(path, "111");
+  const orig = console.log;
+  console.log = () => {};
+  try {
+    expect(store.load()).toBe(0); // the pair is not trusted yet
+    store.save(600); // completes the transition
+  } finally {
+    console.log = orig;
+  }
+  expect(existsSync(`${path}.pending`)).toBe(false);
+  expect(fileTgInboundStore(path, "111").load()).toBe(600);
 });

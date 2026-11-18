@@ -104,9 +104,35 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
   return {
     load(): number {
       if (handled !== undefined) return handled;
+      // The bot is recorded beside the offset in its own file, so the offset keeps the bare format
+      // older releases parse. Only an absent record is a fresh or pre-upgrade install. Anything else
+      // that leaves the bot unknown — an unreadable file, or one holding no digits because a write was
+      // torn — is the case where the token may have changed, so it fails closed rather than accepting
+      // an offset that could confirm away this bot's pending updates.
+      let botText: string | undefined;
+      try {
+        botText = readFileSync(`${path}.bot`, "utf8").trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          warn(
+            "load",
+            `telegram-offset at ${path}.bot is unreadable (${String((error as Error).message)}); restarting from 0 rather than trusting an offset whose bot is unknown`,
+          );
+          return 0;
+        }
+      }
+      if (botText !== undefined && !BOT_ID.test(botText)) {
+        warn(
+          "load",
+          `telegram-offset at ${path}.bot is not a bot id (${JSON.stringify(botText.slice(0, 40))}); restarting from 0 rather than trusting an offset whose bot is unknown`,
+        );
+        return 0;
+      }
+      sidecarBot = botText;
       // A bot transition writes a marker before it touches either file and removes it after both have
-      // landed. While it exists the pair is not a settled snapshot, and the sidecar may name the bot a
-      // rollback would use, so nothing here can be trusted under any token.
+      // landed. While it exists the pair is not a settled snapshot, and the sidecar may still name the
+      // bot a rollback would use, so nothing here can be trusted under any token. `sidecarBot` is read
+      // first so a save can complete the transition and clear the marker rather than leaving it forever.
       if (existsSync(`${path}.pending`)) {
         warn(
           "load",
@@ -138,31 +164,6 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         return 0;
       }
       const [, inlineBot, storedOffset] = stored;
-      // The bot is recorded beside the offset in its own file, so the offset keeps the bare format
-      // older releases parse. Only an absent record is a fresh or pre-upgrade install. Anything else
-      // that leaves the bot unknown — an unreadable file, or one holding no digits because a write was
-      // torn — is the case where the token may have changed, so it fails closed rather than accepting
-      // an offset that could confirm away this bot's pending updates.
-      let botText: string | undefined;
-      try {
-        botText = readFileSync(`${path}.bot`, "utf8").trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          warn(
-            "load",
-            `telegram-offset at ${path}.bot is unreadable (${String((error as Error).message)}); restarting from 0 rather than trusting an offset whose bot is unknown`,
-          );
-          return 0;
-        }
-      }
-      if (botText !== undefined && !BOT_ID.test(botText)) {
-        warn(
-          "load",
-          `telegram-offset at ${path}.bot is not a bot id (${JSON.stringify(botText.slice(0, 40))}); restarting from 0 rather than trusting an offset whose bot is unknown`,
-        );
-        return 0;
-      }
-      sidecarBot = botText;
       const recordedBot = inlineBot ?? sidecarBot;
       const n = Number(storedOffset);
       if (!Number.isSafeInteger(n) || n < 0) {
@@ -203,15 +204,15 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         }
       };
       // With no sidecar yet (a fresh install, or an upgrade from a release that never wrote one) the bot
-      // goes first: a crash then leaves a sidecar with nothing to misattribute, and on an upgrade it
-      // asserts the bot that owned the legacy offset. Writing the offset first would leave an untagged
-      // cursor, which the next start accepts under any token.
+      // goes first, and the cursor is not written unless that lands: an untagged cursor is accepted under
+      // any token by the next start, which is the discard this sidecar exists to prevent.
       const changed = sidecarBot !== undefined && bot !== undefined && sidecarBot !== bot;
-      if (!changed) tag();
-      // The transition marker is written first and removed last. A crash anywhere between leaves it
-      // behind, and the next start refuses the pair: the sidecar may still name the old bot, which a
-      // rollback would then match and accept a cursor that is not its own.
-      if (changed) {
+      if (!changed && bot !== undefined && !tag()) return;
+      // The marker is written before either file and removed after both name this bot, so a crash
+      // anywhere between leaves it and every start refuses the pair. A marker left by an earlier process
+      // is completed here too, rather than pinning every future start at 0.
+      const marking = bot !== undefined && (changed || existsSync(`${path}.pending`));
+      if (marking) {
         try {
           writeWhole(`${path}.pending`, bot);
         } catch {
@@ -229,9 +230,9 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return;
       }
-      // Clear the marker only once the sidecar really names this bot. A failed replacement leaves it,
-      // which costs one restart from 0 — the safe direction, since the pair still disagrees.
-      if (changed && tag()) {
+      // The sidecar must name this bot before the marker goes: a failed replacement leaves it, which
+      // costs one restart from 0 — the safe direction, since the pair still disagrees.
+      if (marking && tag()) {
         try {
           rmSync(`${path}.pending`, { force: true });
         } catch {
