@@ -7,7 +7,11 @@ import { dirname } from "node:path";
  */
 export type TgInboundStore = { load(): number; save(offset: number): void };
 
-/** `<botId> <offset>`, or a legacy bare offset from before the bot id was recorded. */
+/**
+ * A bare offset, or the `<botId> <offset>` an earlier revision of this store wrote. The bare form is
+ * what older releases read with `Number(...)`, so it stays the on-disk format: a rollback to one of
+ * those releases must still find an offset it understands instead of replaying 24 hours of updates.
+ */
 const STORED = /^(?:(\d+) )?(\d+)$/;
 
 /**
@@ -28,10 +32,62 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
     // stdout like every other inbound WARN, so a monitor filtering stdout sees it.
     console.log(`WARN ${message} (warned once)`.slice(0, 300));
   };
+  // What the sidecar says, so a save knows whether the bot still needs recording. The inline form an
+  // earlier revision wrote is checked too, but it is not a record: the next save must add the sidecar.
+  let sidecarBot: string | undefined;
   // The offset this process has already handled. A write that fails must not make the next poll
   // replay what was just delivered, so memory wins until a write lands.
   let handled: number | undefined;
   let dirReady = false;
+
+  /** Replace `target` with `text` in one step: staged, flushed, renamed, and the rename flushed. */
+  const writeWhole = (target: string, text: string): void => {
+    const staged = `${target}.${process.pid}.staged`;
+    try {
+      if (!dirReady) {
+        // The state dir may not exist yet on a fresh install; without this the first save
+        // fails with ENOENT and the same update is re-printed every tick.
+        mkdirSync(dirname(target), { recursive: true });
+        dirReady = true;
+      }
+      // Write, flush, then rename: a kill or a full disk leaves the previous value intact, and a
+      // power loss cannot leave the rename durable over data still only in the page cache — which
+      // would read back as an empty file, i.e. offset 0 and a replay of everything retained.
+      const fd = openSync(staged, "w", 0o600);
+      try {
+        // A short write leaves a prefix of the number — `123` of `123456` — and every prefix is a
+        // valid offset, so the next start would resume from an older cursor and replay the updates
+        // in between. The previous value is still whole at this point, so failing is the safe answer.
+        const written = writeSync(fd, text);
+        if (written !== Buffer.byteLength(text))
+          throw new Error(`short write (${written} of ${Buffer.byteLength(text)} bytes)`);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(staged, target);
+      // Make the rename itself durable. Losing it costs a replay from the previous offset, which is
+      // at-least-once delivery, so a filesystem that refuses a directory fsync is not an error.
+      try {
+        const dfd = openSync(dirname(target), "r");
+        try {
+          fsyncSync(dfd);
+        } finally {
+          closeSync(dfd);
+        }
+      } catch {
+        // the file is already flushed; only the rename's durability is lost
+      }
+    } catch (error) {
+      try {
+        rmSync(staged, { force: true });
+      } catch {
+        // the staged copy is only ever a partial value; leaving it is harmless
+      }
+      throw error;
+    }
+  };
+
   return {
     load(): number {
       if (handled !== undefined) return handled;
@@ -58,15 +114,17 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return 0;
       }
-      const [, storedBot, storedOffset] = stored;
-      // A legacy bare offset carries no bot to check it against; the next save records one.
-      if (storedBot !== undefined && botId !== undefined && storedBot !== botId) {
-        warn(
-          "load",
-          `telegram-offset at ${path} belongs to bot ${storedBot}, not ${botId}; restarting from 0 rather than confirming away this bot's updates`,
-        );
-        return 0;
+      const [, inlineBot, storedOffset] = stored;
+      // The bot is recorded beside the offset in its own file, so the offset keeps the bare format
+      // older releases parse. A missing record is a fresh or pre-upgrade install: accept the offset.
+      let botText: string | undefined;
+      try {
+        botText = readFileSync(`${path}.bot`, "utf8").trim();
+      } catch {
+        // absent is normal; any other failure is caught by the same fallback, which is permissive
       }
+      sidecarBot = botText === "" ? undefined : botText;
+      const recordedBot = inlineBot ?? sidecarBot;
       const n = Number(storedOffset);
       if (!Number.isSafeInteger(n) || n < 0) {
         warn(
@@ -75,59 +133,40 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return 0;
       }
+      if (recordedBot !== undefined && botId !== undefined && recordedBot !== botId) {
+        warn(
+          "load",
+          `telegram-offset at ${path} belongs to bot ${recordedBot}, not ${botId}; restarting from 0 rather than confirming away this bot's updates`,
+        );
+        return 0;
+      }
       handled = n;
       return n;
     },
     save(offset: number): void {
       handled = offset;
-      const staged = `${path}.${process.pid}.staged`;
       try {
-        // The state dir may not exist yet on a fresh install; without this the first save
-        // fails with ENOENT and the same update is re-printed every tick.
-        if (!dirReady) {
-          mkdirSync(dirname(path), { recursive: true });
-          dirReady = true;
-        }
-        // Write, flush, then rename: a kill or a full disk leaves the previous offset intact, and a
-        // power loss cannot leave the rename durable over data still only in the page cache — which
-        // would read back as an empty file, i.e. offset 0 and a replay of everything retained.
-        const text = botId === undefined ? String(offset) : `${botId} ${offset}`;
-        const fd = openSync(staged, "w", 0o600);
-        try {
-          // A short write leaves a prefix of the number — `123` of `123456` — and every prefix is a
-          // valid offset, so the next start would resume from an older cursor and replay the updates
-          // in between. The previous offset is still whole at this point, so failing the save is the
-          // safe answer: memory carries this run and the warning names why.
-          const written = writeSync(fd, text);
-          if (written !== Buffer.byteLength(text))
-            throw new Error(`short write (${written} of ${Buffer.byteLength(text)} bytes)`);
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
-        }
-        renameSync(staged, path);
-        // Make the rename itself durable. Losing it costs a replay from the previous offset, which is
-        // at-least-once delivery, so a filesystem that refuses a directory fsync is not an error.
-        try {
-          const dfd = openSync(dirname(path), "r");
-          try {
-            fsyncSync(dfd);
-          } finally {
-            closeSync(dfd);
-          }
-        } catch {
-          // the file is already flushed; only the rename's durability is lost
-        }
+        writeWhole(path, String(offset));
       } catch (error) {
         // The update was delivered; failing to record it must not deliver it again this run.
-        try {
-          rmSync(staged, { force: true });
-        } catch {
-          // the staged copy is only ever a partial offset; leaving it is harmless
-        }
         warn(
           "save",
           `telegram-offset at ${path} not saved (${String((error as Error).message)}); continuing from memory for this run`,
+        );
+        return;
+      }
+      if (botId === undefined || botId === sidecarBot) return;
+      // Record the bot after the offset, never before: a crash between the two leaves the offset
+      // ahead of its bot record, which the next start reads as a mismatch and replays — the safe
+      // direction. Recording the bot first would let a stale offset pass as this bot's and confirm
+      // away updates that were never delivered.
+      try {
+        writeWhole(`${path}.bot`, botId);
+        sidecarBot = botId;
+      } catch (error) {
+        warn(
+          "save",
+          `telegram-offset bot id at ${path}.bot not saved (${String((error as Error).message)}); a token swap will not be detected`,
         );
       }
     },

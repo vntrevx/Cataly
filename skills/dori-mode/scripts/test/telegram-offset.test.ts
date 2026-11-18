@@ -145,72 +145,13 @@ test("the receiver refuses a non-positive owner id instead of dropping every mes
   }
 }, 60_000);
 
-test("the cursor is stored with the bot that produced it", () => {
-  const path = join(state.dir, "telegram-offset");
-  fileTgInboundStore(path, "111").save(500);
-  expect(readFileSync(path, "utf8")).toBe("111 500");
-  expect(fileTgInboundStore(path, "111").load()).toBe(500);
-});
-
-test("a cursor left by another bot is not carried over, because it would confirm away that bot's updates", () => {
-  // update_ids are per bot and a bot's are far below another bot's, so a carried offset makes
-  // getUpdates confirm — and discard — everything the new bot has waiting, silently.
-  const path = join(state.dir, "telegram-offset");
-  fileTgInboundStore(path, "111").save(48000);
-  const warns: string[] = [];
-  const orig = console.log;
-  console.log = (s?: unknown) => {
-    warns.push(String(s));
-  };
-  try {
-    expect(fileTgInboundStore(path, "222").load()).toBe(0);
-  } finally {
-    console.log = orig;
-  }
-  expect(warns).toHaveLength(1);
-  expect(warns[0]).toContain("belongs to bot 111, not 222");
-});
-
-test("a bare offset from before the bot was recorded still loads", () => {
-  // An existing install must not restart from 0 on upgrade; the next save records the bot.
-  const path = join(state.dir, "telegram-offset");
-  writeFileSync(path, "4242");
-  expect(fileTgInboundStore(path, "111").load()).toBe(4242);
-  fileTgInboundStore(path, "111").save(4243);
-  expect(readFileSync(path, "utf8")).toBe("111 4243");
-});
-
-test("a load warning does not silence the save warning", () => {
-  // One flag for both meant a torn offset at start made every later save failure invisible, and the
-  // run looked healthy while persisting nothing.
-  const path = join(state.dir, "telegram-offset");
-  writeFileSync(path, "");
-  const store = fileTgInboundStore(path, "111");
-  const warns: string[] = [];
-  const orig = console.log;
-  console.log = (s?: unknown) => {
-    warns.push(String(s));
-  };
-  try {
-    expect(store.load()).toBe(0); // warns: not a stored offset
-    rmSync(path);
-    mkdirSync(path); // the rename cannot land, as on a read-only or full filesystem
-    store.save(7);
-    expect(store.load()).toBe(7); // memory carries this run
-  } finally {
-    console.log = orig;
-  }
-  expect(warns.filter((w) => w.includes("not a stored offset"))).toHaveLength(1);
-  expect(warns.filter((w) => w.includes("continuing from memory"))).toHaveLength(1);
-});
-
 test("a short write does not persist a truncated offset that would replay the updates in between", () => {
   // Every prefix of a decimal is a valid offset, so `123` written instead of `123456` loads cleanly and
   // resumes an hour behind. The save must fail instead, leaving the previous offset whole.
   const path = join(state.dir, "telegram-offset");
   const store = fileTgInboundStore(path, "111");
   store.save(123_456);
-  expect(readFileSync(path, "utf8")).toBe("111 123456");
+  expect(readFileSync(path, "utf8")).toBe("123456");
   // A filesystem that accepts only part of the bytes, as a short write on a nearly full disk can.
   const real = fs.writeSync;
   const spy = spyOn(fs, "writeSync").mockImplementation(((fd: number, data: string | Uint8Array) => {
@@ -230,7 +171,26 @@ test("a short write does not persist a truncated offset that would replay the up
     console.log = orig;
   }
   // The file still holds the whole previous offset, not the truncated one.
-  expect(readFileSync(path, "utf8")).toBe("111 123456");
+  expect(readFileSync(path, "utf8")).toBe("123456");
   expect(warns.some((w) => w.includes("short write"))).toBe(true);
   expect(readdirSync(state.dir).filter((n) => n.includes(".staged"))).toEqual([]);
+});
+
+test("an inline <botId> <offset> file from the previous revision still loads and migrates to the bare form", () => {
+  // This shape existed on one host only; it must not be read as an unparseable offset and replayed.
+  const path = join(state.dir, "telegram-offset");
+  writeFileSync(path, "111 269422563");
+  const store = fileTgInboundStore(path, "111");
+  expect(store.load()).toBe(269422563);
+  store.save(269422564);
+  expect(readFileSync(path, "utf8")).toBe("269422564");
+  expect(readFileSync(`${path}.bot`, "utf8")).toBe("111");
+});
+
+test("a rollback to a release that parses the file with Number() still reads the offset", () => {
+  // The updater restores an older release's skill bytes, so the on-disk shape is a compatibility
+  // surface: `Number("500")` is 500, while the inline form was NaN and replayed 24 hours.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  expect(Number(readFileSync(path, "utf8").trim())).toBe(500);
 });

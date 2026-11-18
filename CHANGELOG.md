@@ -12,7 +12,7 @@
 
 - `dori inbound telegram` keeps its offset durable across a power loss, not only a process kill: the staged file is `fsync`ed before the rename and the directory after it, so the rename can no longer commit over data still in the page cache and leave an empty file that reads back as offset 0 — the 24-hour replay the previous entry closed for a kill.
 
-- `dori inbound telegram` stores the offset as `<botId> <offset>`. Update ids are per bot, so a cursor left by a different `DORI_TELEGRAM_TOKEN` made `getUpdates` confirm — and discard — every update the new bot had waiting, silently and permanently. A mismatch is now reported and restarted from 0; a bare offset from an older install still loads.
+- `dori inbound telegram` records the bot that produced its offset in `<stateDir>/telegram-offset.bot`. Update ids are per bot, so a cursor left by a different `DORI_TELEGRAM_TOKEN` made `getUpdates` confirm — and discard — every update the new bot had waiting, silently and permanently. A mismatch is now reported and restarted from 0. The offset itself keeps its bare decimal form, so a rollback to a release that parses it with `Number(...)` still reads it instead of replaying 24 hours.
 
 - `dori inbound telegram` reports a failed save even after a load warning: the two shared one `warned` flag, so a torn offset at start made every later persistence failure invisible for the life of the run.
 
