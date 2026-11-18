@@ -27,8 +27,9 @@ const send: Command = async (cli) => {
   const { key, need, opt, values, config } = cli;
   const platform = key ?? die("send needs slack, telegram or discord");
   if (platform === "discord") return await sendDiscord(cli);
-  // A reply that silently became a plain post would land out of context.
-  if (values["reply"] !== undefined) die("--reply is supported for discord only");
+  // A reply that silently became a plain post would land out of context: Slack has threads, not replies.
+  if (values["reply"] !== undefined && platform !== "telegram")
+    die("--reply is supported for discord and telegram only");
   const to = need("to");
   const text = await messageText(cli);
   const thread = opt("thread");
@@ -59,8 +60,15 @@ const send: Command = async (cli) => {
         : die(`--${flag} must be a Telegram ${what} id, a whole number above 0`);
     };
     const threadId = id("thread", "topic");
-    const target = { chatId: to, ...(threadId !== undefined ? { threadId } : {}) };
     const messageId = id("edit", "message");
+    const replyTo = id("reply", "message");
+    // One message is either edited or answered; doing both would leave the reply pointing at nothing new.
+    if (messageId !== undefined && replyTo !== undefined) die("choose --edit or --reply, not both");
+    const target = {
+      chatId: to,
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(replyTo !== undefined ? { replyTo } : {}),
+    };
     const tg = new Telegram(fetchHttp, realClock, token("DORI_TELEGRAM_TOKEN"));
     if (messageId !== undefined) await tg.edit(target, messageId, text);
     else console.log(`SENT ${await tg.send(target, text)}`);

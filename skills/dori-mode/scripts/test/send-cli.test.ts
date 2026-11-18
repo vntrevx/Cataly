@@ -58,6 +58,10 @@ test("send telegram refuses a --thread or --edit that is not a message id before
       ["--edit", "last"],
       ["--edit", ""],
       ["--edit"],
+      ["--reply", "last"],
+      ["--reply", ""],
+      ["--reply"],
+      ["--reply", "0"],
     ];
     for (const flags of refused) {
       const flag = flags[0]!;
@@ -75,6 +79,16 @@ test("send telegram refuses a --thread or --edit that is not a message id before
     expect(posted.requests.map((q) => [q.url.split("/").at(-1), q.body["message_thread_id"]])).toEqual([
       ["sendMessage", 42],
     ]);
+    const replied = await send("--reply", "7");
+    expect(replied.code).toBe(0);
+    expect(
+      replied.requests.map((q) => [
+        q.url.split("/").at(-1),
+        (q.body["reply_parameters"] as { message_id?: number })?.message_id,
+      ]),
+    ).toEqual([["sendMessage", 7]]);
+    const both = await send("--edit", "7", "--reply", "8");
+    expect([both.code, both.err, both.requests]).toEqual([1, "choose --edit or --reply, not both", []]);
     const edited = await send("--edit", "7");
     expect(edited.code).toBe(0);
     expect(edited.requests.map((q) => [q.url.split("/").at(-1), q.body["message_id"]])).toEqual([

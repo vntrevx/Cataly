@@ -103,7 +103,10 @@ test("bad reply, text-file and edit input is refused before any request", async 
         ["send", "discord", "--to", ids.text, "--edit", ids.message, "--text", "e".repeat(2001)],
         "--edit text exceeds 2000 UTF-16 code units; shorten the text or send without --edit",
       ],
-      [["send", "telegram", "--to", "-1001", "--text", "x", "--reply", "7"], "--reply is supported for discord only"],
+      [
+        ["send", "slack", "--to", "C1", "--text", "x", "--reply", "7"],
+        "--reply is supported for discord and telegram only",
+      ],
     ];
     for (const [args, err] of cases) {
       const r = await f.invoke(args);

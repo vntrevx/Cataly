@@ -1,11 +1,15 @@
 import type { Clock } from "../run.ts";
 import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
-import { cutAt } from "./split.ts";
+import { cutAt, splitForTelegramHtml, TELEGRAM_LIMIT, visibleLength } from "./split.ts";
 
-export type TgTarget = { readonly chatId: number | string; readonly threadId?: number };
+export type TgTarget = {
+  readonly chatId: number | string;
+  readonly threadId?: number;
+  /** A message to reply to; only the first body of a split send carries it. */
+  readonly replyTo?: number;
+};
 
-/** Conservative body bound in UTF-16 code units; rich sends stay one unsplit HTML request. */
-export const TELEGRAM_LIMIT = 4096;
+export { TELEGRAM_LIMIT };
 
 /**
  * Break text into sendable bodies, each at most `limit` characters, without losing a character.
@@ -76,14 +80,20 @@ export class Telegram {
   }
 
   async send(t: TgTarget, text: string, rich = false): Promise<number> {
-    // Plain text can span messages. HTML remains one request so tags and entities stay intact.
+    // Telegram bounds a message by the characters left after entities parsing, so HTML is split on that count with
+    // its open tags closed and reopened; plain text is split on its own characters.
     const guarded = guardText(text);
+    const bodies = rich ? splitForTelegramHtml(guarded) : splitForTelegram(guarded);
     let last = 0;
-    for (const part of rich ? [guarded] : splitForTelegram(guarded)) {
+    for (const [at, part] of bodies.entries()) {
       const r = await this.call<{ message_id?: unknown } | null>("sendMessage", {
         ...this.where(t),
         text: part,
         ...(rich ? { parse_mode: "HTML" } : {}),
+        // A reply on every body would answer the same message once per part; only the first carries it.
+        ...(at === 0 && t.replyTo !== undefined
+          ? { reply_parameters: { message_id: t.replyTo, allow_sending_without_reply: true } }
+          : {}),
       });
       const id = r?.message_id;
       if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
@@ -95,7 +105,9 @@ export class Telegram {
 
   async edit(t: TgTarget, messageId: number, text: string, rich = false): Promise<void> {
     const guarded = guardText(text);
-    if (guarded.length > TELEGRAM_LIMIT)
+    // An edit replaces one existing message, so it cannot be split; the bound is what Telegram counts for it.
+    const size = rich ? visibleLength(guarded) : guarded.length;
+    if (size > TELEGRAM_LIMIT)
       throw new MessengerError(
         `telegram edit: text exceeds ${TELEGRAM_LIMIT} UTF-16 code units; shorten --text or send without --edit`,
         400,
