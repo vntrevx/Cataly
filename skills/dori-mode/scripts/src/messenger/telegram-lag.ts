@@ -86,21 +86,32 @@ export const inboundLagLog = (
         mkdirSync(dirname(path), { recursive: true });
         dirReady = true;
       }
-      bytes ??= statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+      const size = (): number => statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+      bytes ??= size();
       const line = `${JSON.stringify(inboundLagRecord(i, nowMs, bot))}\n`;
-      if (!rotationOff && bytes + Buffer.byteLength(line) > rotateBytes) {
-        try {
-          // Replace the previous file in one step: a reader sees either the old or the new one.
-          renameSync(path, `${path}.1`);
-          bytes = 0;
-        } catch (e) {
-          // Once only: `rotationOff` makes this the single attempt for the rest of the process.
-          rotationOff = true;
-          warn(`inbound lag log ${path} could not rotate (${e instanceof Error ? e.message : String(e)}); growing`);
+      const length = Buffer.byteLength(line);
+      if (!rotationOff && bytes + length > rotateBytes) {
+        // The counter is this process's own appends, but another receiver may share the file: it can
+        // have rotated the whole log away, leaving a tiny live file, or have grown it past the bound.
+        // Rotating on a stale count would replace that fresh file with `.1` and throw the window away,
+        // so the real size decides. A stat here is paid only when rotation is already being considered.
+        const real = size();
+        if (real + length > rotateBytes) {
+          try {
+            // Replace the previous file in one step: a reader sees either the old or the new one.
+            renameSync(path, `${path}.1`);
+            bytes = 0;
+          } catch (e) {
+            // Once only: `rotationOff` makes this the single attempt for the rest of the process.
+            rotationOff = true;
+            warn(`inbound lag log ${path} could not rotate (${e instanceof Error ? e.message : String(e)}); growing`);
+          }
+        } else {
+          bytes = real; // another process already rotated: follow its file
         }
       }
       appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
-      bytes += Buffer.byteLength(line);
+      bytes += length;
     } catch (e) {
       // One warning, not one per message: a broken meter must not flood the receiver log.
       if (failed) return;
