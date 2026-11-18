@@ -3,12 +3,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
-import {
-  fileTgInboundStore,
-  pollTelegramInbound,
-  type TgInbound,
-  telegramInboundLoop,
-} from "../src/messenger/telegram-inbound.ts";
+import { pollTelegramInbound, type TgInbound, telegramInboundLoop } from "../src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../src/messenger/telegram-offset.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = 5250;
@@ -90,10 +86,49 @@ test("--loop re-polls after a poll whose updates were all gate-dropped", async (
       sleeps.push(ms);
       throw stop;
     },
+    // A frozen clock: this test is about which poll sleeps, not how much of the interval it used.
+    () => 0,
   ).catch((e: unknown) => {
     if (e !== stop) throw e;
   });
   expect(emitted).toHaveLength(0); // nothing passed the gate
   expect(bodies.length).toBe(2); // dropped poll -> immediate re-poll -> empty poll -> only then sleep
   expect(sleeps).toEqual([60_000]);
+});
+
+test("--loop subtracts the poll's own long-poll time from the interval", async () => {
+  // The 25s long-poll runs inside the interval. Sleeping the full interval on top of it makes the
+  // documented `--loop 1` an 85s cycle, and a message arriving just after a timeout waits all of it.
+  const { http } = telegramFake([[]]);
+  const store = fileTgInboundStore(join(state.dir, "tg-off-interval"));
+  const sleeps: number[] = [];
+  const stop = new Error("STOP");
+  // 1s at the start of the poll, 26s when it returns empty: 25s of the 60s interval already spent.
+  const clock = [1_000, 26_000];
+  await telegramInboundLoop(
+    mk(http),
+    store,
+    { ownerId: OWNER },
+    1,
+    () => {},
+    () => {},
+    async (ms) => {
+      sleeps.push(ms);
+      throw stop;
+    },
+    () => clock.shift() ?? 26_000,
+  ).catch((e: unknown) => {
+    if (e !== stop) throw e;
+  });
+  expect(sleeps).toEqual([35_000]);
+});
+
+test("a one-shot drain that cannot poll fails instead of reporting no messages", async () => {
+  // Without --loop the process exits after one drain. Swallowing a rejected token as a WARN exits 0,
+  // which a script cannot tell from "the owner sent nothing".
+  const http: Http = async () => {
+    throw new Error("Unauthorized");
+  };
+  const store = fileTgInboundStore(join(state.dir, "tg-off-oneshot-fail"));
+  await expect(telegramInboundLoop(mk(http), store, { ownerId: OWNER }, 0)).rejects.toThrow("Unauthorized");
 });

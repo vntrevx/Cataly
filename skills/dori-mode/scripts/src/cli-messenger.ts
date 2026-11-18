@@ -1,5 +1,5 @@
 /** dori send, presence, inbound, thread, react and transcribe: the messengers. */
-import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
 import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
@@ -11,9 +11,10 @@ import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
-import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { envInt, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "./messenger/telegram-offset.ts";
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
-import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
+import { inboundLagLog, lagOfLine, readLagWindow, summarizeLag } from "./messenger/telegram-lag.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 import { realClock, run } from "./run.ts";
@@ -93,12 +94,20 @@ const presence: Command = async ({ key }) => {
 };
 
 const telegramInbound = async (stateDir: string, minutes: number): Promise<void> => {
-  const tg = new Telegram(
-    fetchHttp,
-    realClock,
-    process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"),
-  );
-  const store = fileTgInboundStore(`${stateDir}/telegram-offset`);
+  const token = process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set");
+  const tg = new Telegram(fetchHttp, realClock, token);
+  // The cursor belongs to the bot that produced it: a token swapped for a different bot must not
+  // carry an offset that would confirm away every update the new bot has waiting. The pre-split shared
+  // cursor is only adopted when the previous revision's `<path>.bot` names this same bot.
+  const botId = token.split(":")[0];
+  const legacyBot = ((): string | undefined => {
+    try {
+      return readFileSync(`${stateDir}/telegram-offset.bot`, "utf8").trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const store = fileTgInboundStore(`${stateDir}/telegram-offset`, botId, legacyBot);
   const num = (name: string): number => {
     try {
       return envInt(name, process.env[name]);
@@ -107,13 +116,21 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
     }
   };
   const ownerId = num("DORI_TELEGRAM_OWNER_ID");
+  // A Telegram user id is positive. A negative or zero owner id matches nobody, so the receiver would
+  // start, print INBOUND_READY and then silently drop every message; refuse it instead.
+  if (ownerId <= 0) die("DORI_TELEGRAM_OWNER_ID must be a positive user id");
   // One warning per process: a token that cannot react must not flood the receiver log on every message.
   let reactWarned = false;
   const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
   const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
   console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
   // The INBOUND line stays exactly as monitors parse it; receive lag goes to its own jsonl.
-  const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
+  const recordLag = inboundLagLog(
+    `${stateDir}/telegram-lag.jsonl`,
+    (m) => console.log(`WARN ${m}`.slice(0, 300)),
+    undefined,
+    botId,
+  );
   await telegramInboundLoop(
     tg,
     store,
@@ -185,11 +202,11 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
     const limit = limitText === undefined ? 1000 : Number(limitText);
     if (!Number.isSafeInteger(limit) || limit <= 0) die("--limit must be a positive whole number of messages");
     const path = `${config.stateDir}/telegram-lag.jsonl`;
-    if (!existsSync(path)) die(`no lag records yet at ${path}; messages record themselves as the receiver polls`);
     const lags: number[] = [];
     let skipped = 0;
-    // Read enough blocks from the end for the requested nonblank records, including malformed ones.
-    for (const line of readLagTail(path, limit)) {
+    const window = readLagWindow(path, limit);
+    if (window.length === 0) die(`no lag records yet at ${path}; messages record themselves as the receiver polls`);
+    for (const line of window) {
       const lag = lagOfLine(line);
       if (lag === undefined) {
         skipped++; // a truncated last line from a kill mid-write is expected
