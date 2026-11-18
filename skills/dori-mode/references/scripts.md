@@ -2,6 +2,8 @@
 
 `scripts/` is a bun + TypeScript package with one CLI, `dori`. Every external command runs as an argv array; nothing builds a shell string.
 
+The CLI loads only the selected command graph, including its existing dependencies. `--version` needs no command/configuration graph; `harness`, `update` and `upstream` retain their separate entry paths. Ordinary commands, including journals and usage, still load and validate configuration and consumer-native dependencies before command execution. Lazy loading does not skip native integrity checks. Errors retain their original classes, messages and exit codes.
+
 ## Install and test
 
 ```sh
@@ -12,7 +14,7 @@ bun test             # behavior tests with fake herdr/hc/git/gh; nothing real is
 bunx tsc --noEmit    # typecheck
 ```
 
-Needs: Bun 1.4.4+, the installed default OMP source bundle (18.20.0), herdr or hc, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). An explicit external OMP is an advanced override, not bundle proof; historical published `v0.1.2` keeps its 18.18.8 contract. The `command`, `file` and `url` signals need nothing extra. The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads `/proc/loadavg`, `/proc/meminfo` (`MemAvailable` over `MemTotal`) and `df`. Host memory counts as 100% free when neither source works, and swap reads as unknown on Linux.
+Needs: Bun 1.4.4+, the installed default OMP source bundle (18.20.0), herdr or hc, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). An explicit external OMP is an advanced override, not bundle proof; historical published `v0.1.2` keeps its 18.18.8 contract. The `command`, `file` and `url` signals need nothing extra. The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads `/proc/loadavg` and `/proc/meminfo` (`MemAvailable` over `MemTotal`) directly in-process, then runs `df` and the selected runtime's session list. Linux no longer spawns `cat` or attempts the macOS-only probes; non-Linux command probes and their fallback behavior are retained. Host memory counts as 100% free when neither source works, and swap reads as unknown on Linux.
 
 On Linux, `sampleHost` also exposes `cgroup`: the tightest visible ancestor hard-limit headroom and, for v2, a separate `memory.high` headroom. `guard` and `can-launch` apply `memFreeMinPct` independently to host memory and both budgets; a roomy host never overrides a constrained account. The sampler resolves `/proc/self/cgroup` through `/proc/self/mountinfo`, reads each ancestor's own current usage, and stops at the mount root. It supports v2 `memory.max`/`memory.high` and hierarchical v1 `memory.limit_in_bytes`; v1 soft limits are not v2 throttling limits and are not used. Unlimited limits are ignored. Zero limits have zero headroom, and admission uses the unrounded percentage.
 

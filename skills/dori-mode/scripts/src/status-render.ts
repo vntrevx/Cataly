@@ -48,7 +48,7 @@ export const renderBoard = (snapshot: StatusSnapshot, home: string, limit: numbe
   const clean = (text: string) =>
     scrubForThread(
       line(text).replace(
-        /https?:\/\/[^\s<>"']+|(?<![\p{L}\p{N}_.\/\\])(?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/(?!\/))[^\s<>"'\x60()[\]{}]+/giu,
+        /https?:\/\/[^\s<>"']+|(?<![\p{L}\p{N}_./\\])(?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/(?!\/))[^\s<>"'\x60()[\]{}]+/giu,
         (match) => (/^https?:/i.test(match) ? match : "(local path)"),
       ),
       home,
