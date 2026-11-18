@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileTgInboundStore } from "../src/messenger/telegram-offset.ts";
 import { withState } from "./fakes.ts";
@@ -92,4 +92,35 @@ test("a sidecar that exists but cannot be read fails closed instead of trusting 
   }
   expect(warns).toHaveLength(1);
   expect(warns[0]).toContain("is unreadable");
+});
+
+test("a sidecar left empty by a torn write fails closed instead of reading as absent", () => {
+  // Absent is the pre-upgrade fallback; empty is a write that did not finish, and it is the same
+  // situation as an unreadable sidecar — the bot is unknown, so the offset must not be trusted.
+  const path = join(state.dir, "telegram-offset");
+  fileTgInboundStore(path, "111").save(500);
+  writeFileSync(`${path}.bot`, "");
+  const warns: string[] = [];
+  const orig = console.log;
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    expect(fileTgInboundStore(path, "222").load()).toBe(0);
+  } finally {
+    console.log = orig;
+  }
+  expect(warns).toHaveLength(1);
+  expect(warns[0]).toContain("is not a bot id");
+});
+
+test("a malformed token prefix is not recorded as a bot id that could never match again", () => {
+  // `token.split(":")[0]` is the bot id only for a well-formed token. Recording "abc" would make every
+  // later start fail closed on a sidecar that can never match, replaying 24 hours each time.
+  const path = join(state.dir, "telegram-offset");
+  const store = fileTgInboundStore(path, "abc");
+  store.save(700);
+  expect(readFileSync(path, "utf8")).toBe("700");
+  expect(existsSync(`${path}.bot`)).toBe(false);
+  expect(fileTgInboundStore(path, "abc").load()).toBe(700);
 });

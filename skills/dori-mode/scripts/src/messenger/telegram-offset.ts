@@ -14,6 +14,9 @@ export type TgInboundStore = { load(): number; save(offset: number): void };
  */
 const STORED = /^(?:(\d+) )?(\d+)$/;
 
+/** A Telegram bot id: the digits before the colon in its token. */
+const BOT_ID = /^\d+$/;
+
 /**
  * The cursor for one bot's `getUpdates`. `botId` is the token's numeric prefix: an offset belongs to the
  * bot that produced it, and a cursor carried over to a different bot confirms — and so discards — every
@@ -116,9 +119,10 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
       }
       const [, inlineBot, storedOffset] = stored;
       // The bot is recorded beside the offset in its own file, so the offset keeps the bare format
-      // older releases parse. Only a missing record is a fresh or pre-upgrade install; a record that
-      // exists but cannot be read is the case where the token may have changed, so it fails closed
-      // rather than accepting an offset that could confirm away this bot's pending updates.
+      // older releases parse. Only an absent record is a fresh or pre-upgrade install. Anything else
+      // that leaves the bot unknown — an unreadable file, or one holding no digits because a write was
+      // torn — is the case where the token may have changed, so it fails closed rather than accepting
+      // an offset that could confirm away this bot's pending updates.
       let botText: string | undefined;
       try {
         botText = readFileSync(`${path}.bot`, "utf8").trim();
@@ -131,7 +135,14 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
           return 0;
         }
       }
-      sidecarBot = botText === undefined || botText === "" ? undefined : botText;
+      if (botText !== undefined && !BOT_ID.test(botText)) {
+        warn(
+          "load",
+          `telegram-offset at ${path}.bot is not a bot id (${JSON.stringify(botText.slice(0, 40))}); restarting from 0 rather than trusting an offset whose bot is unknown`,
+        );
+        return 0;
+      }
+      sidecarBot = botText;
       const recordedBot = inlineBot ?? sidecarBot;
       const n = Number(storedOffset);
       if (!Number.isSafeInteger(n) || n < 0) {
@@ -163,7 +174,9 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return;
       }
-      if (botId === undefined || botId === sidecarBot) return;
+      // A token whose prefix is not digits is a malformed token, not a bot id: recording it would make
+      // every later start fail closed on a sidecar that can never match. Leave it absent instead.
+      if (botId === undefined || !BOT_ID.test(botId) || botId === sidecarBot) return;
       // Record the bot after the offset, never before: a crash between the two leaves the offset
       // ahead of its bot record, which the next start reads as a mismatch and replays — the safe
       // direction. Recording the bot first would let a stale offset pass as this bot's and confirm
