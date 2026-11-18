@@ -3,6 +3,7 @@ import { BoardError, type BoardTarget, updateBoard } from "./board.ts";
 import { type Command, die } from "./cli-context.ts";
 import { laneEta, laneStatus, StatusError } from "./status.ts";
 import { renderBoard, renderStatus } from "./status-render.ts";
+import { readStatusRegistry } from "./status-registry.ts";
 
 const status: Command = async ({ key, values, deps }) => {
   const snapshot = await laneStatus(deps, key);
@@ -15,7 +16,23 @@ const status: Command = async ({ key, values, deps }) => {
 
 const eta: Command = async ({ key, values, deps }) => {
   const prefix = key?.trim() || die("eta needs a nonempty lane-key prefix");
-  const estimate = laneEta(await deps.registry.list(), prefix);
+  const registry = await readStatusRegistry(deps.registry);
+  const estimate = laneEta(registry.lanes, prefix);
+  if (registry.errors.length) {
+    console.log(
+      values["json"]
+        ? JSON.stringify({
+            ...estimate,
+            medianMinutes: null,
+            minMinutes: null,
+            maxMinutes: null,
+            registryIncomplete: true,
+            errors: registry.errors,
+          })
+        : `ETA ${prefix}: incomplete registry (readable n=${estimate.samples}); estimate unknown`,
+    );
+    return;
+  }
   console.log(
     values["json"]
       ? JSON.stringify(estimate)

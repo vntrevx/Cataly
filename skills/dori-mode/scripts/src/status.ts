@@ -9,6 +9,7 @@ import { type Lane, LANE_KEY, type LaneStatus, sessionOf, statusOf } from "./reg
 import { type Progress, Reports } from "./reports.ts";
 import { runtimesOf } from "./run.ts";
 import { trustedPaneState } from "./session-id.ts";
+import { readStatusRegistry } from "./status-registry.ts";
 
 export class StatusError extends Error {}
 
@@ -31,6 +32,7 @@ export type StatusLane = {
 };
 export type StatusSnapshot = {
   readonly observedAt: string;
+  readonly registryIncomplete: boolean;
   readonly lanes: readonly StatusLane[];
   readonly decisions: number | null;
   readonly monitors: {
@@ -44,11 +46,11 @@ export type StatusSnapshot = {
 /** Only observations: never sweep, observe, run hooks, write a journal, or read a private session transcript. */
 export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSnapshot> => {
   if (key !== undefined && !LANE_KEY.test(key)) throw new StatusError("invalid lane key");
-  const all =
-    key === undefined ? await deps.registry.open() : [await deps.registry.read(key)].filter((l) => l !== null);
-  if (key !== undefined && !all.length) throw new StatusError(`no registered lane ${key}`);
+  const registry = await readStatusRegistry(deps.registry, key);
+  const all = registry.lanes.filter((lane) => key !== undefined || statusOf(lane) !== "closed");
+  if (key !== undefined && !all.length && !registry.errors.length) throw new StatusError(`no registered lane ${key}`);
   const now = deps.clock.now();
-  const errors: string[] = [];
+  const errors = [...registry.errors];
   let open: Decision[] = [];
   let decisionsKnown = true;
   try {
@@ -117,16 +119,21 @@ export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSn
   );
   errors.push(...monitorErrors.map(() => "monitor metadata unreadable"));
   const monitors = manifests.flatMap((m) => m.data.monitors);
+  // Legacy boot may use command when argv is unusable; status does not certify that metadata as complete.
+  const fieldsKnown = monitors.every(
+    (m) => m.argv === undefined || (Array.isArray(m.argv) && m.argv.every((arg: unknown) => typeof arg === "string")),
+  );
+  if (!fieldsKnown) errors.push("monitor argv metadata invalid");
+  const monitorsKnown = monitorErrors.length === 0 && fieldsKnown;
   return {
     observedAt: new Date(now).toISOString(),
+    registryIncomplete: registry.errors.length > 0,
     lanes,
     decisions: decisionsKnown ? (key === undefined ? open.length : open.filter((d) => d.lane === key).length) : null,
     monitors: {
-      recorded: monitorErrors.length ? null : monitors.length,
-      suspended: monitorErrors.length ? null : monitors.filter((m) => m.suspended).length,
-      expired: monitorErrors.length
-        ? null
-        : monitors.filter((m) => m.expiresAt !== undefined && m.expiresAt <= now).length,
+      recorded: monitorsKnown ? monitors.length : null,
+      suspended: monitorsKnown ? monitors.filter((m) => m.suspended === true).length : null,
+      expired: monitorsKnown ? monitors.filter((m) => m.expiresAt !== undefined && m.expiresAt <= now).length : null,
     },
     errors,
   };

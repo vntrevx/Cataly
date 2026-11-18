@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Registry } from "../src/registry.ts";
 import { Reports } from "../src/reports.ts";
@@ -47,6 +48,43 @@ test("actual CLI shows JSON and text, then posts/edits the same board across sub
     expect(JSON.parse(eta.out)).toMatchObject({ samples: 0, medianMinutes: null });
   });
 });
+
+test.each(["status", "board", "eta"])(
+  "actual %s CLI exposes incomplete registry without losing healthy data",
+  async (command) => {
+    await withDiscordCli(async (f) => {
+      const registry = new Registry(dirname(f.tmp));
+      const lane = {
+        key: "healthy",
+        title: "Healthy",
+        thread: "discord:40",
+        openedAt: "2026-01-01T00:00:00Z",
+        brief: "brief",
+        done: "file proof",
+      };
+      await registry.write(lane);
+      for (let i = 0; i < 3; i++)
+        await registry.write({ ...lane, key: `healthy-${i}`, closedAt: "2026-01-01T01:00:00Z" });
+      writeFileSync(registry.path("damaged"), "{broken");
+      const args =
+        command === "board"
+          ? [command, "discord", "--thread", ids.thread]
+          : command === "eta"
+            ? [command, "healthy", "--json"]
+            : [command, "--json"];
+      const result = await f.invoke(args);
+      expect(result.code).toBe(0);
+      if (command === "board") expect(result.requests[0]?.body?.["content"]).toContain("incomplete");
+      else {
+        const json = JSON.parse(result.out);
+        expect(json.registryIncomplete).toBe(true);
+        if (command === "eta") expect(json).toMatchObject({ samples: 3, medianMinutes: null });
+        else expect(json.lanes.map((item: { key: string }) => item.key)).toEqual([lane.key]);
+        expect(result.keys).toEqual([]);
+      }
+    });
+  },
+);
 
 test("board CLI refuses malformed targets, recovery IDs and loops before any request", async () => {
   await withDiscordCli(async (f) => {

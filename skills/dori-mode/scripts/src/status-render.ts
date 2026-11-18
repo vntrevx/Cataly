@@ -33,7 +33,8 @@ export const renderStatus = (snapshot: StatusSnapshot): string => {
     );
     for (const error of lane.errors) lines.push(`    WARN ${error}`);
   }
-  if (!snapshot.lanes.length) lines.push("LANES none open");
+  if (!snapshot.lanes.length)
+    lines.push(snapshot.registryIncomplete ? "LANES unknown (registry incomplete)" : "LANES none open");
   lines.push(`DECISIONS ${snapshot.decisions ?? "unknown"} open`);
   const m = snapshot.monitors;
   lines.push(
@@ -45,17 +46,30 @@ export const renderStatus = (snapshot: StatusSnapshot): string => {
 
 /** Bounded plain text: one message, no paths/pane IDs from reports and no mention notifications. */
 export const renderBoard = (snapshot: StatusSnapshot, home: string, limit: number): string => {
+  // An unquoted local path has no reliable whitespace boundary. Keep web links, but omit the rest of its text segment.
   const clean = (text: string) =>
-    scrubForThread(
-      line(text).replace(
-        /https?:\/\/[^\s<>"']+|(?<![\p{L}\p{N}_./\\])(?:~[\\/]|[A-Za-z]:[\\/]|\\\\|\/(?!\/))[^\s<>"'\x60()[\]{}]+/giu,
-        (match) => (/^https?:/i.test(match) ? match : "(local path)"),
-      ),
-      home,
+    line(
+      text
+        .split(/((?<![\p{L}\p{N}_./\\])https?:\/\/[^\s<>"']+)/giu)
+        .map((part, index) =>
+          index % 2
+            ? part
+            : scrubForThread(
+                part
+                  .split(home)
+                  .join("~/")
+                  .replace(/(?:~[\\/]|(?<![\p{L}\p{N}_./\\])(?:[A-Za-z]:[\\/]|\\\\|\/))[\s\S]*/u, "(local path)"),
+                home,
+              ),
+        )
+        .filter(Boolean)
+        .join(" "),
     )
       .replace(/@/g, "(at)")
       .replace(/\$\(/g, "$ (");
-  const lines = [`Dori status | ${snapshot.lanes.length} lanes | ${snapshot.decisions ?? "unknown"} decisions open`];
+  const lines = [
+    `Dori status | ${snapshot.lanes.length} ${snapshot.registryIncomplete ? "readable lanes (registry incomplete)" : "lanes"} | ${snapshot.decisions ?? "unknown"} decisions open`,
+  ];
   let shown = 0;
   for (const lane of snapshot.lanes) {
     const report = lane.progress?.lastReport;
