@@ -146,6 +146,10 @@ export const closeLane = async (
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok))
     return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
+  // Recheck work after signals (which may run commands), before any close side effect.
+  const blocked = await unpushedWork(deps, lane);
+  lines.push(...blocked.map((reason) => `REFUSED ${lane.key}: ${reason}`));
+  if (blocked.length) return { closed: false, lines };
   // The close is committed before anything irreversible, and only if nothing moved the lane on since it was read: an
   // objection or new claim written meanwhile keeps it open, and one written after this finds it closed.
   const at = iso(deps.clock);
@@ -213,7 +217,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
         objectDone(
           deps,
           verified,
-          result.lines.filter((l) => l.startsWith("SIGNAL NOT")),
+          result.lines.filter((l) => l.startsWith("SIGNAL NOT") || l.startsWith("REFUSED")),
         )
       );
     return `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`;

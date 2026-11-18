@@ -46,7 +46,7 @@ const USAGE = `dori <command> [options]
   decision list [--open]               decisions as JSON, oldest first
   decision digest                      one line per open decision, to paste into a status message
   close  <key> [--note TEXT] [--lesson TEXT] [--evidence PATH]
-                                       close now (Done signals must read back live); an optional lesson never blocks it
+                                       close now (live Done signals and no unpushed work); an optional lesson never blocks it
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
   resume <key> [--note TEXT]           undo pause: goal resumed (read back), lane back to its earlier status
   tell   <key> --text TEXT             one verified message to the lane's agent: TOLD (exit 0), TELL_UNCONFIRMED (exit 3,
