@@ -146,6 +146,9 @@ test("--loop re-polls immediately after a productive poll and sleeps only when i
       sleeps.push(ms);
       throw stop;
     },
+    // A frozen clock: the interval now subtracts the poll's own duration, and this test is about which
+    // poll sleeps, not how much of the interval that poll used.
+    () => 0,
   ).catch((e: unknown) => {
     if (e !== stop) throw e;
   });

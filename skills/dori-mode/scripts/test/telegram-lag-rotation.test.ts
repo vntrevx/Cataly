@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
-import { inboundLagLog, lagOfLine, readLagTail } from "../src/messenger/telegram-lag.ts";
+import { inboundLagLog, readLagWindow } from "../src/messenger/telegram-lag.ts";
 import { run } from "../src/run.ts";
 import { withState } from "./fakes.ts";
 
@@ -106,17 +106,22 @@ test("a rotation that cannot land is warned once and the file keeps growing", ()
   expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(6);
 });
 
-test("a window that straddles a rotation still reads the requested number of records", async () => {
+test("a window that straddles a rotation reads both files", () => {
   const path = join(state.dir, "straddle.jsonl");
-  // Each file holds about ten records at this bound, so the window spans the rotation.
-  const record = inboundLagLog(path, () => {}, 2000);
-  const dated: TgInbound = { ...base, date: 1_700_000_000 };
-  for (let i = 0; i < 12; i++) record(dated, 1_700_000_001_000);
-  // What `dori inbound-lag` does: the live file first, then the previous one for the remainder.
-  const live = readLagTail(path, 10);
-  const older = live.length < 10 ? readLagTail(`${path}.1`, 10 - live.length) : [];
-  expect(live.length + older.length).toBe(10);
-  expect([...older, ...live].every((line) => lagOfLine(line) === 1000)).toBe(true);
+  // A bound a few records actually cross, so the rotation happens and the window spans it. Distinct
+  // records, as real ones are: each carries its own update id.
+  const record = inboundLagLog(path, () => {}, 400);
+  for (let i = 0; i < 12; i++) record({ ...base, updateId: 90 + i, date: 1_700_000_000 }, 1_700_000_001_000);
+  // Without a rotation this test would be about `readLagTail` alone, which is not what it claims.
+  expect(statSync(`${path}.1`).size).toBeGreaterThan(0);
+  const liveLines = readFileSync(path, "utf8").trim().split("\n");
+  const prevLines = readFileSync(`${path}.1`, "utf8").trim().split("\n");
+  const window = readLagWindow(path, liveLines.length + prevLines.length);
+  expect(window).toHaveLength(liveLines.length + prevLines.length);
+  // Both files contributed: the window is not just the live file.
+  expect(window.slice(0, prevLines.length)).toEqual(prevLines);
+  expect(window.slice(prevLines.length)).toEqual(liveLines);
+  expect(new Set(window).size).toBe(window.length); // distinct records survive
 });
 
 test("a rotation that failed once is not retried for every later record", () => {
@@ -140,4 +145,36 @@ test("a rotation that failed once is not retried for every later record", () => 
   }
   expect(renames).toBe(1);
   expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(6);
+});
+
+test("a rotation landing between the reads still reports the newest records", () => {
+  // The live file is read, then rotated, then a fresh live file appears. Accepting the first read as
+  // the window would report pre-rotation percentiles and omit everything since the rotation.
+  const old = [9001, 9002, 9003].map((lagMs) => `{"lagMs":${lagMs}}`);
+  const fresh = ['{"lagMs":5}', '{"lagMs":6}'];
+  let live = [...old];
+  let prev: string[] = [];
+  let ino = 1;
+  const read = (p: string): string[] => {
+    if (p.endsWith(".1")) return prev;
+    const seen = live;
+    // The rotation lands while the live file is being read.
+    if (prev.length === 0) {
+      prev = live;
+      live = [...fresh];
+      ino = 2;
+    }
+    return seen;
+  };
+  const window = readLagWindow(join(state.dir, "race.jsonl"), 3, read, () => ino);
+  // The retry sees the settled pair: the newest three records, oldest first.
+  expect(window).toEqual([...old.slice(-1), ...fresh]);
+});
+
+test("a rotation that leaves a full previous file does not freeze the window on old records", () => {
+  // The previous file alone fills the window after a rotation; the live file still holds the newest.
+  const prev = [9001, 9002, 9003].map((lagMs) => `{"lagMs":${lagMs}}`);
+  const live = ['{"lagMs":10}', '{"lagMs":20}'];
+  const read = (p: string): string[] => (p.endsWith(".1") ? prev : live);
+  expect(readLagWindow(join(state.dir, "full.jsonl"), 3, read, () => 1)).toEqual([...prev.slice(-1), ...live]);
 });

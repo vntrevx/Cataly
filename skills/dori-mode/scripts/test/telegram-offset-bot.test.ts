@@ -124,3 +124,23 @@ test("a malformed token prefix is not recorded as a bot id that could never matc
   expect(existsSync(`${path}.bot`)).toBe(false);
   expect(fileTgInboundStore(path, "abc").load()).toBe(700);
 });
+
+test("a first save records the bot before the offset, so a crash cannot leave an untagged cursor", () => {
+  // With no sidecar yet, the offset must not land alone: an untagged cursor is accepted under any
+  // token by the next start, which is the discard this sidecar exists to prevent.
+  const path = join(state.dir, "telegram-offset");
+  const store = fileTgInboundStore(path, "111");
+  const orig = console.log;
+  console.log = () => {};
+  try {
+    // The offset write cannot land, as on a full disk; the bot record is written first anyway.
+    mkdirSync(path, { recursive: true });
+    store.save(500);
+  } finally {
+    console.log = orig;
+  }
+  expect(readFileSync(`${path}.bot`, "utf8")).toBe("111");
+  // And a later token swap is therefore still detected, even though the offset never landed.
+  rmSync(path, { recursive: true, force: true });
+  expect(fileTgInboundStore(path, "222").load()).toBe(0);
+});

@@ -164,6 +164,35 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
     },
     save(offset: number): void {
       handled = offset;
+      // A token whose prefix is not digits is a malformed token, not a bot id: recording it would make
+      // every later start fail closed on a sidecar that can never match. Leave it absent instead.
+      const bot = botId !== undefined && BOT_ID.test(botId) ? botId : undefined;
+      const tag = (): void => {
+        if (bot === undefined || bot === sidecarBot) return;
+        try {
+          writeWhole(`${path}.bot`, bot);
+          sidecarBot = bot;
+        } catch (error) {
+          warn(
+            "save",
+            `telegram-offset bot id at ${path}.bot not saved (${String((error as Error).message)}); a token swap will not be detected`,
+          );
+        }
+      };
+      // Which file goes first decides what a crash between the two leaves, and the two cases want
+      // opposite orders:
+      //
+      // - The bot changed (a sidecar exists and names another bot). Write the offset first, so a crash
+      //   leaves the new offset beside the OLD bot id — a mismatch the next start replays from 0. The
+      //   reverse order would leave a stale offset wearing this bot's name, which confirms away
+      //   updates that were never delivered.
+      // - There is no sidecar yet (a fresh install, or an upgrade from a release that never wrote one).
+      //   Write the bot first: a crash then leaves a sidecar with no offset to misattribute (a fresh
+      //   install has no offset file, so the next start is simply fresh), and on an upgrade it asserts
+      //   the bot that actually owned the legacy offset. Writing the offset first would leave an
+      //   untagged cursor, which the next start accepts under any token — the hole this closes.
+      const changed = sidecarBot !== undefined && bot !== undefined && sidecarBot !== bot;
+      if (!changed) tag();
       try {
         writeWhole(path, String(offset));
       } catch (error) {
@@ -174,22 +203,7 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return;
       }
-      // A token whose prefix is not digits is a malformed token, not a bot id: recording it would make
-      // every later start fail closed on a sidecar that can never match. Leave it absent instead.
-      if (botId === undefined || !BOT_ID.test(botId) || botId === sidecarBot) return;
-      // Record the bot after the offset, never before: a crash between the two leaves the offset
-      // ahead of its bot record, which the next start reads as a mismatch and replays — the safe
-      // direction. Recording the bot first would let a stale offset pass as this bot's and confirm
-      // away updates that were never delivered.
-      try {
-        writeWhole(`${path}.bot`, botId);
-        sidecarBot = botId;
-      } catch (error) {
-        warn(
-          "save",
-          `telegram-offset bot id at ${path}.bot not saved (${String((error as Error).message)}); a token swap will not be detected`,
-        );
-      }
+      if (changed) tag();
     },
   };
 };
