@@ -190,10 +190,15 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
     const lags: number[] = [];
     let skipped = 0;
     // Read enough blocks from the end for the requested nonblank records, including malformed ones.
+    // The live file is read first because it holds the newest records: a rotation keeps one previous
+    // file, so filling the window from `.1` first would report pre-rotation percentiles and omit every
+    // message since. `.1` only supplies what the live file cannot.
+    //
     // A rotation renames the live file to `.1` while this runs, and a receiver stopped between that
-    // rename and its next append leaves only `.1`, so a file that is absent or vanishes mid-read is
-    // an empty window rather than a missing one. The previous file is read first: if the rename lands
-    // between the two reads, the live file is then the new one and nothing is counted twice.
+    // rename and its next append leaves only `.1`, so a missing file is an empty window rather than a
+    // missing one. The rename can also land between the two reads, which puts records this run already
+    // read as live into `.1`; an exact line is dropped there, and records carry their update id, so no
+    // two distinct records share a line.
     const readTail = (p: string, n: number): string[] => {
       try {
         return readLagTail(p, n);
@@ -202,11 +207,12 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
         throw error;
       }
     };
-    const older = readTail(`${path}.1`, limit);
-    const lines = older.length < limit ? readTail(path, limit - older.length) : [];
+    const lines = readTail(path, limit);
+    const live = new Set(lines);
+    const older = lines.length < limit ? readTail(`${path}.1`, limit).filter((line) => !live.has(line)) : [];
     if (older.length === 0 && lines.length === 0)
       die(`no lag records yet at ${path}; messages record themselves as the receiver polls`);
-    for (const line of [...older, ...lines]) {
+    for (const line of [...older.slice(-(limit - lines.length)), ...lines]) {
       const lag = lagOfLine(line);
       if (lag === undefined) {
         skipped++; // a truncated last line from a kill mid-write is expected
