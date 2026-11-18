@@ -1,6 +1,4 @@
 /** dori send, presence, inbound, thread, react and transcribe: the messengers. */
-import { existsSync } from "node:fs";
-
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
 import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
@@ -189,14 +187,25 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
     const limit = limitText === undefined ? 1000 : Number(limitText);
     if (!Number.isSafeInteger(limit) || limit <= 0) die("--limit must be a positive whole number of messages");
     const path = `${config.stateDir}/telegram-lag.jsonl`;
-    if (!existsSync(path)) die(`no lag records yet at ${path}; messages record themselves as the receiver polls`);
     const lags: number[] = [];
     let skipped = 0;
     // Read enough blocks from the end for the requested nonblank records, including malformed ones.
-    // A rotated meter keeps one previous file: when the current one does not fill the window, the
-    // older records come from `<path>.1`, so a rotation does not shrink the sample to a handful.
-    const lines = readLagTail(path, limit);
-    const older = lines.length < limit && existsSync(`${path}.1`) ? readLagTail(`${path}.1`, limit - lines.length) : [];
+    // A rotation renames the live file to `.1` while this runs, and a receiver stopped between that
+    // rename and its next append leaves only `.1`, so a file that is absent or vanishes mid-read is
+    // an empty window rather than a missing one. The previous file is read first: if the rename lands
+    // between the two reads, the live file is then the new one and nothing is counted twice.
+    const readTail = (p: string, n: number): string[] => {
+      try {
+        return readLagTail(p, n);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      }
+    };
+    const older = readTail(`${path}.1`, limit);
+    const lines = older.length < limit ? readTail(path, limit - older.length) : [];
+    if (older.length === 0 && lines.length === 0)
+      die(`no lag records yet at ${path}; messages record themselves as the receiver polls`);
     for (const line of [...older, ...lines]) {
       const lag = lagOfLine(line);
       if (lag === undefined) {

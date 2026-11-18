@@ -162,6 +162,51 @@ test("inbound-lag CLI limits nonblank records before skipping missing dates and 
   expect((await invoke("0")).code).toBe(1);
 });
 
+test("inbound-lag reads the previous file when a rotation left no live meter", async () => {
+  // The receiver renames the live file to `.1` and appends to a fresh one. Stopped in between, or
+  // rotated while this command runs, only `.1` holds readings; that is a readable window, not an
+  // empty meter, and the command must not abort on the absent live path.
+  mkdirSync(state.dir, { recursive: true });
+  const config = join(state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, hooks: {} }));
+  writeFileSync(join(state.dir, "telegram-lag.jsonl.1"), '{"lagMs":120}\n{"lagMs":340}\n');
+  const result = await run([
+    "env",
+    `DORI_CONFIG=${config}`,
+    `DORI_STATE_DIR=${state.dir}`,
+    process.execPath,
+    join(import.meta.dir, "../src/cli.ts"),
+    "inbound-lag",
+    "--limit",
+    "10",
+  ]);
+  expect({ code: result.code, err: result.err.trim(), out: result.out }).toEqual({
+    code: 0,
+    err: "",
+    out: "LAG n=2 p50=120ms p90=340ms p99=340ms max=340ms",
+  });
+});
+
+test("inbound-lag fills a window that straddles a rotation from both files", async () => {
+  mkdirSync(state.dir, { recursive: true });
+  const config = join(state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, hooks: {} }));
+  writeFileSync(join(state.dir, "telegram-lag.jsonl.1"), '{"lagMs":100}\n{"lagMs":200}\n');
+  writeFileSync(join(state.dir, "telegram-lag.jsonl"), '{"lagMs":300}\n');
+  const result = await run([
+    "env",
+    `DORI_CONFIG=${config}`,
+    `DORI_STATE_DIR=${state.dir}`,
+    process.execPath,
+    join(import.meta.dir, "../src/cli.ts"),
+    "inbound-lag",
+    "--limit",
+    "3",
+  ]);
+  // The older file supplies what the live one cannot; a rotation must not shrink the sample.
+  expect(result.out).toBe("LAG n=3 p50=200ms p90=300ms p99=300ms max=300ms");
+});
+
 test("the lag file rotates at the size bound, keeping one previous file", () => {
   const path = join(state.dir, "rotate.jsonl");
   // A bound small enough that a few records cross it, so the rotation itself is what is tested.
