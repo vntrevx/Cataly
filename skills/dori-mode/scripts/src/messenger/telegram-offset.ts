@@ -1,15 +1,6 @@
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+
+import { writeWhole as durableWrite } from "./durable-write.ts";
 
 /**
  * The persisted `getUpdates` cursor. An offset that reads back as 0 replays every update Telegram still
@@ -52,54 +43,15 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
   // replay what was just delivered, so memory wins until a write lands.
   let handled: number | undefined;
   let dirReady = false;
-
-  /** Replace `target` with `text` in one step: staged, flushed, renamed, and the rename flushed. */
-  const writeWhole = (target: string, text: string): void => {
-    const staged = `${target}.${process.pid}.staged`;
-    try {
-      if (!dirReady) {
-        // The state dir may not exist yet on a fresh install; without this the first save
-        // fails with ENOENT and the same update is re-printed every tick.
-        mkdirSync(dirname(target), { recursive: true });
+  const writeWhole = (target: string, text: string): void =>
+    durableWrite(
+      target,
+      text,
+      () => dirReady,
+      () => {
         dirReady = true;
-      }
-      // Write, flush, then rename: a kill or a full disk leaves the previous value intact, and a
-      // power loss cannot leave the rename durable over data still only in the page cache — which
-      // would read back as an empty file, i.e. offset 0 and a replay of everything retained.
-      const fd = openSync(staged, "w", 0o600);
-      try {
-        // A short write leaves a prefix of the number — `123` of `123456` — and every prefix is a
-        // valid offset, so the next start would resume from an older cursor and replay the updates
-        // in between. The previous value is still whole at this point, so failing is the safe answer.
-        const written = writeSync(fd, text);
-        if (written !== Buffer.byteLength(text))
-          throw new Error(`short write (${written} of ${Buffer.byteLength(text)} bytes)`);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(staged, target);
-      // Make the rename itself durable. Losing it costs a replay from the previous offset, which is
-      // at-least-once delivery, so a filesystem that refuses a directory fsync is not an error.
-      try {
-        const dfd = openSync(dirname(target), "r");
-        try {
-          fsyncSync(dfd);
-        } finally {
-          closeSync(dfd);
-        }
-      } catch {
-        // the file is already flushed; only the rename's durability is lost
-      }
-    } catch (error) {
-      try {
-        rmSync(staged, { force: true });
-      } catch {
-        // the staged copy is only ever a partial value; leaving it is harmless
-      }
-      throw error;
-    }
-  };
+      },
+    );
 
   return {
     load(): number {
@@ -188,9 +140,24 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
       // A token whose prefix is not digits is a malformed token, not a bot id: recording it would make
       // every later start fail closed on a sidecar that can never match. Leave it absent instead.
       const bot = botId !== undefined && BOT_ID.test(botId) ? botId : undefined;
+      // The cached bot is not authoritative: a receiver replaced on the same state dir leaves this one
+      // believing the sidecar still names it, and writing its cursor beside the other bot's id is the
+      // discard this whole mechanism prevents. The file is the truth, so it is re-read before the cache
+      // is trusted. A read per save is cheaper than the write that follows it.
+      const persisted = (): string | undefined => {
+        try {
+          const text = readFileSync(`${path}.bot`, "utf8").trim();
+          return BOT_ID.test(text) ? text : undefined;
+        } catch {
+          return undefined;
+        }
+      };
       const tag = (): boolean => {
         if (bot === undefined) return false;
-        if (bot === sidecarBot) return true;
+        if (bot === persisted()) {
+          sidecarBot = bot;
+          return true;
+        }
         try {
           writeWhole(`${path}.bot`, bot);
           sidecarBot = bot;
@@ -203,12 +170,15 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
           return false;
         }
       };
-      // With no sidecar yet (a fresh install, or an upgrade from a release that never wrote one) the bot
-      // goes first, and the cursor is not written unless that lands: an untagged cursor is accepted under
-      // any token by the next start, which is the discard this sidecar exists to prevent.
-      const changed = sidecarBot !== undefined && bot !== undefined && sidecarBot !== bot;
-      if (!changed && bot !== undefined && !tag()) return;
-      // The marker is written before either file and removed after both name this bot, so a crash
+      const onDisk = persisted();
+      // A sidecar that exists but cannot be read leaves the bot unknown, which is as unsafe as a
+      // mismatch: treat it as a transition so the marker makes every reader refuse the pair.
+      const unknown = onDisk === undefined && existsSync(`${path}.bot`);
+      // A sidecar naming another bot is a transition. With no sidecar yet (a fresh install, or an
+      // upgrade from a release that never wrote one) the bot is simply recorded, and the cursor is not
+      // written unless that lands: an untagged cursor is accepted under any token by the next start.
+      const changed = unknown || (onDisk !== undefined && bot !== undefined && onDisk !== bot);
+      // The marker goes down before either file and comes off after both name this bot, so a crash
       // anywhere between leaves it and every start refuses the pair. A marker left by an earlier process
       // is completed here too, rather than pinning every future start at 0.
       const marking = bot !== undefined && (changed || existsSync(`${path}.pending`));
@@ -220,6 +190,11 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
           return;
         }
       }
+      // The bot record always goes before the cursor. A release from before this sidecar existed reads
+      // the bare cursor with `Number(...)` and ignores the marker, so leaving the OLD cursor in place
+      // until the tag has switched is what keeps a rollback to it from adopting a cursor that is not its
+      // own; only after the tag lands can the cursor safely become this bot's.
+      if (bot !== undefined && !tag()) return;
       try {
         writeWhole(path, String(offset));
       } catch (error) {
@@ -230,9 +205,8 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         );
         return;
       }
-      // The sidecar must name this bot before the marker goes: a failed replacement leaves it, which
-      // costs one restart from 0 — the safe direction, since the pair still disagrees.
-      if (marking && tag()) {
+      // The marker goes last: while it exists every reader of this version refuses the pair.
+      if (marking) {
         try {
           rmSync(`${path}.pending`, { force: true });
         } catch {
