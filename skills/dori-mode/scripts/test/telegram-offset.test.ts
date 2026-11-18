@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Http, HttpResponse } from "../src/messenger/http.ts";
@@ -201,4 +202,35 @@ test("a load warning does not silence the save warning", () => {
   }
   expect(warns.filter((w) => w.includes("not a stored offset"))).toHaveLength(1);
   expect(warns.filter((w) => w.includes("continuing from memory"))).toHaveLength(1);
+});
+
+test("a short write does not persist a truncated offset that would replay the updates in between", () => {
+  // Every prefix of a decimal is a valid offset, so `123` written instead of `123456` loads cleanly and
+  // resumes an hour behind. The save must fail instead, leaving the previous offset whole.
+  const path = join(state.dir, "telegram-offset");
+  const store = fileTgInboundStore(path, "111");
+  store.save(123_456);
+  expect(readFileSync(path, "utf8")).toBe("111 123456");
+  // A filesystem that accepts only part of the bytes, as a short write on a nearly full disk can.
+  const real = fs.writeSync;
+  const spy = spyOn(fs, "writeSync").mockImplementation(((fd: number, data: string | Uint8Array) => {
+    const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+    return real(fd, text.slice(0, 3));
+  }) as typeof fs.writeSync);
+  const warns: string[] = [];
+  const orig = console.log;
+  console.log = (s?: unknown) => {
+    warns.push(String(s));
+  };
+  try {
+    store.save(123_457);
+    expect(store.load()).toBe(123_457); // memory carries this run, so nothing is re-delivered
+  } finally {
+    spy.mockRestore();
+    console.log = orig;
+  }
+  // The file still holds the whole previous offset, not the truncated one.
+  expect(readFileSync(path, "utf8")).toBe("111 123456");
+  expect(warns.some((w) => w.includes("short write"))).toBe(true);
+  expect(readdirSync(state.dir).filter((n) => n.includes(".staged"))).toEqual([]);
 });

@@ -91,9 +91,16 @@ export const fileTgInboundStore = (path: string, botId?: string): TgInboundStore
         // Write, flush, then rename: a kill or a full disk leaves the previous offset intact, and a
         // power loss cannot leave the rename durable over data still only in the page cache — which
         // would read back as an empty file, i.e. offset 0 and a replay of everything retained.
+        const text = botId === undefined ? String(offset) : `${botId} ${offset}`;
         const fd = openSync(staged, "w", 0o600);
         try {
-          writeSync(fd, botId === undefined ? String(offset) : `${botId} ${offset}`);
+          // A short write leaves a prefix of the number — `123` of `123456` — and every prefix is a
+          // valid offset, so the next start would resume from an older cursor and replay the updates
+          // in between. The previous offset is still whole at this point, so failing the save is the
+          // safe answer: memory carries this run and the warning names why.
+          const written = writeSync(fd, text);
+          if (written !== Buffer.byteLength(text))
+            throw new Error(`short write (${written} of ${Buffer.byteLength(text)} bytes)`);
           fsyncSync(fd);
         } finally {
           closeSync(fd);
