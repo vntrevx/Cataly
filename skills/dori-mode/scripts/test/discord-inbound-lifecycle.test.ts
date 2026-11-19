@@ -6,7 +6,7 @@ import { liveWorld, settle } from "./discord-inbound-live-fakes.ts";
 const options = { ownerId: "10", channelIds: ["20"] };
 
 for (const ending of ["stop", "terminal"] as const) {
-  test(`${ending} drains an active REST backfill before done and drops queued dispatches`, async () => {
+  test(`${ending} drains an active REST backfill before done without delivering queued dispatches`, async () => {
     const world = await liveWorld([ownerMessage("100")], options);
     const [socket] = world.sockets;
     if (!socket) throw new Error("gateway did not open");

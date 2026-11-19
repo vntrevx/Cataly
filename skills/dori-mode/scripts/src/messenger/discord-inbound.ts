@@ -11,6 +11,7 @@ import {
   messagePage,
   toInbound,
 } from "./discord-inbound-api.ts";
+import type { DiscordInboundQueue } from "./discord-inbound-queue.ts";
 import { discordInboundEnv, type DiscordInboundStore, isDiscordSnowflake } from "./discord-inbound-state.ts";
 import { MessengerError } from "./http.ts";
 
@@ -42,20 +43,20 @@ const unavailable = (error: unknown): boolean =>
   error instanceof MessengerError && (error.status === 403 || error.status === 404);
 
 /**
- * A bot-authenticated Discord intake over any number of channels. Every channel owns a persisted cursor, and a
- * message is delivered only when its id is above that cursor, so the REST history path (`poll`) and live Gateway
- * delivery (`accept`) share one exactly-once, ascending-order guarantee. Presence remains a separate connection.
+ * Bot-authenticated intake with per-channel cursors. Known REST and queued owners merge in ID order before each
+ * delivery boundary; an older frame admitted during an awaited emit can arrive late without regressing the cursor.
+ * Emit-before-checkpoint crashes and ambiguous legacy queue recovery can repeat a request. Presence is separate.
  */
 export const discordInbound = async (
   discord: Discord,
-  storeFor: (channelId: string) => DiscordInboundStore,
+  storeFor: (channelId: string, seed?: boolean) => DiscordInboundStore,
   opts: DiscordInboundOptions,
 ) => {
   const ownerId = discordInboundEnv("DORI_DISCORD_OWNER_ID", opts.ownerId);
   const explicit = opts.channelIds.map((id) => discordInboundEnv("DORI_DISCORD_CHANNEL_IDS", id));
   const request = inboundRequest(discord);
   const me = await request<{ id?: string; bot?: boolean }>("/users/@me");
-  if (!me || me.bot !== true || !isDiscordSnowflake(me.id)) {
+  if (me?.bot !== true || !isDiscordSnowflake(me.id)) {
     throw new MessengerError("Discord inbound requires an authenticated bot identity; use a bot token", 401);
   }
   const botId = me.id;
@@ -70,6 +71,12 @@ export const discordInbound = async (
     );
   }
   const watched = new Map<string, DiscordInboundStore>();
+  const current = (store: DiscordInboundStore): string => {
+    const cursor = store.load();
+    if (cursor === undefined)
+      throw new MessengerError("Discord inbound cursor disappeared; restore its state before retrying", 0);
+    return cursor;
+  };
   /** Only history-read failures can make a discovered channel unavailable, never state or delivery failures. */
   const readPage = async (channelId: string, limit: number, before?: string) => {
     try {
@@ -99,16 +106,53 @@ export const discordInbound = async (
       await attach(id);
     }
   };
-  const deliver = async (message: Message, store: DiscordInboundStore, emit: Emit): Promise<void> => {
+  const accepts = (message: Message): boolean =>
+    !!message &&
+    isDiscordSnowflake(message.id) &&
+    isDiscordSnowflake(message.channel_id) &&
+    (opts.all === true || watched.has(message.channel_id));
+  const deliver = async (message: Message, store: DiscordInboundStore, emit: Emit, cursor = message.id) => {
     if (isOwnerMessage(message, ownerId, botId)) await emit(toInbound(message));
-    store.save(message.id); // Checkpoint only after successful delivery; filtered messages still advance the cursor.
+    store.save(cursor); // Checkpoint only after successful delivery; a late frame never moves it backwards.
   };
-  const pollChannel = async (channelId: string, store: DiscordInboundStore, emit: Emit): Promise<void> => {
-    const after = store.load();
-    if (after === undefined) {
-      throw new MessengerError("Discord inbound cursor disappeared; restore its state before retrying", 0);
+  const accept = async (message: Message, emit: Emit, admittedAfter?: string | null): Promise<void> => {
+    if (!accepts(message)) return;
+    if (admittedAfter !== undefined && admittedAfter !== null && admittedAfter !== "0")
+      discordInboundEnv("Discord inbound queue admission cursor", admittedAfter);
+    let store = watched.get(message.channel_id);
+    if (!store) {
+      store = storeFor(message.channel_id);
+      if (store.load() === undefined) store.save(String(BigInt(message.id) - 1n));
+      watched.set(message.channel_id, store);
     }
-    const pending = new Map<string, Message>();
+    const cursor = current(store);
+    if (
+      !newer(message.id, cursor) &&
+      (admittedAfter === undefined ||
+        message.id === cursor ||
+        (admittedAfter !== null && !newer(message.id, admittedAfter)) ||
+        !isOwnerMessage(message, ownerId, botId))
+    )
+      return;
+    await deliver(message, store, emit, newer(message.id, cursor) ? message.id : cursor);
+  };
+  const pollChannel = async (
+    channelId: string,
+    store: DiscordInboundStore,
+    emit: Emit,
+    queue?: DiscordInboundQueue,
+  ): Promise<void> => {
+    const after = current(store);
+    const latest = await readPage(channelId, 1);
+    if (latest === undefined) return;
+    if (latest.some((message) => message.channel_id !== channelId)) {
+      throw inboundProtocolError("Discord inbound channel response does not match the configured channel");
+    }
+    const head = latest[0];
+    // No REST gap: leave retained queue records and their admission cursors for the FIFO drain.
+    if (!head || !newer(head.id, after)) return;
+    // Keep the probed message even if it disappears before the full history read.
+    const pending = new Map<string, Message>([[head.id, head]]);
     let before: string | undefined;
     for (;;) {
       const messages = await readPage(channelId, 100, before);
@@ -127,39 +171,59 @@ export const discordInbound = async (
       before = oldest;
     }
     const ordered = [...pending.values()].sort((a, b) => (newer(a.id, b.id) ? 1 : newer(b.id, a.id) ? -1 : 0));
-    for (const message of ordered) await deliver(message, store, emit);
+    for (const [index, message] of ordered.entries()) {
+      // An owner checkpoint covers the preceding filtered run; only a trailing run needs its own save.
+      if (!isOwnerMessage(message, ownerId, botId) && index !== ordered.length - 1) continue;
+      if (queue) {
+        let after = "0";
+        let row = 0;
+        for (
+          let job = queue.nextOwner(channelId, ownerId, message.id, after, row);
+          job;
+          job = queue.nextOwner(channelId, ownerId, message.id, after, row)
+        ) {
+          const retained = JSON.parse(job.payload) as Message;
+          if (!accepts(retained)) throw inboundProtocolError("Discord inbound queue message is invalid");
+          after = retained.id;
+          row = job.id;
+          if (!isOwnerMessage(retained, ownerId, botId)) continue;
+          await accept(retained, emit, job.admittedAfter);
+          queue.acknowledge(channelId, retained.id);
+          after = "0"; // Recheck arrivals admitted while the previous owner emit was awaited.
+          row = 0;
+        }
+      }
+      if (newer(message.id, current(store))) {
+        await deliver(message, store, emit);
+        queue?.acknowledge(channelId, message.id);
+      }
+    }
   };
   await refresh();
   let polls = 0;
   return {
     botId,
+    accepts,
+    cursorFor(channel: string): string | undefined {
+      const store = watched.get(channel);
+      return store ? current(store) : storeFor(channel, false).load();
+    },
     channels: (): string[] => [...watched.keys()],
     /** Reads every watched channel from its cursor; the REST path and the Gateway backfill. */
-    async poll(emit: Emit): Promise<void> {
+    async poll(emit: Emit, queue?: DiscordInboundQueue): Promise<void> {
       if (opts.all && ++polls % 100 === 0) await refresh(); // Pick up channels and threads created since start.
-      for (const [channelId, store] of [...watched]) await pollChannel(channelId, store, emit);
+      for (const [channelId, store] of [...watched]) await pollChannel(channelId, store, emit, queue);
     },
     /** Reconciles the watched set, then reads each channel from its cursor; used after a Gateway (re)connect. */
-    async sync(emit: Emit): Promise<void> {
+    async sync(emit: Emit, queue?: DiscordInboundQueue): Promise<void> {
       await refresh();
-      await this.poll(emit);
-    },
-    /** A MESSAGE_CREATE dispatch: delivered only when newer than its channel's cursor. */
-    async accept(message: Message, emit: Emit): Promise<void> {
-      if (!message || !isDiscordSnowflake(message.id) || !isDiscordSnowflake(message.channel_id)) return;
-      let store = watched.get(message.channel_id);
-      if (!store) {
-        if (!opts.all) return;
-        store = storeFor(message.channel_id);
-        if (store.load() === undefined) store.save(String(BigInt(message.id) - 1n)); // First sight: this message is new.
-        watched.set(message.channel_id, store);
+      if (opts.all && queue) {
+        for (let channel = queue.nextChannel(""); channel !== undefined; channel = queue.nextChannel(channel))
+          if (!watched.has(channel)) await attach(channel);
       }
-      const cursor = store.load();
-      if (cursor === undefined) {
-        throw new MessengerError("Discord inbound cursor disappeared; restore its state before retrying", 0);
-      }
-      if (!newer(message.id, cursor)) return;
-      await deliver(message, store, emit);
+      await this.poll(emit, queue);
     },
+    /** Direct calls retain the cursor gate; queued calls supply their persisted admission position. */
+    accept,
   };
 };

@@ -132,7 +132,10 @@ for (const failure of [429, 500, 502, 503, 504, "network"] as const) {
       world.rest.state.unreachable.clear();
       world.advance(2_000);
       await settle();
-      expect(world.rest.requests).toHaveLength(requests + 1);
+      expect(world.rest.requests).toHaveLength(requests + 2);
+      expect(
+        world.rest.requests.slice(requests).map((request) => new URL(request.url).searchParams.get("limit")),
+      ).toEqual(["1", "100"]);
       expect(world.received).toEqual(["20:101", "20:102", "20:103"]);
       expect(world.cursor("20")).toBe("103");
       await world.dispatch(socket, ownerMessage("102"));
@@ -155,7 +158,8 @@ for (const fault of ["json", "page", "message", "oversized", "pagination", "chan
       failure = error;
     });
     try {
-      const path = "/channels/20/messages";
+      const path = "/channels/20/messages?limit=100";
+      if (["json", "page", "message", "oversized"].includes(fault)) world.rest.state.messages.push(ownerMessage("101"));
       if (fault === "json") world.rest.state.responses.set(path, "{");
       if (fault === "page") world.rest.state.responses.set(path, "{}");
       if (fault === "message") world.rest.state.responses.set(path, '[{"id":"bad"}]');
@@ -173,6 +177,12 @@ for (const fault of ["json", "page", "message", "oversized", "pagination", "chan
       socket.ready(1);
       socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2, d: ownerMessage("300") });
       await settle();
+      if (["json", "page", "message", "oversized"].includes(fault)) {
+        const limits = world.rest.requests
+          .filter((request) => new URL(request.url).pathname.endsWith("/channels/20/messages"))
+          .map((request) => new URL(request.url).searchParams.get("limit"));
+        expect(limits.slice(-2)).toEqual(["1", "100"]);
+      }
       expect(failure).toBeInstanceOf(MessengerError);
       expect((failure as MessengerError).status).toBe(502);
       expect(world.received).toEqual([]);

@@ -1,172 +1,133 @@
-# omp-dori
+# Cataly
 
-세 프로젝트의 철학을 하나의 Dori로 합쳤습니다.
-
-1. [dori-superagent](https://github.com/sisyphuslabs/dori-superagent) — 메신저에서 요청을 받아 끝까지 책임지고, 증거를 바탕으로 작업을 조율합니다.
-2. [oh-my-pi](https://github.com/can1357/oh-my-pi) — native 코딩 에이전트 런타임과 도구를 제공합니다.
-3. [omp-ulw](https://github.com/dbc-hbin/omp-ulw) — 결과를 중심으로 규율 있게 실행하는 워크플로를 더합니다.
-
-omp-dori는 메신저 요청을 담당 코딩 에이전트 레인에 맡기고 완료 증거와 함께 보고하는 수정 OMP 포트입니다.
+**의도를 이해하고, 맥락을 읽고, 끝까지 완수합니다.**
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [中文](README.zh.md)
 
-## 주요 기능
+Cataly는 목표를 완성된 결과로 만드는 AI 동료입니다. 이루고 싶은 일을 알려주면,
+다음 단계를 책임지고 주변 맥락을 고려하며 직접 확인할 수 있는 결과를
+낼 때까지 작업을 이어갑니다.
 
-- 긴 작업마다 brief, 에이전트 세션과 추적 레인을 만들고, 작은 요청은 lead가 직접 처리합니다.
-- 레인은 lead에게 보고하고 lead가 요청 스레드에 답해 대화 창구를 하나로 유지합니다.
-- Discord owner 메시지의 답장 맥락과 첨부 메타데이터를 받으며, 서명된 미디어 URL과 제공된 음성 길이를 전달합니다.
-- 전달 전에 살아 있는 에이전트의 신원·입력·승인 상태를 확인하고, 바쁘거나 상태가 불명확한 세션에는 전송을 보류하거나 대기열에 넣습니다.
-- 완료 증거를 요구하고 PR merge, 버전 발행, 명령 성공, 파일 일치 등 지정한 완료 신호를 실제 상태와 대조합니다.
-- worklog, 레인 checkpoint와 레지스트리를 디스크에 남겨 재시작 후 `dori boot`로 점검합니다.
-- lessons, backlog, 선택적 시간 단위 스케줄링과 호스트·정체 감시로 지속적인 작업을 지원합니다.
+지시를 따르는 데 그치지 않고 올바른 판단을 내리는 것이 목표입니다.
+중요한 점을 짚고 세부 사항을 연결하며, 매 단계마다 관리받지 않아도
+작업을 처리하는 것을 지향합니다.
 
-## 요청이 완료될 때까지
+## 지향하는 원칙
 
-```mermaid
-flowchart TD
-    request["메신저로 요청"] --> route{"작은 작업인가?"}
-    route -->|예| direct["Dori가 직접 처리"]
-    route -->|아니요| lane["작업 설명과 전담 레인 생성"]
-    direct --> verify{"결과와 완료 증거 확인?"}
-    lane --> verify
-    verify -->|확인됨| report["원래 스레드에 결과 보고"]
-    verify -->|미확인| resolve["문제 수정 또는 사용자에게 질문"]
-    resolve --> verify
-```
+- **결과를 책임집니다.** 활동 목록을 채우는 대신 목표 달성을 위해 일합니다.
+- **맥락을 이해합니다.** 대화, 프로젝트 관례, 제약 조건과 사용자의 선호를
+  함께 고려합니다.
+- **신중하게 주도합니다.** 일상적인 판단은 스스로 내립니다. 실질적인 절충이
+  필요하거나 권한이 없어 사용자의 판단이 필요할 때 질문합니다.
+- **끝까지 완수합니다.** 조사하고, 구현하고, 검증한 뒤 실제로 무엇이
+  이루어졌는지 보고합니다. 설득력 있는 설명은 작동하는 결과를 대신할 수 없습니다.
 
-## 지원하는 preview
+Cataly는 이 기준을 중심으로 만들어집니다. 행동할 역량, 맥락을 이해하는
+세심함, 그리고 결과에 대한 책임을 갖추는 것입니다.
 
-**`v0.1.2`는 Linux x64 + herdr + Discord용 GitHub prerelease입니다.** Bun **1.4.4**와 native OMP **18.18.8**은 테스트 기준이자 최소 버전입니다. 더 높은 버전과 다른 Linux 배포판이 자동으로 검증되는 것은 아닙니다.
+## 작동 방식
 
-소비자 구현은 manifest가 명시적으로 선언한 macOS arm64/hc 격리 릴리스도 지원합니다. 이전 manifest는 Linux x64/herdr만 지원하며 지원하지 않는 조합은 중단됩니다. 이는 macOS 릴리스가 게시되었거나 배포되었다는 뜻이 아닙니다. Slack과 Telegram은 소스 기능으로 남아 있습니다. 이 범위가 독립 외부 사용자 beta 완료나 모든 provider·기능의 검증을 뜻하지는 않습니다.
+Cataly는 메신저 대화를 네이티브 코딩 에이전트 런타임과 진행 상황을 추적하는
+작업 레인에 연결합니다.
 
-**현재 소스 `main`:** 기본 설치는 검증된 소스로 수정 OMP 18.20.0과 고정된 33b375dc ULW overlay를 준비합니다. PATH의 stock OMP는 필수 조건도 대체품도 아닙니다. 같은 버전의 공식 native addon을 사용하며 Cargo는 필요하지 않습니다. 생성된 `omp` wrapper를 사용하고, 사용자 toolchain은 명시적 override로 취급합니다. [소스 bundle 계약](docs/releases.md#current-source-bundle). 아래의 변경 불가 `v0.1.2` 배포물과 과거 요구 조건은 그대로입니다.
+- 리드는 작은 요청을 직접 처리하고, 긴 작업에는 작업 설명, 전용 세션과
+  책임질 담당자를 지정합니다.
+- 작업 로그, 체크포인트와 레지스트리를 통해 재시작 후에도 진행 상황을 확인할 수 있습니다.
+- Discord 수신 기능은 답장 맥락과 첨부 파일 메타데이터를 작업에 전달합니다.
+- 프로세스에 연결된 세션·승인 기록으로 의도한 에이전트에게 전달되도록 보호합니다.
+- 완료 검사는 명령 성공, 파일 일치, 병합된 풀 리퀘스트나 게시된 버전 같은
+  구체적인 신호를 확인할 수 있습니다.
+- 선택적 스케줄링, 모니터와 감독 기능은 명시적으로 활성화했을 때 지속적인
+  작업을 지원합니다.
+
+이 구현은
+[dori-superagent](https://github.com/sisyphuslabs/dori-superagent),
+[oh-my-pi](https://github.com/can1357/oh-my-pi),
+[omp-ulw](https://github.com/dbc-hbin/omp-ulw)를 결합합니다. 각 프로젝트의
+저자, 라이선스와 소스 출처는 계속 이 프로젝트의 일부로 남습니다.
 
 ## 시작하기
 
-### 1. 사전 준비와 버전 확인
+Cataly는 프로젝트 이름입니다. 기존 `dori`, `omp-dori`, `omp` 명령,
+설치 홈 디렉터리와 게시된 배포 파일 이름은 바뀌지 않았습니다.
 
-아래 명령은 Linux x64의 Bash에서 실행합니다(`uname` 결과는 `Linux`, `x86_64`). git, [Bun](https://bun.sh) **1.4.4+**, [native OMP](https://github.com/can1357/oh-my-pi) **18.18.8+**, [herdr](https://github.com/herdrdev/herdr)를 각 프로젝트의 설치 안내에 따라 `PATH`에 준비하세요. Bash, curl, tar, `sha256sum`도 필요합니다. Dori 설치기는 도구를 점검하며 설치·업그레이드는 하지 않습니다.
+### 소스에서 작업하기
 
-```bash
-uname -s
-uname -m
-for tool in bash curl tar sha256sum git bun omp herdr; do
-  command -v "$tool" || exit 1
-done
-git --version
-bun --version
-omp --version
-```
+먼저 git, Bun 1.4.4+, herdr 또는 hc를 설치하세요.
+자세한 내용은 [소스 사전 요구 사항](docs/releases.md#current-source-bundle)을 참고하세요.
 
-### 2. v0.1.2 다운로드·검증·설치
-
-다운로드 전에 [canonical v0.1.2 릴리스](https://github.com/vntrevx/omp-dori/releases/tag/v0.1.2)의 저장소 소유자·태그·릴리스 commit을 확인하세요. [정확한 릴리스 설치·검증 절차](docs/releases.md#install-the-exact-preview)에 따라 네 asset을 모두 받으며 fork, `main` 설치기나 mirror로 대체하지 않습니다. 처음 설치할 때는 본인 home을 사용하고 실행 중인 Dori가 없어야 합니다. 기존 설치가 있으면 소스나 상태를 변경하기 전에 먼저 점검하세요.
+실행 중인 설치나 고정된 사용자용 릴리스가 아닌 별도의 체크아웃을 사용하세요.
 
 ```bash
-download_dir="$(mktemp -d)" || exit 1
-cd "$download_dir" || exit 1
-release_url="https://github.com/vntrevx/omp-dori/releases/download/v0.1.2"
-for asset in install.sh release-manifest.json SHA256SUMS omp-dori-v0.1.2.tar.gz; do
-  curl --proto '=https' --tlsv1.2 -fL "$release_url/$asset" -o "$asset" || exit 1
-done
-sha256sum --check SHA256SUMS || exit 1
-bash ./install.sh --version v0.1.2 --from "$download_dir" || exit 1
-"$HOME/.dori/bin/dori" --version
-export PATH="$HOME/.dori/bin:$PATH"
-```
-
-모든 checksum이 통과한 뒤에만 설치기를 실행하세요. Checksum은 신뢰한 릴리스 파일의 일관성을 확인하며 독립 서명을 뜻하지 않습니다. 설치기는 manifest·archive와 고정된 공개 omp-ulw 의존성도 검증합니다. `--from`을 사용해도 첫 설치에서는 해당 의존성을 받는 익명 git 네트워크 접근이 필요할 수 있습니다. 명시적 실행 경로는 `~/.dori/bin/dori`이며 원하면 PATH 설정을 본인 shell 설정 파일에 보관하세요. GitHub CLI나 GitHub 쓰기 권한은 필요하지 않습니다.
-
-설치는 에이전트·수신기·watcher·presence 프로세스·service·harness·추론 요청을 **시작하지 않습니다**. 기존 Dori 세션을 재개하면 그 세션에 기록된 monitor가 복원될 수 있으며, 새 설치는 monitor를 만들지 않습니다.
-
-macOS arm64/hc에서는 위 Linux 예시가 아닌 해당 capability를 선언한 검증된 릴리스를 사용하세요. Bootstrap 기본값은 `~/.omp-dori`와 hc이며 `--home`과 `--runtime`으로 절대 경로와 runtime을 지정합니다. 전역 검색 대신 로컬 `~/.omp-dori/bin/omp-dori`와 `~/.omp-dori/bin/dori`를 사용하세요. 운영자가 업데이트를 직접 확인·설치하며 백그라운드 updater나 게시 정책은 활성화되지 않습니다. 업데이트와 rollback은 각 릴리스의 정확한 의존성 pin을 유지합니다. 옵션과 중단 조건, 소스 설치를 중지한 뒤 안전하게 이전하는 절차는 [격리 소비자 안내](docs/releases.md#isolated-macos-arm64hc-consumer)를 참조하세요.
-
-### 3. 본인 환경 설정
-
-[인증과 명시적 시작](docs/releases.md#your-authentication-and-explicit-startup)에 따라 herdr의 OMP integration을 명시적으로 설치하세요.
-
-```bash
-herdr integration install omp
-```
-
-임시 다운로드 디렉터리를 벗어나 실제 작업할 프로젝트 경로에서 herdr 터미널을 열고 pane ID를 확인하세요.
-
-```bash
-herdr pane current
-```
-
-`~/.dori/config.json`에서 `runtime: "herdr"`, 위 pane ID를 사용하는 `leadPane`, `laneWorkspace`, `defaultCwd`, 본인 계정에서 사용할 수 있는 provider가 포함된 `defaultModel`, 메신저 hook을 설정하세요. 설치기가 만든 `agentCommand`, `sessionsDir`, `ompUlwPath`는 유지합니다. 기존 설정·인증·작업·세션은 보존됩니다. OMP 안내에 따라 본인 provider 계정으로 직접 인증하세요. Dori에는 provider 인증 정보가 포함되지 않습니다.
-
-[Discord Developer Portal](https://discord.com/developers/applications)에서 본인의 봇을 만들고 초대하세요. View Channel·Read Message History와 Send Messages, 사용할 thread 권한을 부여하고 Bot 페이지의 **Message Content Intent**를 켭니다. 권한과 메신저 hook은 [봇 설정 상세](skills/dori-mode/references/setup.md#3-bot)를 따르세요. [토큰 파일 안내](docs/releases.md#your-authentication-and-explicit-startup)에 따라 토큰만 본인 소유의 일반 파일 `~/.dori/discord-token`에 mode `0600`으로 보관합니다. 명시적으로 켠 monitor의 자식 프로세스에서만 `DORI_DISCORD_TOKEN`으로 읽으며 채팅·소스·명령 인자·부모 OMP 환경에 토큰을 넣지 마세요.
-
-### 4. 첫 OMP 역할 세션을 명시적으로 시작
-
-Discord Developer Mode를 켜고 본인의 user ID와 정확한 channel ID, 또는 thread 자체의 ID를 복사하세요. 두 값은 비밀이 아닌 양의 십진수 문자열입니다. 같은 herdr 터미널에서 Bash 대화형 입력으로 설정합니다.
-
-```bash
-read -r -p "Your Discord user ID: " DORI_DISCORD_OWNER_ID
-read -r -p "Discord channel or thread ID: " DORI_DISCORD_CHANNEL_ID
-export DORI_DISCORD_OWNER_ID DORI_DISCORD_CHANNEL_ID
-omp --dori-role dori
-```
-
-실행 후 “Dori mode”라고 말하고 이름·메신저 목적지·허용 도구 onboarding을 마치세요. 이 단계는 AI 세션을 명시적으로 시작하며 본인 provider의 사용량을 소비합니다.
-
-### 5. Discord monitor 선택 실행
-
-소유 OMP 세션에서 [Discord owner 수신 예제](docs/releases.md#discord-owner-intake)의 보호된 토큰 파일을 읽는 자식 `argv`와 filter `^INBOUND`로 native `monitor`를 명시적으로 시작하세요. 위에서 설정한 두 비밀이 아닌 ID를 상속합니다. `INBOUND_READY`를 기다린 뒤 새 owner 메시지를 보내세요. 첫 시작은 기존 메시지를 재생하지 않고 기준점만 기록합니다. [Online presence](docs/releases.md#discord-online-presence)는 별도 native monitor를 켜야 합니다. 설치 성공만으로 provider 인증이나 메신저 송수신이 입증되는 것은 아닙니다.
-
-### 업데이트와 rollback
-
-`dori update check --version v0.1.2`, `dori update install --version v0.1.2`, `dori update status`, `dori update rollback`을 사용합니다. 살아 있는 Dori가 있으면 idle이어도 활성화가 보류되므로 세션을 종료한 유지보수 시간을 계획하세요. Rollback에는 검증된 직전 릴리스가 보존되어 있어야 합니다. [업데이트 옵션과 복구](docs/releases.md#updates-and-rollback)를 확인하세요.
-
-새 소비자 빌드는 일반 `omp` 실행 직전에 설치별 24시간 간격으로 검증된 stable 릴리스를 확인하고, Dori·ULW·native pin을 함께 업데이트합니다. 실행 중인 Dori나 lane이 있으면 보류하고 기존 설정은 보존합니다. `dori update auto status|enable|disable`, 실행별 `DORI_AUTO_UPDATE=0`을 지원하며 rollback은 자동 업데이트를 일시 중지합니다. 기존 `v0.1.2`·소스 설치에 소급 적용되지는 않고, 이 기능이 든 릴리스를 먼저 설치해야 합니다. 최신 ULW 후보는 매일 draft PR로 준비되지만 검토·CI·stable 릴리스 발행 전에는 사용자에게 배포되지 않습니다. [자동 업데이트 범위와 시점](docs/releases.md#automatic-ulw-delivery-through-verified-releases)을 확인하세요.
-
-### 기존 Dori 옆에 소스 설치
-
-Maintainer는 별도의 일반 checkout과 `scripts/install-source.sh`를 사용하며 [소스 설치 가이드](docs/releases.md#source-checkouts-for-maintainers)를 따릅니다. Side 모드는 별도 home·wrapper·skill을 사용해 primary Dori 설치를 그대로 둡니다. 소비자 관리 home은 소스 설치로부터 보호됩니다. 설치된 소비자 릴리스 파일은 직접 수정하지 마세요.
-
-소비자 preview와 별개인 소스 `main`의 선택적 설치 경로입니다. 아래 checkout 경로가 아직 사용되지 않을 때 실행하세요.
-
-```bash
-git clone https://github.com/vntrevx/omp-dori.git "$HOME/src/omp-dori" || exit 1
-cd "$HOME/src/omp-dori" || exit 1
+git clone https://github.com/vntrevx/Cataly.git "$HOME/src/Cataly" || exit 1
+cd "$HOME/src/Cataly" || exit 1
 DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
 ```
 
-`DORI_NO_PULL=1`은 선택한 checkout을 그대로 설치합니다. Side 모드는 기본적으로 `~/.omp-dori/config.json`과 별도 state·wrapper를 사용하며 `OMP_DORI_BIN_DIR`(기본 `${BUN_INSTALL:-$HOME/.bun}/bin`)에는 `omp-dori`만 연결합니다. 해당 home에는 `omp-dori <command>`, `omp-dori omp ...`를 사용하고 생성된 `stateDir`·`agentCommand`를 유지하세요. 별도의 봇·채널·runtime namespace를 사용합니다. 이 선택적 설치는 세션이나 monitor를 시작하지 않으며 primary `~/.dori`, `dori` 명령, 전역 skill·extension 링크를 그대로 둡니다.
+소스 설치기는 프로젝트에 묶인 수정 OMP 18.20.0과 ULW 오버레이를 준비합니다.
+`PATH`에 있는 기본 배포판 `omp`는 이를 대체할 수 없습니다. Side 모드는
+기본적으로 `~/.omp-dori`를 사용하며 자체 래퍼와 설정을 유지하고, 주 설치인
+`~/.dori`는 건드리지 않습니다. 설치는 에이전트, 메신저 수신기나 서비스를 시작하지 않습니다.
 
-설치되는 `dori`는 메신저·레인 CLI입니다. 전체 harness는 `dori harness <args>`로, 소스 checkout에서는 `bun src/cli.ts <args>`로도 실행합니다. Harness 시작은 실제 세션과 loop를 만들며 레지스트리·완료 프로토콜은 skill과 별개입니다. Maintainer 소스 업데이트는 소비자 릴리스 업데이트와 구분되는 [`dori upstream`](skills/dori-mode/references/scripts.md#staged-dori-updates)을 사용합니다.
+격리, 설정과 명시적 시작 방법은
+[소스 설치 가이드](docs/releases.md#source-checkouts-for-maintainers)를
+읽어보세요. 네이티브 세션은 본인의 제공업체 인증과 사용량 한도를 사용합니다.
 
-## OMP session contract
+### 게시된 릴리스 사용하기
 
-Lead·duty는 `omp --dori-role dori`, 작업 레인과 기본 reviewer는 `--dori-role lane`을 사용합니다. Dori 확장 handler는 역할로 제한되며 일반 OMP 세션의 동작을 유지합니다. 역할은 재개 시 복원되고 살아 있는 프로세스에 연결된 native 세션·승인 기록으로 입력 전달을 보호합니다. Native goal과 monitor 실행 의도는 세션 상태에 남으며, 소유 Dori 세션을 재개하면 기록된 monitor가 복원됩니다. 소비자 릴리스는 manifest에 묶인 omp-ulw pin과 역할별 import를 유지합니다. 소스 primary 모드는 omp-ulw를 전역으로 로드할 수 있고 side 모드는 wrapper 안에서만 로드합니다. [Runtime 계약](docs/runtime.md)을 확인하세요.
+기존 **v0.1.2 프리릴리스**에는 변경되지 않는 Linux x64 / herdr / Discord
+계약이 적용됩니다. 저장소 이름이 바뀌어도 이 배포 파일이 업그레이드되거나
+새로운 플랫폼 지원이 생기지는 않습니다.
+
+[검증된 정확한 릴리스 설치 절차](docs/releases.md#prerequisites-and-trust)를 따르세요.
+사전 요구 사항, 체크섬, 설치, 본인 인증, 명시적 시작과 선택적으로 활성화하는
+Discord 모니터를 다룹니다. 정확한 릴리스 대신 임의의 `main` 설치기를
+사용하지 마세요.
+
+사용자용 구현은 검증된 릴리스 매니페스트에 명시된 경우 격리된 macOS arm64 / hc
+프로필도 지원합니다. 이는 macOS 릴리스가 게시되었다는 뜻이 아닙니다.
+Slack과 Telegram은 여전히 소스 기능입니다.
+
+## 운영 원칙
+
+Cataly는 사용자가 제공한 계정과 권한으로 작동합니다. 외부에 영향을 주는
+작업에는 해당 승인이 필요하며, 도움이 될 것이라는 판단만으로 권한이 생기지
+않습니다. 실행하려는 세션, 모니터와 서비스만 활성화하세요.
+
+검증에는 한계가 있습니다. 완료 신호가 통과했다는 것은 그 신호에 대한
+증거이지 모든 결과를 보장하는 것은 아닙니다. 보고에서는 관찰한 결과,
+남아 있는 불확실성과 수행하지 않은 작업을 구분해야 합니다.
+
+인증 정보, 비공개 대화와 계정 데이터를 공개 패치나 보고서에 넣지 마세요.
+선택적 텔레메트리는 `DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로
+비활성화할 수 있습니다.
 
 ## 문서
 
-- [릴리스·설치·지원·업데이트·rollback](docs/releases.md)
-- [Dori skill과 운영 규칙](skills/dori-mode/SKILL.md) · [설정 상세](skills/dori-mode/references/setup.md)
-- [Runtime 어댑터와 세션 계약](docs/runtime.md)
-- [Maintainer container 예제](docs/container.md) · [시간 단위 loop와 backlog](docs/hourly-loop.md)
-- [기여 안내](CONTRIBUTING.md) · [변경 기록](CHANGELOG.md) · [수정본 고지](NOTICE)
+- [설치, 지원, 업데이트와 롤백](docs/releases.md)
+- [스킬과 운영 규칙](skills/dori-mode/SKILL.md)
+- [메신저 설정](skills/dori-mode/references/setup.md)
+- [런타임 어댑터와 세션 계약](docs/runtime.md)
+- [컨테이너 설정](docs/container.md)
+- [스케줄링과 백로그](docs/hourly-loop.md)
+- [공유 잠금과 레인 우선순위](docs/locks.md)
+- [기여 안내](CONTRIBUTING.md)
+- [변경 기록](CHANGELOG.md)
+- [라이선스와 소스 출처 표시](LICENSE) · [라이선스 안내](LICENSING.md) · [수정본 고지](NOTICE)
 
 ## 기여하기
 
-이 fork의 maintainer는 [vntrevx](https://github.com/vntrevx)입니다. omp-dori의 [issue](https://github.com/vntrevx/omp-dori/issues)와 [PR](https://github.com/vntrevx/omp-dori/pulls)은 이 저장소에 제출하세요. [기여 안내](CONTRIBUTING.md)에 제안 방법, 소스 개발, 검증, 프로젝트 출처와 기여 조건을 정리했습니다. 이 fork의 PR에는 upstream CLA 서명이 필요하지 않습니다.
-
-## 한계·개인정보
-
-Dori는 사용자가 제공한 계정과 권한으로 실행합니다. 외부 변경에는 여전히 소유자의 승인이 필요하며 완료 검사는 설정한 신호를 입증하는 절차입니다. 모든 결과의 정확성을 보장하지는 않습니다. 운영할 세션과 monitor만 켜세요. AI 세션은 본인 provider의 사용량을 소비합니다.
-
-선택적 telemetry는 `DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로 끕니다. 공개 보고에 인증 정보나 비공개 세션·프로젝트 데이터를 넣지 마세요.
+명확한 목표, 범위가 분명한 변경과 작동한다는 증거를 준비하세요.
+[기여 안내](CONTRIBUTING.md)에서 시작하고,
+[기존 이슈](https://github.com/vntrevx/Cataly/issues)와
+[풀 리퀘스트](https://github.com/vntrevx/Cataly/pulls)를 확인하며,
+변경이 필요했던 맥락을 보존하세요.
 
 ## 라이선스
 
-omp-dori는 구성 요소의 출처에 따라 라이선스를 적용합니다.
-
-- **Sustainable Use License 1.0:** dori-superagent에서 파생된 코드는 [LICENSE](LICENSE)의 적용 범위와 원문 조건을 따릅니다.
-- **MIT:** 기존 OMP 통합 부분은 [LICENSE.omp-dori](LICENSE.omp-dori)를 따릅니다. YeonGyu Kim·betive37의 고지를 유지하고 해당 부분의 vntrevx 유지보수 기여를 명시했습니다.
-- **제3자 라이선스:** oh-my-pi, omp-ulw와 다른 구성 요소는 각각의 라이선스를 유지합니다.
-
-[NOTICE](NOTICE)에 이 fork의 maintainer, 가져온 리비전과 수정본 출처를 기록했습니다. MIT 고지는 명시된 OMP 부분에 적용되며 저장소 전체를 MIT로 재허가하지 않습니다.
+라이선스는 각 구성 요소의 출처를 따릅니다. dori-superagent에서 파생된
+자료에는 [Sustainable Use License 1.0](LICENSE)이 유지되며,
+기존 OMP 통합 부분은 [MIT 라이선스와 저작권 고지](LICENSE.omp-dori)를 유지합니다.
+다른 구성 요소도 각자의 조건을 유지합니다. MIT 고지는 저장소 전체를
+재허가하지 않습니다. [NOTICE](NOTICE)에 가져온 리비전과
+수정본의 출처 표시를 기록합니다.

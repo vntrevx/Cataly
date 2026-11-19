@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { discordInbound, type DiscordInbound } from "../src/messenger/discord-inbound.ts";
 import { discordInboundLive } from "../src/messenger/discord-inbound-live.ts";
+import { discordInboundQueue } from "../src/messenger/discord-inbound-queue.ts";
 import { fileDiscordInboundStore } from "../src/messenger/discord-inbound-state.ts";
 import { MessengerError } from "../src/messenger/http.ts";
 import { discordRestWorld, ownerMessage } from "./discord-inbound-fakes.ts";
@@ -26,6 +27,7 @@ const cursorWorld = async (explicit: boolean, onEmit?: (message: DiscordInbound)
   const timers = gatewayTimers();
   const sockets: FakeGateway[] = [];
   const received: string[] = [];
+  const queue = discordInboundQueue(state.dir);
   const live = discordInboundLive(
     intake,
     (url) => {
@@ -40,6 +42,7 @@ const cursorWorld = async (explicit: boolean, onEmit?: (message: DiscordInbound)
       received.push(`${message.channel}:${message.message}`);
     },
     () => {},
+    queue,
   );
   let finished = false;
   const outcome = live.done.then(
@@ -69,6 +72,7 @@ const cursorWorld = async (explicit: boolean, onEmit?: (message: DiscordInbound)
     async close() {
       live.close();
       await outcome;
+      queue.close();
       state.done();
     },
   };

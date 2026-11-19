@@ -76,12 +76,7 @@ test("restart drains every page after the cursor in numeric order without duplic
   const pages = world.requests
     .map((request) => new URL(request.url))
     .filter((url) => url.searchParams.get("limit") === "100");
-  expect(pages.map((url) => url.searchParams.get("before"))).toEqual([
-    null,
-    String(base + 152n),
-    String(base + 53n),
-    null,
-  ]);
+  expect(pages.map((url) => url.searchParams.get("before"))).toEqual([null, String(base + 152n), String(base + 53n)]);
 });
 
 test("duplicate messages within a history page emit and checkpoint only once", async () => {

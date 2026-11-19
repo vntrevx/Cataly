@@ -17,6 +17,7 @@ import { shq } from "../delivery.ts";
 import { command } from "../update/deployment-process.ts";
 import { digest } from "../update/source.ts";
 import { fileDigest, owned, readJson, realDirectory, regularFile, saveJson } from "./files.ts";
+import { leaseNativeIdentity, nativeStagePrefix } from "./native-cache-lease.ts";
 import { assertNativeExport } from "./native-export.ts";
 import { assertSourceBundle, bundleEnv, readSourceBundle } from "./source-bundle.ts";
 import { checkoutSourceBundle } from "./source-checkout.ts";
@@ -44,14 +45,48 @@ export function nativeDirectory(source: string, home: string): string {
   );
 }
 
+/**
+ * Lease the identity an explicitly chosen executable lies in (by its own path or once resolved), so a writer that
+ * publishes it (a wrapper, a deployment record) holds it like one that prepared it. Then the executable must still be
+ * there: a prune may have removed it before the lease. Paths outside the cache lease nothing.
+ */
+export function leaseNativePath(home: string, path: string, holder = process.pid): void {
+  const cache = join(home, ".cache/omp-dori");
+  const entry = new RegExp(`^native-${process.platform}-${process.arch}-([a-f0-9]{64})$`);
+  const inside = (candidate: string, root: string) =>
+    candidate.startsWith(`${root}/`) ? entry.exec(candidate.slice(root.length + 1).split("/", 1)[0]!)?.[1] : undefined;
+  const real = (candidate: string) => {
+    try {
+      return realpathSync(candidate);
+    } catch {
+      return candidate;
+    }
+  };
+  const identities = new Set(
+    [inside(path, cache), inside(real(path), cache), inside(real(path), real(cache))].filter((id) => id !== undefined),
+  );
+  for (const identity of identities) leaseNativeIdentity(home, identity, holder);
+  if (identities.size && !lstatSync(real(path), { throwIfNoEntry: false })?.isFile())
+    throw new Error(`Selected native executable ${path} is gone from the native cache; prepare it again`);
+}
+
 /** The cache launcher always validates source then execs the protected upstream launcher through the recorded Bun. */
 export function nativeLauncher(source: string, home: string, directory: string, bun: string): string {
   return `#!/bin/sh\nset -eu\nunset PI_COMPILED __PI_NATIVE_VARIANT_CACHE\nexport PATH=${shq(join(directory, "bin"))}:"$PATH"\nexport PI_NATIVES_DIR=${shq(join(directory, "natives"))}\nexport OMP_DEV_LAUNCH_DIR=${shq(join(directory, "launch-cwd"))}\nlaunch_cwd=$PWD\ncd "$OMP_DEV_LAUNCH_DIR"\n${shq(bun)} ${shq(join(source, "scripts/source-dependencies.ts"))} assert-native ${shq(source)} ${shq(home)} >/dev/null\ncd "$launch_cwd"\nexec ${shq(join(directory, "source", LAUNCHER))} --config ${shq(join(directory, "native-config.json"))} "$@"\n`;
 }
 
-/** Recompute source identity and every tracked postimage independently of the native release stamp. */
-export function assertNativeSource(source: string, home: string, bun = process.execPath): NativeReceipt {
+/**
+ * Recompute source identity and every tracked postimage independently of the native release stamp. `holder` leases the
+ * identity first (see `leaseNativeIdentity`): the process that goes on to use it, or the shell that will exec it.
+ */
+export function assertNativeSource(
+  source: string,
+  home: string,
+  bun = process.execPath,
+  holder = process.pid,
+): NativeReceipt {
   const bundle = readSourceBundle(source, true);
+  leaseNativeIdentity(home, bundle.identity, holder);
   const directory = nativeDirectory(source, home);
   const receipt = readJson(join(directory, "receipt.json")) as NativeReceipt;
   const checkout = join(directory, "source");
@@ -102,18 +137,22 @@ export async function provisionNativeSource(
   source: string,
   home: string,
   bun = process.execPath,
+  holder = process.pid,
 ): Promise<NativeReceipt> {
   source = realpathSync(source);
   bun = realpathSync(bun);
   const bundle = readSourceBundle(source, true);
   if (bundle.lock.launcher !== LAUNCHER)
     throw new Error("Native bundle must use the protected upstream omp source launcher");
+  // Leased before the existence check, so a prune either keeps this identity or has finished before it is looked at.
+  leaseNativeIdentity(home, bundle.identity, holder);
   const directory = nativeDirectory(source, home);
-  if (lstatSync(directory, { throwIfNoEntry: false })) return assertNativeSource(source, home, bun);
+  if (lstatSync(directory, { throwIfNoEntry: false })) return assertNativeSource(source, home, bun, holder);
   const cache = join(home, ".cache/omp-dori");
   realDirectory(cache, true);
   owned(cache);
-  const stage = mkdtempSync(join(cache, "native-stage-"));
+  // The stage names its identity and owner, so a prune can tell one whose owner was killed (Bun skips finally on a signal).
+  const stage = mkdtempSync(join(cache, nativeStagePrefix(bundle.identity)));
   const checkout = join(stage, "source");
   const addon = join(stage, "addon");
   const natives = join(stage, "natives");
@@ -202,7 +241,7 @@ export async function provisionNativeSource(
     saveJson(join(stage, "native-config.json"), { update: { auto: false } });
     saveJson(join(stage, "receipt.json"), receipt);
     renameSync(stage, directory);
-    return assertNativeSource(source, home, bun);
+    return assertNativeSource(source, home, bun, holder);
   } finally {
     if (lstatSync(stage, { throwIfNoEntry: false })) rmSync(stage, { recursive: true, force: true });
   }

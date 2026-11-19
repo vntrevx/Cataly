@@ -1,53 +1,97 @@
-# Contributing to omp-dori
+# Contributing to Cataly
 
-This is the contribution guide for [vntrevx/omp-dori](https://github.com/vntrevx/omp-dori).
-The fork is maintained by [vntrevx](https://github.com/vntrevx); issues and changes belong here.
+Help Cataly understand the goal, notice the context, and carry the work through.
+A good contribution improves the outcome without making the user manage more
+steps or guess what actually happened.
+
+This guide applies to [vntrevx/Cataly](https://github.com/vntrevx/Cataly), maintained
+by [vntrevx](https://github.com/vntrevx).
 
 ## Propose a change
 
-1. Check this fork's [issues](https://github.com/vntrevx/omp-dori/issues) and
-   [pull requests](https://github.com/vntrevx/omp-dori/pulls) for related work.
-2. Open an issue describing the observed behavior, reproduction and expected result, or a focused
-   pull request against `main` with the reason for the change.
-3. Develop in an ordinary source checkout using the setup below. Keep credentials, private
-   conversations, account data and installed release state out of patches and fixtures.
-4. Run the applicable gates below and record the actual commands and results. State any check
-   you did not run; include a regression for changed behavior.
-5. Preserve source attribution and the license applicable to the material you change.
-   Update documentation when the user-facing behavior or setup changes.
+1. Read the relevant code, documentation, and
+   [existing issues](https://github.com/vntrevx/Cataly/issues) or
+   [pull requests](https://github.com/vntrevx/Cataly/pulls).
+2. Explain the intended outcome, the current behavior, and the evidence behind the
+   change. Give a reproduction when reporting a bug.
+3. Make the smallest complete change that fits the existing system. Preserve
+   established behavior, isolation boundaries, and the reason earlier fixes exist.
+4. Verify the result on the surface that changed. Report actual commands,
+   failures, skips, and limits; do not replace evidence with confidence.
+5. Update user-facing documentation and preserve the license and attribution
+   applicable to the material.
+
+Keep credentials, private conversations, account data, installed release state,
+and private QA artifacts out of contributions. Work around unrelated changes in
+a shared checkout rather than reverting them.
 
 ## Project credit
 
-omp-dori brings together [dori-superagent](https://github.com/sisyphuslabs/dori-superagent),
-[oh-my-pi](https://github.com/can1357/oh-my-pi) and [omp-ulw](https://github.com/dbc-hbin/omp-ulw).
-The pre-existing OMP integration retains the YeonGyu Kim and betive37 notices.
-Current fork maintenance is credited to vntrevx. Imported revisions and modified-copy provenance
-are recorded in [NOTICE](NOTICE); each project's original authors retain their credit.
+Cataly builds on [dori-superagent](https://github.com/sisyphuslabs/dori-superagent),
+[oh-my-pi](https://github.com/can1357/oh-my-pi), and
+[omp-ulw](https://github.com/dbc-hbin/omp-ulw). The pre-existing OMP integration
+retains the YeonGyu Kim and betive37 notices; vntrevx maintains this integration.
+[NOTICE](NOTICE) records imported revisions and modified-copy provenance.
+A new name does not replace the original authors' credit.
 
 ## Contribution terms
 
-Changes retain the existing license applicable to the affected material: Sustainable Use
-License 1.0 for dori-superagent-derived code, and MIT for the pre-existing OMP integration
-covered by [LICENSE.omp-dori](LICENSE.omp-dori). See the scope in [LICENSE](LICENSE).
-Submit only material you have the right to contribute.
+Submit only work you have the right to contribute. Changes retain the license
+applicable to the affected material: Sustainable Use License 1.0 for
+dori-superagent-derived code, and MIT for the pre-existing OMP integration covered
+by [LICENSE.omp-dori](LICENSE.omp-dori). [LICENSE](LICENSE) explains the scope.
 
-This fork does not require a CLA signature or a CLA comment on its pull requests.
-The workflow is restricted to upstream `sisyphuslabs/dori-superagent`; [CLA.md](CLA.md)
-is retained as that upstream project's agreement, not a new agreement for this fork.
+Cataly does not require a CLA signature or a CLA comment. The retained [CLA](CLA.md)
+and its workflow belong to upstream `sisyphuslabs/dori-superagent`, not a new
+agreement for this repository.
 
 ## Source development and public releases
 
-Consumers follow the [verified release installation and support guide](docs/releases.md) and use `dori update check|install|status|rollback`. Maintainers work in a separate ordinary checkout; the source-only installer is `scripts/install-source.sh`. To install the current checkout beside an existing Dori without pulling, use `DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh`. `OMP_DORI_HOME` selects the side config/state/wrapper home (default `~/.omp-dori`); `OMP_DORI_BIN_DIR` selects the `omp-dori` command destination. The wrappers and `omp-dori-mode` skill keep lanes in that home, with `HC_SESSION=omp-dori` by default (`OMP_DORI_HC_SESSION` overrides it). See the [source installation guide](docs/releases.md#source-checkouts-for-maintainers) for modes, backups and path overrides.
+Develop in an ordinary source checkout, never inside a frozen installed release.
+The project is called Cataly; existing `dori`, `omp-dori`, and `omp` commands,
+installation homes, package identities, and published asset names remain in use.
 
-The current source default prepares `native-omp.lock`/`native-omp.patch` and `omp-ulw.overlay.lock`/`omp-ulw.patch`, preserving the upstream ULW commit schema. Use the generated primary `~/.dori/bin/omp` or side `omp-dori omp`, not a stock command on PATH. The official addon package has its own frozen `native-addon/bun.lock`; no Cargo build is required. Read [the bound-source contract](docs/releases.md#current-source-bundle) for source identities, explicit overrides and older release rollback. Changes to these defaults require real isolated installation evidence in addition to source gates.
+To install a selected checkout alongside a primary installation without pulling:
 
-Consumer control metadata and the managed source pointer protect the selected installation home in both modes, including aliases: `primary` source installation holds on consumer-managed `~/.dori`, and `side` requires a separate destination. An unmanaged source home retains the existing primary workflow; another unmanaged Dori prompts in a terminal or holds without one unless a mode is explicit. Do not develop inside a frozen installed release. Source fixture checks, real OMP wrapper/skill isolation and provider or messenger QA are separate evidence; this change claims no new live QA.
+```bash
+DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
+```
 
-Upstream porting and candidate/recovery operations use `dori upstream ... --config FILE`. That interface can use configured models and maintainer publication permissions; consumer release management uses neither. Build fixed public assets with `bun scripts/release.ts build --out DIST --prerelease`, then follow the [exact-commit review/QA/CI/tag publication procedure](docs/releases.md#building-and-publishing-releases). Source checks, real runtime/messenger evidence and independent external-user testing are distinct claims.
+Side mode defaults to `~/.omp-dori`. `OMP_DORI_HOME` selects its home,
+`OMP_DORI_BIN_DIR` selects the command destination, and `OMP_DORI_HC_SESSION`
+overrides its default `omp-dori` hc namespace. Keep the generated `stateDir`,
+`agentCommand`, wrappers, and skill together. Consumer-managed homes, including
+aliases, are protected from source installation in both primary and side modes.
+See [source installation](docs/releases.md#source-checkouts-for-maintainers).
 
-ULW candidate preparation reuses the bound source overlay: `bun scripts/update-ulw.ts --out /absolute/new-directory` reads committed metadata and creates a separate review artifact. The daily canonical workflow proposes a metadata-only draft PR and exact-head CI; it does not approve compatibility or publish a release. Review conflicts and behavioral changes, preserve notices and existing settings, then follow the normal release gates. See [automatic delivery and maintainer candidates](docs/releases.md#automatic-ulw-delivery-through-verified-releases).
+Current source prepares `native-omp.lock` / `native-omp.patch` and
+`omp-ulw.overlay.lock` / `omp-ulw.patch`. Use the generated primary
+`~/.dori/bin/omp` or side `omp-dori omp`, not stock OMP on `PATH`. The official
+addon has its own frozen `native-addon/bun.lock`; no Cargo build is required.
+Changing these defaults requires real isolated installation evidence as well as
+source checks. See [bound source identities](docs/releases.md#current-source-bundle).
+
+Consumers use the [verified release guide](docs/releases.md) and
+`dori update check|install|status|rollback`. Maintainer porting and recovery use
+`dori upstream ... --config FILE`; that separate interface may use configured
+models and publication permissions. Consumer release management uses neither.
+Build fixed assets with `bun scripts/release.ts build --out DIST --prerelease`.
+The [exact-commit release procedure](docs/releases.md#building-and-publishing-releases)
+describes the publication gates, but those gates and the tag/scheduled workflows
+still require the repository identity `vntrevx/omp-dori`. They must be updated
+separately for `vntrevx/Cataly`: the renamed repository's tag and daily ULW jobs
+are currently skipped, and publication checks reject its new identity.
+This documentation change does not enable that automation.
+
+ULW preparation uses `bun scripts/update-ulw.ts --out /absolute/new-directory`.
+After the repository gates are updated, the daily workflow can propose a separate
+metadata-only draft and exact-head CI. It does not approve compatibility, merge
+itself, publish a release, or update a user installation. Review conflicts and
+preserve notices and existing settings.
 
 ## Run the gates
+
+Prepare the real fixtures before the full local gate:
 
 ```sh
 bun install --frozen-lockfile
@@ -67,98 +111,105 @@ export DORI_TEST_COMPAT_ULW_ENTRY="$compat/index.ts"
 bun run ci
 ```
 
-`bun run ci` is the same chain CI runs:
+Fixture preparation needs network access unless the exact packages are already
+available. The compatibility checkout is test-only, outside the repository, and
+does not select a production dependency or change model/auth settings.
 
-- `check:fixtures` — fail fast when the real ULW, compatibility entry or exact native host is missing.
-  This checks prerequisites; it does not replace the unchanged native behavior tests.
-- `check` — Biome lint and format.
-- `typecheck` — `tsc --noEmit` for the harness, skill scripts and extension, run concurrently.
-- `knip` — no unused files, exports or dependencies.
-- `lint:loc` — the TypeScript file-length gate, with a 250-line limit per capped file.
-- `test:ci` — the harness suite in two isolated Bun worker processes.
-- `test:skill` — the skill's script suite.
-- `test:extension` — the OMP extension suite.
+The full chain is:
 
-`bun run test` remains the sequential harness command for debugging. Linux CI uses `test:ci` with two isolated Bun file workers. These are native `--parallel` file workers, not `--concurrent`: tests within each file remain sequential, and each file has an isolated global/module registry. The explicit worker limit avoids scaling subprocess-heavy tests to every available CPU. Linux test discovery and timeouts are unchanged. Automatic CI runs the Linux `check`, `e2e-herdr` and `e2e-hc` jobs; it no longer runs a macOS job. Existing macOS tests and the consumer verification scripts remain available for manual QA.
+| Command | What it checks |
+| --- | --- |
+| `check:fixtures` | Real ULW, compatibility entry, and exact native-host prerequisites |
+| `check` | Biome lint and formatting |
+| `typecheck` | Harness, skill, and extension TypeScript projects |
+| `knip` | Unused files, exports, and dependencies |
+| `lint:loc` | The 250-line limit per capped TypeScript file |
+| `test:ci` | Harness tests in two isolated Bun file workers |
+| `test:skill` | The skill's script suite |
+| `test:extension` | Native OMP extension integration |
 
-`.bun-test-timings.json` holds measured per-file durations used as scheduling hints. They are intended to start slower files earlier and reduce worker imbalance; their effect on idle time and suite runtime has not been measured. A file missing from the manifest is still run; it only loses its ordering hint, so the file is a performance hint, never a coverage gate. Regenerate it whenever the suite's shape changes enough to matter:
+`bun run test` remains the sequential harness command for debugging. File workers
+are native `--parallel`, not `--concurrent`; tests within each file are sequential.
+Do not change discovery, skips, assertions, worker limits, or timeouts to hide a
+failure. `.bun-test-timings.json` is an ordering hint, not a coverage gate; files
+missing from it still run. Its effect on total runtime has not been established.
+Regenerate measured hints with:
 
 ```sh
 bun test --parallel=1 --timings=.bun-test-timings.json --update-timings ./test/
 ```
 
-The Linux herdr E2E installer uses the pinned REST release asset and verifies its SHA256 before atomically replacing the binary. Each download attempt is capped at 60 seconds (plus a 5-second termination grace); at most three attempts run, with 20/40-second backoff. A checksum failure fails immediately. The hc job requires its E2E file to exist; a missing file is an error, not a successful skip. All three remaining release gates are mandatory.
+Automatic CI requires exactly **`check`, `e2e-herdr`, and `e2e-hc`** on Linux.
+All three must pass on the reviewed head and actual combined target content.
+There is no automatic macOS job; existing macOS tests and consumer verification
+remain available for manual QA. The herdr job verifies a pinned asset checksum,
+limits download attempts, and fails immediately on a checksum mismatch. A missing
+hc E2E file is a failure, not a skip.
 
-The unit suites need `bun` and `git` and use recorded stand-ins for `herdr` and `gh`. The root and extension suites also need the installed pinned native-host fixture prepared above. `test/e2e.test.ts` starts a real `herdr` server and is skipped when `herdr` is not on `PATH`.
+### Native and provider boundaries
 
-The extension's `with the real omp-ulw` group executes the bound `ref/omp-ulw/index.ts` fixture. Targeted extension runs retain the existing absent-fixture skip, but the full `ci` gate rejects missing prerequisites before running tests. Prepare the default overlay and separate legacy override using the full-gate recipe above.
+The root and extension suites require the genuine OMP 18.20.0 host fixture,
+including its published declarations. A same-version foreign host, raw checkout
+without `dist/types`, or stock-version stamp is not a substitute. The guarded
+`with the real omp-ulw` tests must execute, not be skipped in the full gate.
 
-The extension declares OMP 18.20.0 as a host peer. Its embedded loader import is typed against the genuine
-published declarations in the native fixture; a raw source checkout without `dist/types` is not a substitute
-for that consumer typecheck. Runtime composition uses the selected host's canonical extension loader and
-native settings scope.
+Prompt-composition checks use OMP's real extension loader and combined
+`ExtensionRunner.emitBeforeAgentStart` result, including both standalone extension
+orders and a later declining handler. Preserve the base prompt, existing winner,
+one model preset and bookkeeping block, downstream context, and role/model gates.
+The separate pinned compatibility factory establishes an opaque legacy baseline;
+it is not the current default overlay.
 
-After that setup, use `bun run test:extension` for a focused extension run. The same native-host
-validator is used by the prerequisite check and prompt-composition tests; a same-version foreign
-host cannot substitute for the imported fixture.
+Linux `check` also executes the bound ULW code-mode and task-host checks against
+the guarded bound native source. Keep the upstream assertions, including the
+documented 18.20.2 accounting behavior: a failure on the selected 18.20.0 host
+holds the pin or release rather than relaxing the test.
 
-Fixture preparation needs network access unless the exact packages are already available. Confirm that the real-fixture tests ran without being skipped: role gating and native Sol composition must execute. The guard invokes the real OMP `loadExtensionFromFactory` and `ExtensionRunner.emitBeforeAgentStart`, asserting on the combined result, not FakePI's per-handler returns. It covers an imported dependency and both standalone extension orders, retains one model preset, one bookkeeping block and downstream context, replaces the host role, leaves the base untouched and stays stable across repeated turns. A final declining handler must preserve the earlier winner; excluded roles, models and subagents leave the prompt they receive unchanged. A fail-on-access model registry and forbidden action callbacks prevent auth, provider and unrelated work. The private fixture package and its lock are test-only: root/consumer dependencies, model defaults and installer pins are unchanged. These checks do not establish live TUI, messenger or provider behavior; no performance gain is claimed.
-
-The Linux `check` job additionally provisions the actual bound native source and runs the bound ULW `code-mode-host-check.ts` and `code-mode-task-host-check.ts` against its guarded `omp`. Both checks use synthetic loopback providers and are mandatory; neither a stock-version stamp nor unit tests substitute for task-bridge compatibility. The task smoke retains its upstream assertions, including the explicitly documented 18.20.2 accounting behavior; a failure on the selected bound 18.20.0 holds the pin/release rather than relaxing those assertions.
-
-The required-source regression also runs genuine SDK sessions through the shared print/RPC runtime initializer and a loopback HTTP provider. Missing managed overlays must send no request for Dori or lane roles, both through normal session prompting and direct agent dispatch; ordinary sessions must still reach the local provider. This catches native handler exceptions being reported and swallowed without cancelling a request. It uses only synthetic local credentials and blocks external catalog access.
-
-The compatibility checkout stays outside the repository (`RUNNER_TEMP` in CI) and selects no production dependency. Its exact `cbfe5ee72e5b2783af01616e7f4d3da5e3f9180d` factory runs alone on the genuine 18.20.0 host to establish the legacy prompt as opaque baseline data. Dori's explicit embedded import must preserve that baseline plus one Sol lane-main bookkeeping block, with unchanged base and stable repeat turns. Dori, ordinary, non-Sol and subagent prompts retain the applicable legacy behavior and role gate; no current model-preset marker or standalone legacy mode is assumed. The current default instead uses 33b375dc plus its bound overlay. This guard does not mutate global model/auth settings or external dependencies, and never authorizes a stock/version-only cache as a source-bundle substitute.
+Required-source regressions exercise genuine SDK print/RPC initialization against
+synthetic loopback providers. Missing managed overlays must send no request for
+Dori or lane roles, including direct dispatch, while ordinary sessions still
+reach the local provider. These tests neither use real provider credentials nor
+establish live TUI, messenger, provider, or external-user behavior.
 
 ## Ready for review
 
-Use the [PR template](.github/pull_request_template.md). Mark a PR ready for review only when the
-applicable local requirements below are met; otherwise keep it draft/not ready. Explain any item
-marked not applicable. A normal PR can have required remote CI pending, but it is not merge-ready
-until all three required jobs pass on the reviewed head and actual combined target content.
-Docs-only changes need accurate content and links, not artificial runtime or word-count tests;
-the existing required CI jobs still apply.
+Use the [PR template](.github/pull_request_template.md). Keep one clear concern per
+PR; explain what changed and why, related PRs, and unmerged dependencies (or none).
+Record the exact head, target, commands, and content each evidence run covers.
 
-- Keep one concern per PR, with a title saying what changed and a body explaining why. Link related
-  PRs and list unmerged dependencies explicitly (or say none). Record the final source/head SHA and
-  target branch/base SHA, and identify the revisions each evidence run covers.
-- Describe the state/config the change owns, defaults before and after, and compatibility with
-  earlier accepted behavior. Preserve existing isolation fences and regressions, including the
-  bound-source and native contracts above; passing the newest scenario must not undo an earlier fix.
-- For bugs, record a reproduction that fails before the fix and passes after it. Add regressions
-  for the relevant boundaries and failure paths; a test that cannot fail is not a test.
-- Report actual commands and results, including failures and skips, with environment/capability
-  limits and reasons for unrun checks. Label unverified claims. Keep carried-forward and partial-run
-  results separate; never present their combined counts as a fresh full rerun.
-- Rerun affected checks after new code. Once final content is stable, complete one full local
-  `bun run ci` using the [existing setup](#run-the-gates). The [CI workflow](.github/workflows/ci.yml)
-  separately runs `check`, `e2e-herdr` and `e2e-hc` on the PR head. Partial reruns
-  replace neither the final full local run nor the three required remote jobs.
-- When CLI, native or runtime behavior changes, exercise that actual surface with isolated state
-  and record the runtime/host identity. Identify any mocks or fixtures used and state which live
-  capabilities were not exercised.
-- Performance claims need pinned baseline/candidate results for the same workload and environment,
-  including correctness and relevant time/memory measurements. State measurement limits; an
-  optimization title or promised speedup is not evidence.
-- Do not weaken assertions, tests, skips or timeouts to get a pass. Keep credentials, private
-  transcripts, account data and private config out of patches, fixtures and evidence.
-- Public surfaces — issues, pull requests, commits, review comments — are English.
-- Do not edit another person's work to make your change pass; report it instead.
+- Reproduce bugs before fixing them and retain regressions that can actually fail.
+- For CLI, runtime, or native changes, exercise that real surface with isolated
+  state. Identify stand-ins and capabilities that were not exercised.
+- Performance claims need matched, pinned baseline/candidate measurements and
+  correctness checks. Distinguish observed counts from inferred syscall counts.
+- Once code is stable, complete one full local `bun run ci` with real fixtures.
+  Do not present partial reruns or summed historical results as a new full run.
+- Prose-only changes need accurate content, commands, and links, not artificial
+  runtime or word-count tests. The three required remote jobs still apply.
+- Public issues, PRs, commits, and review comments are English. Exclude private
+  transcripts, configuration, account data, and QA workspace contents.
+
+Mark ready only when applicable local requirements are met. Explain items that
+do not apply. Remote checks may still be pending on a ready PR; it is merge-ready
+only after all required jobs pass on the final reviewed combined content.
 
 ## Integrate without repeating work
 
-- Freeze a bounded batch and declare dependencies before validation. New arrivals belong to the
-  next batch; do not silently grow the active goal to include every open PR.
-- Start with two active candidates, not an unbounded pool. Keep one integration owner; serialize
-  shared-file edits and actual merges. Adjust concurrency only from resource and timing evidence.
-- Resolve contracts and earlier regressions before expensive gates. Use focused checks while
-  fixing, then freeze final content for the full gate and fresh review.
-- While one frozen candidate waits for read-only review or remote CI, prepare the next in an
-  independent worktree. Reuse evidence only for unchanged content, dependencies and test environment.
-- Merge the reviewed head only after required checks pass for the actual combined target content.
-  A moving target branch needs a new integration check; commit metadata alone does not justify
-  repeating identical local checks or bypassing required remote checks.
+Freeze an actual PR set and declare dependencies. Change the scope explicitly;
+do not silently turn it into every new arrival or a numeric range of closed PRs.
+Keep at most two source implementation units active, one integration owner, and
+serialized shared-file edits and merges. Read-only review and CI can overlap
+independent source work.
+
+Resolve contracts and regressions before the expensive gate. Reuse evidence only
+for unchanged content, dependencies, and environment. A moving target requires a
+new integration check; commit metadata alone neither justifies repeating identical
+checks nor permits bypassing the final required remote gates.
 
 ## Licences and notices
 
-Upstream code remains under the [Sustainable Use License 1.0](LICENSE). The pre-existing OMP integration retains its [MIT notice](LICENSE.omp-dori); this does not relicense upstream code as MIT. [NOTICE](NOTICE) records the modified copy and attribution, and third-party components retain their own licences. Contributions follow the applicable existing licence terms. The upstream [CLA](CLA.md) is retained unchanged and applies to upstream sisyphuslabs/dori-superagent only; this fork does not require a CLA signature.
+The [licensing guide](LICENSING.md) explains the source boundaries. The
+[Sustainable Use License](LICENSE), separate [MIT notice](LICENSE.omp-dori),
+and [modified-copy attribution](NOTICE) follow the source they cover. Contributions
+retain those applicable terms; a rename does not convert upstream code to MIT.
+Keep third-party notices and the retained upstream CLA intact.

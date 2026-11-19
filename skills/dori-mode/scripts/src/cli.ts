@@ -8,7 +8,7 @@ import type { FlowDeps } from "./done-flow.ts";
 const USAGE = `dori <command> [options]
 
   harness <command> [args...]          dispatch every upstream harness command (up, inbox, duty, review, merge, loop, backlog, migrate...)
-  update <command> [options]           verified releases: check, install, status, rollback [--version TAG] [--from DIST]
+  update <command> [options]           verified releases: check, install, status, rollback, cache [--version TAG] [--from DIST]
   upstream <command> --config FILE     maintainer staging: check, stage, watch, status, snapshot, restore, recover, restart
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]

@@ -70,7 +70,7 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
     }
     await state.blocked.get(path);
     if (state.unreachable.has(path)) throw new TypeError("private transport diagnostic");
-    const response = state.responses.get(path);
+    const response = state.responses.get(path + url.search) ?? state.responses.get(path);
     if (response !== undefined) return { status: 200, headers: {}, body: response };
     let body: unknown;
     if (path === "/users/@me") body = { id: state.botId, bot: state.bot };

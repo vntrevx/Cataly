@@ -125,6 +125,7 @@ test.each(["", "not-a-command", "__proto__", "constructor", "--help"])(
     expect(result.code).toBe(command ? 1 : 0);
     expect(result.err).toBe("");
     expect(result.out).toContain("dori <command>");
+    expect(result.out).toContain("verified releases: check, install, status, rollback, cache");
   },
 );
 
