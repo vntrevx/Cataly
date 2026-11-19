@@ -211,7 +211,15 @@ test("the harness launch record is not the lane's report: a silent launched lane
     },
   };
   await launchLane(deps, { key: "new-lane", title: "t", brief, done: "closed acme/app#3", thread: "chat:team/9" });
+  world.panes = [{ pane_id: "w:p9", workspace_id: "w", agent: "pi", agent_status: "working" }];
+  const beforeNudge = world.calls.length;
   clock.at = T0 + 21 * MIN;
   expect((await freshnessTick(deps, "/home/test")).map((a) => a.kind)).toEqual(["nudged", "no-report"]);
+  expect(
+    world.calls
+      .slice(beforeNudge)
+      .filter((call) => call[2] === "send-text")
+      .map((call) => call[3]),
+  ).toEqual(["w:p9"]);
   expect(world.calls.some((c) => c[0] === "notify")).toBe(false);
 });

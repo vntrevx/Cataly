@@ -15,6 +15,8 @@ export { anchoredReportLine, lastReportLine, scrubForThread } from "./freshness-
 export type SweepAct = {
   readonly kind:
     | "nudged"
+    | "held"
+    | "delivery-error"
     | "posted"
     | "no-report"
     | "post-failed"

@@ -6,6 +6,8 @@
 
 - Add explicit lane parking, exact-session reopening, abandonment receipts and a read-only hold ledger. Keep worktrees, accepted pending Discord messages and ordinary Done verification.
 
+- Lane messages persist a private local dispatch identity before delivery. An uncertain send fences later tells, automatic nudges and claim/objection notifications across restart; explicit pause/resume remains available. `dori tell <key> --status` inspects the latest record, and `--resolve ID --note WHY` releases only that exact hold without confirming, cancelling or replaying the original action. These IDs are not native submission/run receipts. Direct native Discord owner input, ASK replies and explicitly invoked reopen --note keep their existing admission rules. The operator reopen note neither creates nor clears an automation hold.
+
 - Add read-only lane status, historical ETA summaries and opt-in single-message Discord/Telegram boards. Boards validate options before delivery, omit URL credentials and parameters, and retain pending holds; Telegram recovery requires an existing message binding.
 
 - Add read-only `dori doctor` configuration, adoption and monitor diagnostics, canonical `monitor-presets`, and an advisory boot summary. Doctor checks external terminal metadata and verifies the native monitor's restart policy; documented filters include supervision and loop-error events.

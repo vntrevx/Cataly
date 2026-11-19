@@ -14,6 +14,12 @@ type ProbeEvent =
 const probePayloads: Partial<Record<string, string>> = {
   LANE_WATCH_READY: "",
   LANE_WATCH_WARN: "Error: registry is unreadable",
+  LANE_WATCH_ERROR:
+    "integration ENOSPC: delivery state write failed; inspect dori tell integration --status and the original session; do not resend",
+  LANE_NOTIFY_HELD:
+    "integration TELL_HELD integration delivery=held: request=00000000-0000-4000-8000-000000000000 is uncertain; this message was not sent; inspect dori tell integration --status, then --resolve 00000000-0000-4000-8000-000000000000 --note REASON to end only its hold",
+  LANE_NOTIFY_UNCONFIRMED:
+    "integration TELL_UNCONFIRMED integration delivery=unconfirmed: request=00000000-0000-4000-8000-000000000000; no move to working was seen (a working agent gets it as queued input); later messages are held; do not resend",
   LANE_DONE_CLAIMED: "integration w1:p2 checks passed",
   LANE_CHANGED: "integration moved on while this ran (now working, was done-claimed); verification not recorded",
   LANE_NOT_DONE: "integration pending checks",
@@ -26,7 +32,10 @@ const probePayloads: Partial<Record<string, string>> = {
   "HOST_GUARD CLEAR": "load 2, memory free 46%, disk free 50 GB, swap free 4.0 GB",
   "HOST_GUARD COMPUTE_READY": "load 2 < 8",
   "HOST_GUARD COMPUTE_BUSY": "load 10",
-  NUDGED: "integration 15 min silent, delivery delivered",
+  NUDGED: "integration TOLD integration delivery=confirmed",
+  HELD: "integration TELL_FAILED integration delivery=failed: the lane is paused; resume it first; nothing was sent",
+  "DELIVERY-ERROR":
+    "integration ENOSPC: delivery state write failed; inspect dori tell integration --status and the original session; do not resend",
   POSTED: "integration Progress (from the lane's last report): checks passed",
   "POST-FAILED": "integration thread hook failed (exit 1)",
   "NO-REPORT": "integration report journal has no report",

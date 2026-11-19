@@ -5,7 +5,8 @@ import type { SweepAct } from "./freshness.ts";
 import { type Lane, sameLaneGeneration, sessionOf } from "./registry.ts";
 import { type Progress, reportLine } from "./reports.ts";
 import { runtimesOf } from "./run.ts";
-import { readScreen, sendVerified } from "./sessions.ts";
+import { readScreen } from "./sessions.ts";
+import { tellLane } from "./tell.ts";
 
 export const lastReportLine = (screen: string, key: string): string | null => {
   const grammar = new RegExp(
@@ -94,6 +95,9 @@ export const sampleLegacyReport = async (deps: FlowDeps, lane: Lane, ref: Sessio
   return anchoredReportLine(await readScreen(runtimesOf(deps), ref, 200), lane.key);
 };
 
+// A broken delivery store cannot reliably persist notification bookkeeping. Reset this cache with the sweep process.
+const deliveryErrors = new WeakMap<FlowDeps, Map<string, string>>();
+
 /** Called under the delivery lock, after the observed lane has been revalidated. */
 export const notifyFreshness = async (
   deps: FlowDeps,
@@ -111,25 +115,38 @@ export const notifyFreshness = async (
   const silentMin = Math.round((now - heard) / 60_000);
   let current = lane;
   if (running && silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
-    const delivery = await sendVerified(
-      runtimesOf(deps),
-      deps.clock,
-      ref,
-      `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`,
-      undefined,
-      lane.lifecycleEpoch ? lane.session : undefined,
-    );
-    // Record the completed attempt on its own pane even if a claim arrived during delivery.
-    const nudged = await deps.registry.update(lane.key, (stored) => {
-      if (!stored || stored.openedAt !== lane.openedAt || stored.lifecycleEpoch !== lane.lifecycleEpoch) return null;
-      const actual = sessionOf(stored);
-      if (actual?.id !== ref.id || actual.runtime !== ref.runtime || stored.session !== lane.session) return null;
-      return { ...stored, lastNudgeAt: now };
-    });
-    if (!nudged) return;
-    current = nudged;
-    acts.push({ kind: "nudged", lane: lane.key, detail: `${silentMin} min silent, delivery ${delivery}` });
-    if (!sameLaneGeneration(lane, current)) return;
+    const errors = deliveryErrors.get(deps) ?? new Map<string, string>();
+    deliveryErrors.set(deps, errors);
+    try {
+      const delivery = await tellLane(
+        deps,
+        lane,
+        `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`,
+        {
+          locked: true,
+          ...(lane.lifecycleEpoch && lane.session !== undefined ? { expectedSessionId: lane.session } : {}),
+        },
+      );
+      // Record the completed attempt on its own pane even if a claim arrived during delivery.
+      const nudged = await deps.registry.update(lane.key, (stored) => {
+        if (!stored || stored.openedAt !== lane.openedAt || stored.lifecycleEpoch !== lane.lifecycleEpoch) return null;
+        const actual = sessionOf(stored);
+        if (actual?.id !== ref.id || actual.runtime !== ref.runtime || stored.session !== lane.session) return null;
+        return { ...stored, lastNudgeAt: now };
+      });
+      if (!nudged) return;
+      current = nudged;
+      errors.delete(lane.key);
+      acts.push({ kind: delivery.code === 2 ? "held" : "nudged", lane: lane.key, detail: delivery.line });
+      if (!sameLaneGeneration(lane, current)) return;
+    } catch (error) {
+      const detail = `${error instanceof Error ? error.message : String(error)}; inspect dori tell ${lane.key} --status and the original session; do not resend`;
+      const signature = `${lane.openedAt}|${detail}`;
+      if (errors.get(lane.key) !== signature) {
+        errors.set(lane.key, signature);
+        acts.push({ kind: "delivery-error", lane: lane.key, detail });
+      }
+    }
   }
   const hook = threadReplyHook(deps, current, now, heard);
   if (hook) {

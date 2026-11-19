@@ -141,6 +141,8 @@ export const reopenLane = async (deps: FlowDeps, seen: Lane, note?: string): Pro
       if (!nativeGoalStatus(state))
         return fail(`REOPEN_UNVERIFIED ${lane.key}: session or goal unverified; note not sent`, current);
     }
+    // Explicit operator control stays outside the automation fence, like direct owner input.
+    // This note neither creates nor clears a .delivery record, even when its delivery is unconfirmed.
     const delivery = note
       ? await sendVerified(rts, deps.clock, ref, `[LEAD] ${note}`, undefined, lane.session)
       : undefined;

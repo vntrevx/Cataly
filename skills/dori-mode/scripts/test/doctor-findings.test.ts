@@ -46,7 +46,7 @@ test("doctor accepts bare readiness lines and payload-bearing monitor events", a
     });
     const watch = manifest(
       "watch",
-      "^LANE_(?:WATCH_READY$|(?:WATCH_WARN|DONE_CLAIMED|CHANGED|NOT_DONE|CLOSED|HELD) \\S)",
+      "^LANE_(?:WATCH_READY$|(?:WATCH_WARN|WATCH_ERROR|NOTIFY_HELD|NOTIFY_UNCONFIRMED|DONE_CLAIMED|CHANGED|NOT_DONE|CLOSED|HELD) \\S)",
     );
     const guard = manifest(
       "guard",
@@ -76,7 +76,7 @@ test.each([
     name: "freshness",
     argv: ["dori", "freshness"],
     filter:
-      "^(?:(?:BLOCKED|WARNING) \\S+ (?:wallMinutes|tokens|costUsd) ceiling (?:reached \\(\\d+\\)|cannot be checked: usage unavailable)$|(?:NUDGED|POSTED|POST-FAILED|NO-REPORT|PENDING-REPORT|STALE-REPORT|STALLED|JOURNAL-ERROR|WORKING-WHILE-PAUSED|SUPERVISION-ERROR|WARN)\\b)",
+      "^(?:(?:BLOCKED|WARNING) \\S+ (?:wallMinutes|tokens|costUsd) ceiling (?:reached \\(\\d+\\)|cannot be checked: usage unavailable)$|(?:NUDGED|HELD|DELIVERY-ERROR|POSTED|POST-FAILED|NO-REPORT|PENDING-REPORT|STALE-REPORT|STALLED|JOURNAL-ERROR|WORKING-WHILE-PAUSED|SUPERVISION-ERROR|WARN)\\b)",
     omitted: "BLOCKED",
   },
   {

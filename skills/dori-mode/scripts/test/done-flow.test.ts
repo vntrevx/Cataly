@@ -34,7 +34,10 @@ afterEach(() => state.done());
 
 test("an objection inside the window keeps the lane open and the lane hears why", async () => {
   world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" }];
+  // This scenario confirms the claim notice; uncertain notifications are fenced in tell-fence-flow.test.ts.
+  world.onEnterStatus = "working";
   await claimDone(at(T0), lane, "merged acme/app#1 abc123");
+  for (const pane of world.panes) pane.agent_status = "idle";
   await objectDone(at(T0 + MIN), (await at(T0).registry.read("demo-lane")) ?? lane, ["changelog entry missing"]);
   await watchTick(at(T0 + 6 * MIN));
   const after = await at(T0).registry.read("demo-lane");

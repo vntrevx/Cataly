@@ -4,6 +4,8 @@ import type { SweepAct } from "./freshness.ts";
 // A new sweep outcome must get a diagnostic probe before the preset can compile.
 const freshnessEvents = {
   nudged: true,
+  held: true,
+  "delivery-error": true,
   posted: true,
   "post-failed": true,
   "no-report": true,
@@ -25,6 +27,9 @@ export const monitorPresets = [
     events: [
       "LANE_WATCH_READY",
       "LANE_WATCH_WARN",
+      "LANE_WATCH_ERROR",
+      "LANE_NOTIFY_HELD",
+      "LANE_NOTIFY_UNCONFIRMED",
       "LANE_DONE_CLAIMED",
       "LANE_CHANGED",
       "LANE_NOT_DONE",

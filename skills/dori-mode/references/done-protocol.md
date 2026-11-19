@@ -12,17 +12,19 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 
 ## What happens next
 
-1. The Dori gets a `LANE_DONE_CLAIMED` event, and you get a `[LEAD]` line saying when the lane closes.
+1. The Dori gets a `LANE_DONE_CLAIMED` event. A `[LEAD]` notice is attempted, but this state event alone does not prove delivery.
 2. Stay idle and start no new work.
 3. If the Dori does not object within 5 minutes, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote.
 4. Closing marks your thread done (when a thread hook is configured), closes your tab, and removes your worktrees.
 
 ## If the Dori objects, or a check fails
 
-You get `[LEAD] not done: <reasons>; keep working, claim again when fixed` in your pane, and the lane goes back to not-done. This happens when:
+The lane goes back to not-done and a `[LEAD] not done: <reasons>; keep working, claim again when fixed` notification is attempted. This happens when:
 
 - the Dori objects;
 - a `Done =` signal does not read back live;
 - there is unpushed work (the reason names the path).
 
-Fix every reason, then claim again. A new claim starts a fresh 5-minute window.
+An uncertain notification (including a claim notice queued to a working agent) fences later Dori tells, nudges and claim/objection notices. Direct native owner input and explicit `reopen --note` retain their existing admission rules so automation uncertainty cannot block operator control. Neither clears this automation hold, and the operator reopen note does not create one. The watcher emits `LANE_NOTIFY_HELD` on stdout when an objection cannot be sent, or `LANE_WATCH_ERROR` when delivery state cannot be read or written. These match the done-flow monitor's `^LANE_` filter; `LANE_NOT_DONE` by itself is only a state transition, not a delivery receipt. The lead must inspect the lane and `dori tell <key> --status`, then obtain the operator's decision before releasing an exact hold with `--resolve ID --note REASON`. Release sends nothing. Send any newly decided corrective instruction separately; never blindly repeat the uncertain original.
+
+Fix every reason once instructed, then claim again. A new claim starts a fresh 5-minute window.
