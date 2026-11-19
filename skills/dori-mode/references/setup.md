@@ -2,9 +2,9 @@
 
 Run these once, in order. Stop and ask the owner wherever a step needs their choice or their hand.
 
-## 1. herdr or hc
+## 1. herdr, hc or Tern
 
-The Dori runs its sessions on one of two runtimes through the shared runtime abstraction. herdr gives every lane a tab, while hc (herdr-core) keeps each lane in a labelled terminal. This OMP port preserves both adapters, binds OMP session and approval records to the live agent process, and holds delivery when agent status or foreground identity is unknown.
+The Dori runs its sessions on one of three runtimes through the shared runtime abstraction. herdr gives every lane a tab, hc (herdr-core) keeps each lane in a labelled terminal, and Tern opens each lane as a tab in a Tern session. This OMP port preserves the herdr and hc adapters, adds tern as a source feature, binds OMP session and approval records to the live agent process, and holds delivery when agent status or foreground identity is unknown.
 
 For the first public preview, the live consumer support scope is Linux x64/herdr/Discord, with tested Bun 1.4.4 and native OMP 18.18.8. A manifest explicitly declaring macOS arm64/hc permits the isolated consumer layout; old manifests are Linux only, and this does not claim a macOS release or rollout. Other messengers have separately scoped coverage. Install from a [verified release](../../../docs/releases.md) and use your own provider/bot credentials. Installation starts none of the sessions or monitors below.
 
@@ -27,6 +27,8 @@ hc --skill                          # load its skill unless it is already in you
 ```
 
 `notes = false` stops hc from typing notes into a parent agent on its own, so the Dori's own sends are the only text that reaches a lane. With both installed, the Dori runs on hc unless `"runtime": "herdr"` is set in step 4; with only one on PATH, it uses that one.
+
+Tern (source feature, outside the consumer preview): install Tern so `tern` is on PATH, and set `"runtime": "tern"` in step 4, because hc or herdr on PATH is detected first. Start the lead in a Tern block with `PI_TUI_NATIVE=0` (OMP's classic UI; a natively drawn OMP shows `tern capture` no input) and set `leadPane` to its block id (`echo $TERN_PANE` there). Lanes open as tabs in the lead's own Tern session, or in the session `laneWorkspace` names; set `workspaces` to that session so sweeps read no other one. See [Tern](../../../docs/runtime.md#tern).
 
 ## 2. Messenger
 

@@ -136,6 +136,7 @@ Non sostituire una release esatta con un installer arbitrario di `main`.
 
 Installa prima git, Bun 1.4.4+ e herdr o hc; consulta i
 [prerequisiti della versione sorgente](docs/releases.md#current-source-bundle).
+Tern è un terzo runtime di sessione nel sorgente di `main`; consulta [Tern](docs/runtime.md#tern).
 
 Usa un checkout separato, non un'installazione in esecuzione o una release utente congelata:
 
