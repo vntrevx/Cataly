@@ -170,6 +170,13 @@ Dori or lane roles, including direct dispatch, while ordinary sessions still
 reach the local provider. These tests neither use real provider credentials nor
 establish live TUI, messenger, provider, or external-user behavior.
 
+Manager-only extension tools need both default-inactive presentation and an
+execution guard based on the selected role and native `ctx.agent.kind`. Inherited
+roles or copied role flags alone do not grant manager access. For each such tool,
+cover authorized main-session access, child/grandchild visibility with explicit
+tool selection, direct child-call rejection, and preservation of ordinary main
+and child tools. See the [manager-tool boundary](docs/runtime.md#manager-tool-boundary).
+
 ## Ready for review
 
 Use the [PR template](.github/pull_request_template.md). Keep one clear concern per

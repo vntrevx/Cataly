@@ -116,6 +116,12 @@ OMP persists native goals as `mode_change` entries with `mode: "goal" | "goal_pa
 
 Desired monitor state is `<stateDir>/monitors/<encodeURIComponent(sessionId)>.json` with `{version:1,sessionId,monitors:[{name,argv,filter,cwd}]}`. `dori boot` reads it without private transcript access and remains read-only.
 
+### Manager-tool boundary
+
+`monitor` belongs to the Dori main session: the selected role must be `dori` and native `ctx.agent.kind` must be `main`. Registration is inactive by default. Session start, switch, branch and tree events remove an explicitly selected `monitor` from child tool lists, even when the child inherits the Dori role or receives a copied role flag. The execution guard separately rejects child `start`, `stop` and `list` calls; hiding a tool is not authorization.
+
+Native children still inherit their parent's role-gated ULW behavior. Ordinary tools such as `read`, `edit` and `bash`, including direct work in the main session, retain their existing selection and permission rules. This is an extension tool boundary, not an operating-system sandbox.
+
 ## Grouping
 
 On herdr, `dori harness up` creates a workspace named `dori`: the lead is its root pane, duty a tab, and the two loops are splits below duty. A lane opened from a pane in that workspace becomes a tab there.

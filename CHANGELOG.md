@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hide explicitly selected `monitor` tools from native child sessions while preserving inherited role behavior, ordinary main/child tools and the separate main-session execution guard.
+
 - Add opt-in `dori inbound discord --wake-lanes` for cleanly retired herdr tabs: queue owner messages for the exact registered OMP session and post lane replies back to the original Discord thread. Existing settings and monitor defaults are unchanged.
 
 - New lane registry records and brief footers retain requested launch text and its configuration origin without changing default ULW, raw message delivery or startup goal checks. Launch-selection provenance describes matching text rather than programmatic assignment history. Same-value reassignment retains the matching default or loaded-file origin, with regression coverage for both cases.

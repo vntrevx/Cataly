@@ -677,6 +677,11 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
           pi.appendEntry(ROLE_ENTRY, role);
         if (ctx.agent.kind === "main")
           await syncMain(ctx, ctx.sessionManager.getBranch(), eventName === "session_start");
+        else {
+          // Explicit native tool selection can activate a defaultInactive manager tool.
+          const active = pi.getActiveTools();
+          if (active.includes("monitor")) await pi.setActiveTools(active.filter((name) => name !== "monitor"));
+        }
       } finally {
         // A rejected bootstrap has cleared the role, so it is not recorded; any other failure keeps the role this
         // process runs with, and its record, as a later resume without the flag must restore it.
