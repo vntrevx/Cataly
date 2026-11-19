@@ -21,7 +21,9 @@ import { SourceBundleError } from "../src/release/source-bundle.ts";
 import {
   type DoriRole,
   type GoalStatus,
+  type ModelReadback,
   type PaneState,
+  exactModelIdentity,
   paneStatePath,
   readPaneState,
   writePaneState,
@@ -43,6 +45,10 @@ export interface DoriContext {
   abort(): void;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
+  modelRegistry: {
+    getAvailableForProviders(providers: ReadonlySet<string>): PromptModel[];
+    isUsingSubscription(model: PromptModel): boolean;
+  };
   sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
   ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
 }
@@ -209,6 +215,45 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     type: "string",
   });
 
+  pi.registerFlag("dori-launch-model", {
+    description: "Require this exact provider/model before accepting a lane launch brief",
+    type: "string",
+  });
+
+  const launchSessionIds = new Set<string>();
+  const modelReadback = (ctx: DoriContext): ModelReadback => {
+    const selector = launchSessionIds.has(ctx.sessionManager.getSessionId())
+      ? pi.getFlag("dori-launch-model")
+      : undefined;
+    const requested = typeof selector === "string" ? exactModelIdentity(selector) : null;
+    const model = ctx.model;
+    const observed = model?.provider ? { provider: model.provider, id: model.id } : null;
+    const base = { requested, observed, checkedAt: new Date().toISOString(), source: "native-extension" as const };
+    if (!model || !observed || (selector !== undefined && !requested))
+      return { ...base, status: "unknown", billing: "unknown" };
+    if (!requested) return { ...base, status: "unrequested", billing: "unknown" };
+    const billing = ctx.modelRegistry.isUsingSubscription(model) ? "subscription" : "non-subscription";
+    const key = `${requested.provider}/${requested.id}`.toLowerCase();
+    const available = ctx.modelRegistry.getAvailableForProviders(new Set([requested.provider.toLowerCase()]));
+    const matches = available.filter((candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === key);
+    const selected =
+      matches.find((candidate) => candidate.id === requested.id) ?? (matches.length === 1 ? matches[0] : undefined);
+    if (!selected) return { ...base, status: matches.length ? "unknown" : "unavailable", billing };
+    return {
+      ...base,
+      status: observed.provider === selected.provider && observed.id === selected.id ? "matched" : "mismatch",
+      billing,
+    };
+  };
+  const assertLaunchModel = (ctx: DoriContext): void => {
+    if (ctx.agent.kind !== "main" || pi.getFlag("dori-launch-model") === undefined) return;
+    if (launchSessionIds.size > 0 && !launchSessionIds.has(ctx.sessionManager.getSessionId())) return;
+    const readback = modelReadback(ctx);
+    if (role === "lane" && readback.status === "matched") return;
+    ctx.abort();
+    throw new Error(`STARTUP_MODEL_HOLD: exact launch model ${readback.status}; no automatic substitution`);
+  };
+
   let role: DoriRole | undefined;
   let stateDir: string | undefined;
   let loadError: string | undefined;
@@ -324,6 +369,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       goal,
       agentStatus,
       approvalPending: approvals.size > 0,
+      modelReadback: modelReadback(ctx),
     });
     if (role === "dori")
       runtimeHealth.update({
@@ -498,6 +544,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       if (ctx.agent.kind === "sub") {
         role = ctx.agent.parentId === undefined ? undefined : agentRoles.get(ctx.agent.parentId);
       } else {
+        if (eventName === "session_start" && launchSessionIds.size === 0)
+          launchSessionIds.add(ctx.sessionManager.getSessionId());
         const recorded = recordedRole(branch);
         // `/new` emits `session_switch` with `reason: "new"`; its empty branch has no role entry to read. Adopting
         // that emptiness would strip `monitor`, stop the monitors that answer the messenger, and drop the pane record
@@ -509,6 +557,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
           "reason" in event &&
           event.reason === "new";
         role = recorded ?? (carried ? role : undefined);
+        if (carried && role === "lane" && session && launchSessionIds.has(session.id))
+          launchSessionIds.add(ctx.sessionManager.getSessionId());
         const flagged = pi.getFlag(ROLE_FLAG);
         if (role === undefined && eventName === "session_start" && flagged !== undefined) {
           role = parseRole(flagged);
@@ -563,6 +613,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
 
   // OMP chains prompt replacements in extension/handler order; append to the prompt this handler receives.
   pi.on("before_agent_start", (event, ctx) => {
+    assertLaunchModel(ctx);
     if (role && requiredLoadError) {
       ctx.abort();
       throw requiredLoadError;
@@ -573,6 +624,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   });
 
   pi.on("before_provider_request", (_event, ctx) => {
+    assertLaunchModel(ctx);
     if (role && requiredLoadError) {
       ctx.abort();
       throw requiredLoadError;

@@ -8,6 +8,7 @@
   "defaultCwd": "~/code/my-project",
   "agentCommand": ["omp", "--dori-role", "lane", "--model", "{model}", "{prompt}"],
   "defaultModel": "anthropic/claude-opus-5-5",
+  "requireModelReadback": false,
   "launchKeywords": "ulw set goal and work",
   "goalMarker": "Pursuing goal",
   "startupWaitSeconds": 180,

@@ -38,6 +38,7 @@ export type DoriConfig = {
   readonly defaultCwd: string;
   readonly agentCommand: ArgvTemplate;
   readonly defaultModel: string;
+  readonly requireModelReadback: boolean;
   readonly launchKeywords: string;
   readonly goalMarker: string;
   /** How long `launch` waits for the agent's ready status and goal after it starts; a slow host is a host property. */
@@ -68,6 +69,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   defaultCwd: home,
   agentCommand: ["omp", "--dori-role", "lane", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic/claude-opus-5-5",
+  requireModelReadback: false,
   launchKeywords: "ulw set goal and work",
   goalMarker: "Pursuing goal",
   startupWaitSeconds: 180,
@@ -118,7 +120,6 @@ const repoIdentities = (value: unknown): Record<string, CommitIdentity> =>
       );
 
 export class ConfigError extends Error {}
-
 const RUNTIMES: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
 const checkRuntime = (value: unknown): void => {
   if (value !== undefined && !(typeof value === "string" && Object.hasOwn(RUNTIMES, value)))
@@ -128,10 +129,8 @@ const checkRuntime = (value: unknown): void => {
         .join(" or ")}, got ${JSON.stringify(value)}`,
     );
 };
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
 const SUPERVISION_KEYS = new Set([
   "hungAfterMinutes",
   "staleAfterMinutes",
@@ -191,8 +190,9 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   checkRuntime(raw.runtime);
   checkSupervision(raw.supervision);
-  if (raw.prAutoTrack !== undefined && typeof raw.prAutoTrack !== "boolean")
-    throw new ConfigError("invalid prAutoTrack: expected true or false");
+  for (const name of ["prAutoTrack", "requireModelReadback"] as const)
+    if (raw[name] !== undefined && typeof raw[name] !== "boolean")
+      throw new ConfigError(`invalid ${name}: expected true or false`);
   const merged: DoriConfig = {
     ...base,
     ...raw,

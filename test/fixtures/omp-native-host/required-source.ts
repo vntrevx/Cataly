@@ -15,6 +15,7 @@ export async function requiredSourceRequest(
   cwd: string,
   role: "lane" | "dori" | undefined,
   boundary: "session" | "provider",
+  launchModel?: string,
 ): Promise<{ requests: number; errors: Array<{ event: string; error: string }> }> {
   const factory = await nativeExtensionFactory(entry);
   let requests = 0;
@@ -65,6 +66,8 @@ export async function requiredSourceRequest(
         throw new Error("Native source regression prohibits external catalog access");
       },
     });
+    if (launchModel)
+      registry.registerProvider(model.provider, { api: model.api, baseUrl: model.baseUrl, apiKey: "local-fixture-only", models: [model] });
     const manager = SessionManager.inMemory(cwd);
     if (role) manager.appendCustomEntry("omp-dori:role", role);
     ({ session } = await createAgentSession({
@@ -80,7 +83,13 @@ export async function requiredSourceRequest(
       disableModelFallback: true,
       toolNames: [],
       disableExtensionDiscovery: true,
-      extensions: [factory],
+      extensions: [async (api) => factory(launchModel ? new Proxy(api, {
+        get(target, key) {
+          return key === "getFlag"
+            ? (name: string) => name === "dori-launch-model" ? launchModel : target.getFlag(name)
+            : Reflect.get(target, key);
+        },
+      }) : api)],
       skills: [],
       promptTemplates: [],
       slashCommands: [],

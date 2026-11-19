@@ -1,6 +1,7 @@
-import { configPath, fill } from "./config.ts";
+import { configPath } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { laneGoalActive } from "./goal-record.ts";
+import { deliverModelBrief, modelLaunchCommand, modelLaunchProblem, unavailableLaunchModel } from "./launch-model.ts";
 import { BRIEF_START, footer, originalBrief, quoteForPane } from "./launch-footer.ts";
 import { mayRunOmpArgv } from "../../../../src/runtime/omp-argv.ts";
 import { parseRef } from "../../../../src/runtime/types.ts";
@@ -13,7 +14,7 @@ import type { BudgetLimits } from "./supervision-observe.ts";
 import { Lessons, renderLessons } from "./lessons.ts";
 import { laneLaunchEnv, TokenFileError } from "./slack-token.ts";
 import { startupFailure } from "./startup-screen.ts";
-import { launchFinished, launchScreen, launchStatus } from "./launch-finished.ts";
+import { goalShown, lastLines, launchFinished, launchScreen, launchStatus } from "./launch-finished.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -34,16 +35,6 @@ const FIRST_CHECK_MS = 20_000;
 const RECHECK_MS = 10_000;
 const ready = (s: string | undefined): boolean => s === "idle" || s === "working";
 const unreported = (s: string | undefined): boolean => s === undefined || s === "unknown";
-// OMP goals come from its trusted current-session record, never quoted screen text. Custom agents may use their
-// footer marker or omo goal record. An empty marker opts out of the goal check, not the ready-status check.
-const goalShown = (screen: string, marker: string): boolean =>
-  screen
-    .split("\n")
-    .filter((s) => s.trim())
-    .slice(-3)
-    .join("\n")
-    .includes(marker);
-
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key)) throw new LaunchError(`key must match ${LANE_KEY}`);
   if (input.key === RESERVED_LANE_KEY)
@@ -80,6 +71,9 @@ export const prepareLaunch = async (
 ): Promise<{ readonly lane: Lane; readonly preamble: string; readonly warnings: string[] }> => {
   await validateLaunch(deps, input);
   const model = input.model ?? deps.config.defaultModel;
+  const problem = modelLaunchProblem(deps.config.agentCommand, model, deps.config.requireModelReadback);
+  if (problem) throw new LaunchError(problem);
+  const modelReadback = unavailableLaunchModel(deps.config.agentCommand, model, iso(deps.clock));
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
@@ -91,6 +85,7 @@ export const prepareLaunch = async (
     done: input.done,
     cwd,
     model,
+    ...(modelReadback ? { modelReadback } : {}),
     openedAt: iso(deps.clock),
     reportProtocol: "jsonl-v1",
     budget: {
@@ -107,6 +102,9 @@ export const prepareLaunch = async (
     lane: draft,
     // A lesson the cap kept out is named too: a brief that silently lacks a standing rule is the bug this catches.
     warnings: [
+      ...(modelReadback
+        ? [`MODEL_READBACK_WARNING ${modelReadback.reason}; enable requireModelReadback to refuse unverified launches`]
+        : []),
       ...problems.map((problem) => `LESSON_WARNING ${problem}`),
       ...omitted.map(
         (lesson) => `LESSON_OMITTED ${lesson.id} (${lesson.scope === "global" ? "global" : lesson.cwd}) ${lesson.rule}`,
@@ -168,8 +166,10 @@ const startLane = async (
   const prompt = `${deps.config.launchKeywords}. Read and execute the lane brief at ${input.brief} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   // The session can be written while start is still returning; its goal must belong to this invocation.
   const launchedAt = deps.clock.now();
+  const ompAgent = mayRunOmpArgv(deps.config.agentCommand);
+  const command = modelLaunchCommand(deps.config.agentCommand, model, prompt);
   try {
-    await rts.for(ref).start(ref, fill(deps.config.agentCommand, { model, prompt }).map(quoteForPane).join(" "));
+    await rts.for(ref).start(ref, command.map(quoteForPane).join(" "));
   } catch (e) {
     return { lane, startup: `STARTUP_ERROR ${input.key} ${pane}: start failed: ${lastLines(String(e))}` };
   }
@@ -177,7 +177,6 @@ const startLane = async (
   await deps.clock.sleep(FIRST_CHECK_MS);
   const screen = await launchScreen(deps, rts, ref, input.key);
   if (screen === null) return { lane, startup: `STARTUP_DONE ${input.key}` };
-  const ompAgent = mayRunOmpArgv(deps.config.agentCommand);
   const { status, error } = await launchStatus(rts, ref, ompAgent);
   const marker = deps.config.goalMarker;
   const omp = ompAgent ? { run: deps.run, rts, stateDir: deps.config.stateDir, ref } : undefined;
@@ -199,7 +198,14 @@ const startLane = async (
     const rechecks = Math.max(0, Math.ceil((deps.config.startupWaitSeconds * 1000 - FIRST_CHECK_MS) / RECHECK_MS));
     let shown = screen;
     let current = status;
-    for (let check = 0; !ready(current) || (marker && !(await hasGoal(shown))); check++) {
+    let briefDelivered = !ompAgent || lane.modelReadback?.source === "launch-preflight";
+    for (let check = 0; !briefDelivered || !ready(current) || (marker && !(await hasGoal(shown))); check++) {
+      if (!briefDelivered && ready(current)) {
+        const hold = await deliverModelBrief(deps, ref, model, prompt, launchedAt);
+        if (hold) return { lane, startup: `STARTUP_MODEL_HOLD ${input.key} ${pane}: ${hold}` };
+        briefDelivered = true;
+        if (!marker || (await hasGoal(shown))) break;
+      }
       if (check >= rechecks) {
         const waited = Math.round((deps.clock.now() - started) / 1000);
         return {
@@ -237,13 +243,3 @@ const startLane = async (
   const why = error ? `status lookup failed: ${error}` : `no ready agent status (${status ?? "none"})`;
   return { lane, startup: `STARTUP_UNCONFIRMED ${input.key} ${pane}: ${why}; last lines: ${lastLines(screen)}` };
 };
-
-const lastLines = (screen: string): string =>
-  screen
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(-3)
-    .join(" / ")
-    .replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)")
-    .slice(0, 240) || "(blank)";
