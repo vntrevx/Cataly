@@ -9,7 +9,8 @@ import {
 } from "../../../../src/release/runtime.ts";
 import type { RuntimeKind } from "../../../../src/runtime/types.ts";
 import type { SupervisionOptions } from "./supervision-observe.ts";
-import type { CommitIdentity } from "./verify-pr-check.ts";
+import { type CommitIdentity, repoIdentities } from "./verify-pr-check.ts";
+import { checkLanePolicy, type LanePolicy, PolicyError } from "./lane-policy.ts";
 
 export type ArgvTemplate = readonly string[];
 
@@ -57,6 +58,7 @@ export type DoriConfig = {
   readonly repoIdentities: Readonly<Record<string, CommitIdentity>>;
   readonly supervision: SupervisionOptions;
   readonly prAutoTrack: boolean; // opt-in: claim and checkpoint PR links are tracked for `dori pr watch`
+  readonly lanePolicy?: LanePolicy;
 };
 
 export const defaultConfig = (home = homedir()): DoriConfig => ({
@@ -94,28 +96,6 @@ export const configPath = (): string => process.env["DORI_CONFIG"] ?? join(homed
 
 export const expandHome = (path: string, home = homedir()): string =>
   path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path;
-
-const isIdentity = (value: unknown): value is CommitIdentity => {
-  const v = value as { name?: unknown; email?: unknown } | null;
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof v.name === "string" &&
-    !!v.name.trim() &&
-    typeof v.email === "string" &&
-    !!v.email.trim()
-  );
-};
-
-// The file is untrusted JSON: keep only well-formed identities, so a bad entry reads as an unconfigured repo.
-const repoIdentities = (value: unknown): Record<string, CommitIdentity> =>
-  typeof value !== "object" || value === null || Array.isArray(value)
-    ? {}
-    : Object.fromEntries(
-        Object.entries(value).flatMap(([repo, identity]) =>
-          isIdentity(identity) ? [[repo.toLowerCase(), identity]] : [],
-        ),
-      );
 
 export class ConfigError extends Error {}
 
@@ -191,6 +171,11 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   checkRuntime(raw.runtime);
   checkSupervision(raw.supervision);
+  try {
+    checkLanePolicy(raw.lanePolicy);
+  } catch (error) {
+    throw error instanceof PolicyError ? new ConfigError(error.message) : error;
+  }
   if (raw.prAutoTrack !== undefined && typeof raw.prAutoTrack !== "boolean")
     throw new ConfigError("invalid prAutoTrack: expected true or false");
   const merged: DoriConfig = {

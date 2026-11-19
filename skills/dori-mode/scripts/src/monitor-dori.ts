@@ -24,6 +24,7 @@ export const DORI_COMMANDS: Record<string, true> = {
   lesson: true,
   "object-done": true,
   pause: true,
+  policy: true,
   pr: true,
   presence: true,
   react: true,

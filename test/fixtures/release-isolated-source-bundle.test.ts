@@ -9,6 +9,8 @@ import { readSourceBundle } from "../../src/release/source-bundle.ts";
 import { recoverInstalled, releasePath } from "../../src/release/state.ts";
 import { fixture } from "../release-consumer-setup.ts";
 import { boundRelease } from "../release-native-recovery-setup.ts";
+import { isPolicyLaneCommand } from "../../skills/dori-mode/scripts/src/lane-policy-launch.ts";
+import { defaultConfig } from "../../skills/dori-mode/scripts/src/config.ts";
 
 // Only the parent test enables this fixture with a real tools-only startup environment.
 const tools = process.env["DORI_TEST_ISOLATED_SOURCE_BUNDLE"];
@@ -54,6 +56,14 @@ if (tools !== undefined) {
       join(f.paths.root, "consumer-discovery", basename(sourceOne), "omp.yml"),
       "{prompt}",
     ]);
+    expect(
+      isPolicyLaneCommand(
+        resolveConsumerOmpCommand(
+          [join(f.paths.dori, "bin/omp"), ...defaultConfig(f.paths.home).agentCommand.slice(1)],
+          { home: f.paths.home, sourceRoot: sourceOne },
+        ),
+      ),
+    ).toBe(true);
     const dependency = (sourceRoot: string) =>
       join(
         f.paths.dependencies,

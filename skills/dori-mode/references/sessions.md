@@ -41,6 +41,37 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 Work no script can check (a design review, a judgement call) stays in the lane's own plan. You judge it yourself before the claim.
 
+## Lane tool policy (opt-in)
+
+New native OMP lanes can receive a frozen bash-command policy from `lanePolicy` in the Dori config:
+
+```json
+{
+  "lanePolicy": {
+    "denyBash": ["\\bsudo\\b", "pkill\\s+-f"],
+    "perLane": { "deploy-*": { "allowBash": ["sudo /usr/local/bin/deploy-safe"] } }
+  }
+}
+```
+
+Lane-name globs support `*`; other allowed characters are literal. Each deny regex searches the command string. A matching lane exception must match the **whole** command string and overrides the denies. Missing or malformed policy fields and invalid regexes are refused, not silently dropped. With no `lanePolicy`, existing behavior is unchanged. Configured policy requires a fresh native OMP launch with exactly one `--dori-role lane` (or `--dori-role=lane`). Native value options are parsed before counting role flags, so installed consumer `--no-extensions -e` and side-home `--config` prefixes work. Parsed environment, package-runner and source-launcher prefixes are supported. Custom or ambiguous commands, roles hidden in values or after `--`, profile/alias expansion and resume/continue arguments are refused before a terminal opens. Native positional prompts, including the complete default `{prompt}` template, remain supported before or after options. Use inline values for flag-shaped option values.
+
+`launch` writes `<stateDir>/lanes/<key>/policy.json` only after winning registry ownership and before starting the agent. Dry-run writes nothing. Snapshot write failure leaves the registered terminal inspectable but starts no agent. Configuration changes affect future launches, not already bound sessions; `adopt` does not retrofit a policy onto an existing process. The extension records the exact snapshot generation in the session, restores it on resume, carries it through `/new`, and inherits it through subagents. Switching to a plain session clears the binding.
+
+Cold worker threads resolve the native `parentSession` transcript through the host's read-only loader and active-branch index, not inherited environment guesses. Each child records its inherited role and policy, including for grandchildren and resume. Guarded subagent spawning requires a persisted parent session; in-memory guarded sessions refuse the spawn. Unreadable parent ancestry fails closed.
+
+A denied native `bash` tool call returns `LANE_POLICY_BLOCKED` before approval or execution and records a blocker in the existing lane journal. The receipt includes matching rule IDs and a command SHA-256, not the command text. Invalid bindings, changed generations and unreadable snapshots block bash rather than disabling the policy. Corrupt grant receipts block protected commands; unmatched and configured-exception commands do not acquire grant locks or write grant state.
+
+After explicit owner approval, the owner or lead can admit one attempt of the most recently blocked command from outside the policy-bound lane. The CLI refuses self-grants from a process carrying a lane policy binding or a native `PI_SESSION_FILE` transcript containing a policy record, including after resume without the launch environment. Switching branches does not make a protected transcript an approval issuer. An unreadable caller transcript refuses approval; use a separate unbound owner or lead session:
+
+```sh
+dori policy allow-once demo-lane 'denyBash[0]' --reason "Owner approved this exact command"
+```
+
+Every matching deny rule needs its own grant. Grants bind the exact command hash and snapshot generation, survive restart, and are consumed atomically across processes only when all required grants exist. Repeating an unused grant is idempotent. The lane retries explicitly; no command runs automatically. One grant admits one tool attempt, even if a later native approval is declined or execution fails. Native approvals and provider safety checks still apply. A successful admission clears only its own policy blocker, never an unrelated later blocker. Approval reasons and consumed receipts remain in the local audit trail.
+
+This is a mistake-prevention belt, **not a sandbox or an authorization service**. The reason is operator audit text, not proof of permission. Rules see native bash tool-call strings, not arbitrary script contents, variable expansion, other tools or every code-mode execution route. Trusted extensions that rewrite inputs after this hook need their own enforcement; later replacements are outside this check. A process with the same filesystem permissions can alter policy state. Keep real account, SSH and native permission boundaries in place.
+
 ## The registry
 
 One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file + rename), so two writers never leave a half-written file. Each lane records:

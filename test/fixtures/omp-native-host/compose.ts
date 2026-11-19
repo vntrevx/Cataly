@@ -16,7 +16,9 @@ import type {
   ExtensionContext,
   ExtensionFactory,
   PreparedExtension,
+  RegisteredTool,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { ExtensionToolWrapper, wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { assertNativeHost } from "./host.ts";
@@ -65,13 +67,20 @@ export const nativeComposition = async (
     agent?: ExtensionAgentIdentity;
     observeBefore?: string;
     command?: { name: string; args: string; beforePrompt?: boolean };
+    bash?: { command: string; approvalMode: "yolo" | "always-ask" };
+    session?: { file: string; parentSession?: string };
   },
 ) => {
   await assertNativeHost();
   const runtime = new ExtensionRuntime();
   const events = new EventBus();
   const cwd = import.meta.dir;
-  const session = SessionManager.inMemory(cwd);
+  const session = options.session
+    ? await SessionManager.open(options.session.file, undefined, undefined, {
+        initialCwd: cwd, suppressBreadcrumb: true,
+        ...(options.session.parentSession ? { parentSession: options.session.parentSession } : {}),
+      })
+    : SessionManager.inMemory(cwd);
   if (options.role) runtime.flagValues.set("dori-role", options.role);
   const extensions: Extension[] = [];
   const beforeDori: string[][] = [];
@@ -95,13 +104,34 @@ export const nativeComposition = async (
     extensions.push(await loadExtensionFromFactory(factory, cwd, events, runtime, entry));
   }
   extensions.push(await observe("declining-final-handler", afterAll));
+  let bashTool: RegisteredTool | undefined;
+  let executions = 0;
+  let approvals = 0;
+  if (options.bash) {
+    const fixture = await loadExtensionFromFactory((api) => {
+      api.registerTool({
+        name: "bash", label: "Fixture bash", description: "Count admission without running a process",
+        parameters: api.zod.object({ command: api.zod.string() }),
+        async execute() {
+          executions++;
+          return { content: [{ type: "text", text: "fixture admitted" }], details: {} };
+        },
+      });
+      api.on("tool_approval_requested", () => { approvals++; });
+    }, cwd, events, runtime, "policy-tool-fixture");
+    extensions.push(fixture);
+    bashTool = fixture.tools.get("bash");
+  }
   // No auth-backed registry is constructed. Any unexpected registry access fails this guard.
   const registry = new Proxy({} as ModelRegistry, {
     get: (_target, key) => {
       throw new Error(`native prompt fixture unexpectedly accessed the model registry: ${String(key)}`);
     },
   });
-  const settings = Settings.isolated({ "prewalk.auto": "off", "prewalk.enabled": false });
+  const settings = Settings.isolated({
+    "prewalk.auto": "off", "prewalk.enabled": false,
+    ...(options.bash ? { "tools.approvalMode": options.bash.approvalMode } : {}),
+  });
   const runner = new ExtensionRunner(
     extensions,
     runtime,
@@ -168,7 +198,18 @@ export const nativeComposition = async (
     const first = await runner.emitBeforeAgentStart("ulw fix the fixture", undefined, base);
     const second = await runner.emitBeforeAgentStart("ulw fix the fixture", undefined, base);
     if (options.command && !options.command.beforePrompt) await invokeCommand();
+    let toolError: string | undefined;
+    if (options.bash) {
+      if (!bashTool) throw new Error("native fixture did not register bash");
+      const tool = new ExtensionToolWrapper(wrapRegisteredTool(bashTool, runner), runner);
+      try {
+        await tool.execute("policy-call", { command: options.bash.command });
+      } catch (error) {
+        toolError = error instanceof Error ? error.message : String(error);
+      }
+    }
     return {
+      tool: { executions, approvals, error: toolError },
       firstResult: first,
       secondResult: second,
       first: first?.systemPrompt,
@@ -184,6 +225,7 @@ export const nativeComposition = async (
     } finally {
       settings.stopWatching();
       await settings.flush();
+      await session.flush();
     }
     if (errors.length) throw new AggregateError(errors, "native prompt fixture handler failed");
   }

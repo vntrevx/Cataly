@@ -30,6 +30,7 @@ import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./boo
 import { RuntimeHealthWriter } from "./deployment-health.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
 import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
+import { lanePolicyHook } from "./lane-policy.ts";
 
 interface SessionEntry {
   type: string;
@@ -43,7 +44,12 @@ export interface DoriContext {
   abort(): void;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
-  sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
+  sessionManager: {
+    getSessionId(): string;
+    getSessionFile(): string | undefined;
+    getBranch(): SessionEntry[];
+    getHeader(): { parentSession?: string } | null;
+  };
   ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
 }
 interface Goal {
@@ -121,12 +127,6 @@ const GOAL_STATUS: Record<string, GoalStatus> = {
   complete: "complete",
   dropped: "dropped",
 };
-
-/**
- * Role by agent registry id. omp rebinds extension factories to every subagent session in the same process without
- * re-evaluating this module, so a subagent finds its spawning agent's role here through `ctx.agent.parentId`.
- */
-const agentRoles = new Map<string, DoriRole>();
 
 const parseRole = (value: unknown): DoriRole | undefined => (value === "dori" || value === "lane" ? value : undefined);
 
@@ -209,6 +209,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     type: "string",
   });
 
+  const policy = lanePolicyHook(pi, recordedRole);
   let role: DoriRole | undefined;
   let stateDir: string | undefined;
   let loadError: string | undefined;
@@ -427,7 +428,6 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         // a later branch or tree move in this session does not restore the role from its record.
         rejectedBootstrap = sessionId;
         role = undefined;
-        agentRoles.delete(ctx.agent.id);
         monitors.stopAll();
         removePane();
         throw error;
@@ -494,9 +494,10 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   for (const eventName of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
     pi.on(eventName, async (event, ctx) => {
       const branch = ctx.sessionManager.getBranch();
+      const inherited = ctx.agent.kind === "sub" ? await policy.inherit(ctx) : undefined;
       let flaggedRole = false;
       if (ctx.agent.kind === "sub") {
-        role = ctx.agent.parentId === undefined ? undefined : agentRoles.get(ctx.agent.parentId);
+        role = inherited?.role;
       } else {
         const recorded = recordedRole(branch);
         // `/new` emits `session_switch` with `reason: "new"`; its empty branch has no role entry to read. Adopting
@@ -531,15 +532,18 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
           if (session?.intake) pi.appendEntry("omp-dori:intake", session.intake);
         }
       }
-      if (role) agentRoles.set(ctx.agent.id, role);
-      else agentRoles.delete(ctx.agent.id);
       try {
         if (ctx.agent.kind === "main")
           await syncMain(ctx, ctx.sessionManager.getBranch(), eventName === "session_start");
       } finally {
-        // A rejected bootstrap has cleared the role, so it is not recorded; any other failure keeps the role this
-        // process runs with, and its record, as a later resume without the flag must restore it.
-        if (flaggedRole && role) pi.appendEntry(ROLE_ENTRY, role);
+        // Record only the settled role; a rejected bootstrap clears it before inheritance is saved.
+        if (
+          (flaggedRole || ctx.agent.kind === "sub") &&
+          role &&
+          recordedRole(ctx.sessionManager.getBranch()) === undefined
+        )
+          pi.appendEntry(ROLE_ENTRY, role);
+        policy.sync(role, ctx, eventName, event, flaggedRole, inherited);
       }
     });
   }

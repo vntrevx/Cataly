@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { releaseVersion } from "../../../../src/release/version.ts";
+import { PolicyError } from "./lane-policy.ts";
 
 import type { Command } from "./cli-context.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -13,6 +14,8 @@ const USAGE = `dori <command> [options]
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+  policy allow-once <key> <denyBash[index]> --reason TEXT
+                                       admit one attempt of the last blocked command after owner approval; never bypass native approvals
   sync   [--write]                     registry vs live panes; read-only unless --write
   boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
   report <key> --kind milestone|blocker|question|halted|done --text TEXT
@@ -168,6 +171,7 @@ switch (command) {
     break;
   case "launch":
   case "adopt":
+  case "policy":
   case "claim-done":
   case "object-done":
   case "close":
@@ -221,6 +225,7 @@ try {
   const { prErrors } = await import("./cli-pr.ts");
   if (
     e instanceof LaunchError ||
+    e instanceof PolicyError ||
     [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
   )
     die((e as Error).message);
