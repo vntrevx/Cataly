@@ -91,7 +91,7 @@ test.each([
   ["npm x", ["npm", "x", "--", PACKAGE]],
 ])("%s retains exact general OMP classification despite native updater refusal", (_, prefix) => {
   const argv = [...prefix, MODEL, "{prompt}"];
-  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: [prefix.at(-1)!, MODEL, "{prompt}"] });
+  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: [prefix.at(-1)!, MODEL, "{prompt}"], argsAt: 1 });
   expect(mayRunOmpArgv(argv)).toBe(true);
   expect(isOmpAgentCommand(argv.join(" "))).toBe(true);
 });

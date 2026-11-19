@@ -9,6 +9,16 @@ import { join } from "node:path";
 export type DoriRole = "dori" | "lane";
 export type GoalStatus = "none" | "active" | "paused" | "complete" | "dropped" | "blocked";
 
+export interface ModelReadback {
+  readonly requested: { readonly provider: string; readonly id: string } | null;
+  readonly observed: { readonly provider: string; readonly id: string } | null;
+  readonly status: "matched" | "mismatch" | "unavailable" | "unknown" | "unrequested";
+  readonly billing: "subscription" | "non-subscription" | "unknown";
+  readonly checkedAt: string;
+  readonly source: "native-extension" | "launch-preflight";
+  readonly reason?: string;
+}
+
 export type PaneState = {
   readonly paneId: string;
   readonly role: DoriRole;
@@ -23,6 +33,14 @@ export type PaneState = {
   readonly approvalPending: boolean;
   /** Last native agent lifecycle event; absent in older records, independent of goal status. */
   readonly agentStatus?: "idle" | "working";
+  /** Native catalog and selected-model agreement, never billing authorization or a quota balance. */
+  readonly modelReadback?: ModelReadback;
+};
+
+/** The native catalog distinguishes literal colon-tagged ids from thinking suffixes. */
+export const exactModelIdentity = (value: string): ModelReadback["requested"] => {
+  const match = /^([a-zA-Z0-9][a-zA-Z0-9._-]*)\/([^\s*,]+)$/.exec(value);
+  return match?.[1] && match[2] ? { provider: match[1], id: match[2] } : null;
 };
 
 export const paneStateDir = (stateDir: string): string => join(stateDir, "sessions");

@@ -15,6 +15,8 @@ const USAGE = `dori <command> [options]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
   sync   [--write]                     registry vs live panes; read-only unless --write
   boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
+  doctor [--json] [--repo owner/repo]   read-only configuration, adoption and monitor diagnostics; exit 1 on warnings
+  monitor-presets [name] [--json]      recommended argv and filters; starts nothing
   report <key> --kind milestone|blocker|question|halted|done --text TEXT
                                        append a durable progress report and print its [REPORT] line
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
@@ -117,6 +119,8 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true },
     note: { type: "string" },
     write: { type: "boolean" },
+    json: { type: "boolean" },
+    repo: { type: "string" },
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
@@ -178,6 +182,8 @@ switch (command) {
     break;
   case "sync":
   case "boot":
+  case "doctor":
+  case "monitor-presets":
   case "verify-pr":
   case "watch":
   case "freshness":

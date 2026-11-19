@@ -4,6 +4,8 @@ import { bootCheck, envSlackCheck } from "./boot.ts";
 import { type Command, die, every, slackAuth } from "./cli-context.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { Decisions } from "./decisions.ts";
+import { doctorCheck } from "./doctor.ts";
+import { monitorPresets } from "./monitor-presets.ts";
 import { watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
@@ -86,6 +88,34 @@ const heavy: Command = async ({ rest, config }) => {
 export const opsCommands: Readonly<Record<string, Command>> = {
   sync,
   boot,
+  doctor: async ({ deps, opt, values }) => {
+    const repo = opt("repo");
+    if (repo !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(repo)) die("--repo must be owner/repo");
+    const result = await doctorCheck(deps, repo);
+    if (values["json"]) console.log(JSON.stringify(result));
+    else {
+      for (const finding of result.findings) {
+        console.log(`${finding.severity} ${finding.check}: ${finding.detail}`);
+        if (finding.provenance) console.log(`  source: ${finding.provenance}`);
+        if (finding.next) console.log(`  next: ${finding.next}`);
+      }
+      console.log(
+        `DOCTOR warn=${result.warnings} ignored=${result.ignored.join(",") || "none"} read-only; nothing changed`,
+      );
+    }
+    process.exit(result.exitCode);
+  },
+  "monitor-presets": async ({ key, values }) => {
+    const presets = monitorPresets.filter((preset) => key === undefined || preset.name === key);
+    if (!presets.length) die(`unknown monitor preset: ${key}`);
+    console.log(
+      JSON.stringify(
+        presets.map(({ events: _events, ...preset }) => preset),
+        null,
+        values["json"] ? 0 : 2,
+      ),
+    );
+  },
   "verify-pr": verifyPrCommand,
   watch: async ({ deps }) => {
     console.log("LANE_WATCH_READY");

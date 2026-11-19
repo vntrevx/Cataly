@@ -21,6 +21,8 @@ export type FakeOptions = {
   mode?: DoriContext["mode"];
   active?: string[];
   model?: DoriContext["model"];
+  catalog?: NonNullable<DoriContext["model"]>[];
+  subscription?: boolean;
 };
 
 export type FakePi = {
@@ -59,6 +61,13 @@ export const fakePi = (options: FakeOptions): FakePi => {
       mode: options.mode ?? "print",
       agent,
       model: options.model,
+      modelRegistry: {
+        getAvailableForProviders: (providers) =>
+          (options.catalog ?? (options.model ? [options.model] : [])).filter(
+            (model) => !!model.provider && providers.has(model.provider),
+          ),
+        isUsingSubscription: () => options.subscription ?? false,
+      },
       sessionManager: {
         getSessionId: () => fake.session.id,
         getSessionFile: () => fake.session.file,

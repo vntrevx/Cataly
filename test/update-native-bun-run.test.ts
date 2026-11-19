@@ -46,7 +46,7 @@ test.each([
   ["attached and boolean options", ["bun", "run", "--preload=/hook.ts", "--smol", "/x/omp"]],
 ])("Bun run with %s retains native admission and the resume guard", (_, prefix) => {
   const argv = [...prefix, "--model=anthropic/claude-opus-5-5", "{prompt}"];
-  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: argv });
+  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: argv, argsAt: prefix.length });
   const resume = [...argv.slice(0, -1), "--resume", "s", "{prompt}"];
   for (const role of ["worker", "reviewer"] as const) {
     const command = load(argv, role)[role];
@@ -96,7 +96,7 @@ test("readable env and assignment prefixes still expose Bun run to the native re
     "s",
     "{prompt}",
   ];
-  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: argv.slice(4) });
+  expect(classifyOmpArgv(argv)).toEqual({ kind: "omp", command: argv.slice(4), argsAt: 4 });
   for (const role of ["worker", "reviewer"] as const) {
     expect(() => load(argv, role)).toThrow("without session resume");
   }

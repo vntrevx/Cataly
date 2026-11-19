@@ -1,14 +1,15 @@
 import { UpdateError } from "./config.ts";
 
-const RESUME_FLAG = /^(?:--resume|--continue|--session|--restore|--fork|--from-claude|--from-codex|-r|-c)(?:=|$)/;
+export const RESUME_FLAG =
+  /^(?:--resume|--continue|--session|--restore|--fork|--from-claude|--from-codex|-r|-c)(?:=|$)/;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[^\s/{}*?\[\],][^\s{}*?\[\],]*$/;
 const OWNED_FLAG =
   /^(?:--system-prompt|--append-system-prompt|--system-prompt-template|--profile|--alias|-e|--extensions?|--trusted-extension|--hook|--dori-role)(?:=|$)/;
 
 export const isNativeOwnedFlag = (arg: string): boolean => OWNED_FLAG.test(arg);
 
-// OMP v18.18.8 cli/flag-tables.ts STRING_SETTERS: a value must not swallow the model flag or final prompt.
-const NATIVE_VALUE_FLAGS: Record<string, true> = {
+// OMP v18.20.0 cli/flag-tables.ts STRING_SETTERS: a value must not swallow the model flag or final prompt.
+export const NATIVE_VALUE_FLAGS: Readonly<Record<string, true>> = {
   "--cwd": true,
   "--config": true,
   "--add-dir": true,
@@ -47,6 +48,41 @@ const NATIVE_VALUE_FLAGS: Record<string, true> = {
   "--plugin-dir": true,
   "--skills": true,
   "--approval-mode": true,
+};
+
+// OMP v18.20.0 cli/flag-tables.ts VALUELESS_FLAGS, including the parser's short aliases.
+export const NATIVE_BOOLEAN_FLAGS: Readonly<Record<string, true>> = {
+  "--help": true,
+  "-h": true,
+  "--version": true,
+  "-v": true,
+  "--allow-home": true,
+  "--continue": true,
+  "-c": true,
+  "--from-claude": true,
+  "--from-codex": true,
+  "--no-session": true,
+  "--no-tools": true,
+  "--no-lsp": true,
+  "--no-pty": true,
+  "--hide-thinking": true,
+  "--advisor": true,
+  "--wait-async": true,
+  "--external-thinking": true,
+  "--prewalk": true,
+  "--no-prewalk": true,
+  "--plan-yolo": true,
+  "--print": true,
+  "-p": true,
+  "--print-thoughts": true,
+  "--no-extensions": true,
+  "--no-skills": true,
+  "--no-rules": true,
+  "--no-context-files": true,
+  "--no-title": true,
+  "--no-ui": true,
+  "--auto-approve": true,
+  "--yolo": true,
 };
 
 export function checkNativeArgv(argv: readonly string[], label: string): void {

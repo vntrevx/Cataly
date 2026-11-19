@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 import { takeLock } from "./checkpoint-lock.ts";
 import type { BudgetLimits } from "./supervision-observe.ts";
-
+import type { ModelReadback } from "./lane-state.ts";
 // A writer holds a lane's lock for one synchronous read and write, so a short wait covers any live contention.
 const LOCK_WAIT_MS = 5_000;
 const LOCK_RETRY_MS = 10;
@@ -34,6 +34,7 @@ export type Lane = {
   readonly done: string;
   readonly cwd?: string;
   readonly model?: string;
+  readonly modelReadback?: ModelReadback;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly claim?: Claim;
