@@ -12,9 +12,9 @@ export type Message = {
   flags?: number;
   attachments?: unknown;
   /** `type` 0 (or absent) is a reply; 1 is a forward, which names a message but answers nothing. */
-  message_reference?: { message_id?: string; type?: number };
+  message_reference?: { message_id?: string; channel_id?: string; type?: number };
   /** Present on replies, or null when Discord could not load the target (for example, after deletion). */
-  referenced_message?: { id?: string; author?: { id?: string }; content?: string } | null;
+  referenced_message?: { id?: string; channel_id?: string; author?: { id?: string }; content?: string } | null;
 };
 /** One owner attachment, retaining Discord field names and the exact expiring signed CDN URL. */
 type InboundAttachment = {
@@ -27,7 +27,12 @@ type InboundAttachment = {
   duration_secs?: number;
 };
 /** Reply context is data; compare the author ID with the owner and bot IDs from INBOUND_READY. */
-type InboundReply = { id: string; author: string; text: string };
+type InboundReply = {
+  id: string;
+  author: string | null;
+  text: string | null;
+  status?: "unresolved" | "unavailable";
+};
 export type DiscordInbound = {
   channel: string;
   message: string;
@@ -121,19 +126,34 @@ export const toInbound = (message: Message): DiscordInbound => {
   const isReply = (message.message_reference?.type ?? 0) === 0;
   const reference = isReply ? message.message_reference?.message_id : undefined;
   const replied = isReply ? message.referenced_message : undefined;
+  let replyTo: InboundReply | null = null;
+  if (reference !== undefined) {
+    if (!isDiscordSnowflake(reference)) throw inboundProtocolError("Discord inbound reply reference is invalid");
+    if (
+      message.message_reference?.channel_id !== undefined &&
+      message.message_reference.channel_id !== message.channel_id
+    )
+      throw inboundProtocolError("Discord inbound reply belongs to a different channel or thread");
+    if (
+      replied !== undefined &&
+      replied !== null &&
+      (replied.id !== reference || (replied.channel_id !== undefined && replied.channel_id !== message.channel_id))
+    )
+      throw inboundProtocolError("Discord inbound reply snapshot does not match its message and channel");
+    replyTo = {
+      id: reference,
+      author: isDiscordSnowflake(replied?.author?.id) ? replied.author.id : null,
+      text: typeof replied?.content === "string" ? replied.content : null,
+    };
+    if (replied === undefined) replyTo.status = "unresolved";
+    else if (replied === null) replyTo.status = "unavailable";
+  }
   return {
     channel: message.channel_id,
     message: message.id,
-    reference: isDiscordSnowflake(reference) ? reference : null,
+    reference: reference ?? null,
     text: message.content,
-    replyTo:
-      replied && isDiscordSnowflake(replied.id) && isDiscordSnowflake(replied.author?.id)
-        ? {
-            id: replied.id,
-            author: replied.author.id,
-            text: typeof replied.content === "string" ? replied.content : "",
-          }
-        : null,
+    replyTo,
     attachments: toAttachments(message),
   };
 };

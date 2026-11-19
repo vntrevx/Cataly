@@ -23,7 +23,7 @@ test("a long Discord send is split, replies only with its first part, and prints
     expect([r.code, r.err, r.out]).toEqual([0, "", "SENT 71 72 73"]);
     expect(r.keys).toEqual(Array(3).fill(`POST /channels/${ids.thread}/messages`));
     expect(r.requests.map((q) => q.body?.["message_reference"])).toEqual([
-      { message_id: ids.message, fail_if_not_exists: false },
+      { message_id: ids.message, channel_id: ids.thread, fail_if_not_exists: true },
       undefined,
       undefined,
     ]);
@@ -47,11 +47,29 @@ test("a long Discord send is split, replies only with its first part, and prints
       {
         content: "hi",
         allowed_mentions: { parse: [] },
-        message_reference: { message_id: ids.message, fail_if_not_exists: false },
+        message_reference: { message_id: ids.message, channel_id: ids.thread, fail_if_not_exists: true },
       },
     ]);
   });
 }, 60_000);
+
+test("a rejected original reply stops the public CLI without posting an unlinked part", async () => {
+  await withDiscordCli(async (f) => {
+    const r = await f.invoke(["send", "discord", "--thread", ids.thread, "--reply", ids.message, "--text-file", "-"], {
+      stdin: report,
+      routes: {
+        [`POST /channels/${ids.thread}/messages`]: { status: 400, body: { code: 10008, message: "Unknown Message" } },
+      },
+    });
+    expect([r.code, r.out, r.keys]).toEqual([1, "", [`POST /channels/${ids.thread}/messages`]]);
+    expect(r.err).toContain(`discord POST /channels/${ids.thread}/messages: 400`);
+    expect(r.requests[0]?.body?.["message_reference"]).toEqual({
+      message_id: ids.message,
+      channel_id: ids.thread,
+      fail_if_not_exists: true,
+    });
+  });
+});
 
 test("a part that fails stops the rest and names the parts already posted", async () => {
   await withDiscordCli(async (f) => {

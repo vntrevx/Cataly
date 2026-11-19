@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Discord replies retain their original message ID and copied snapshot, distinguish unresolved, unavailable and observed-empty context, and reject reference or snapshot channel mismatches before owner delivery or checkpoint. Outgoing replies bind to the exact physical channel or thread and require the original target to exist; a deleted or other-channel target no longer silently becomes an unlinked post. Normal `INBOUND` grammar, split-message ordering and non-pinging mentions remain unchanged.
+
 - Discord REST intake probes one latest message before draining history. Quiet, empty and deleted-head channels avoid downloading up to 100 bodies; active channels pay one additional sequential probe and its rate-limit budget while retaining complete pagination, existing delivery/checkpoint and qualified late-arrival boundaries, and the received head if it is deleted between requests.
 
 - Discord Gateway intake spools pending work to a private SQLite FIFO instead of retaining an unbounded Promise chain during REST backfill failures. A bounded page cache and one decoded record keep application backlog memory independent of queue length; pending work survives shutdown and restart, with existing cursor and delivery-error boundaries preserved. Disk writes and backlog-sized storage replace in-memory retention. Both REST and Gateway acquire the queue lock before authentication or polling, including a fresh state directory. Intake stops at the 256 MiB database limit or when another consumer owns the same queue, and REST-only mode refuses pending Gateway work until it is drained in Gateway mode.

@@ -54,6 +54,7 @@ const expected = [
   'INBOUND discord 20 104 from=owner ref=90 "this one"',
   'INBOUND_REPLY discord 20 104 {"id":"90","author":"99","text":"bot said \\"hi\\""}',
   'INBOUND discord 20 105 from=owner ref=91 "gone"',
+  'INBOUND_REPLY discord 20 105 {"id":"91","author":null,"text":null,"status":"unavailable"}',
 ];
 
 test("only a reply's reference is ref=: a forward names a message but answers none", () => {
@@ -85,7 +86,7 @@ const restLines = async () => {
 test("attachments, voice messages and replies follow their INBOUND line in one REST emit per message", async () => {
   const { lines, groups, cursor } = await restLines();
   expect({ lines, cursor }).toEqual({ lines: expected, cursor: "106" });
-  expect(groups.map((group) => group.split("\n").length)).toEqual([2, 3, 2, 2, 1]);
+  expect(groups.map((group) => group.split("\n").length)).toEqual([2, 3, 2, 2, 2]);
 });
 
 test("Gateway backfill and live dispatch deliver the same record groups without replaying media", async () => {
@@ -96,7 +97,7 @@ test("Gateway backfill and live dispatch deliver the same record groups without 
     await world.connect(socket);
     for (const message of media) await world.dispatch(socket, message);
     expect(world.lines.join("\n").split("\n")).toEqual(expected);
-    expect(world.lines.map((group) => group.split("\n").length)).toEqual([2, 3, 2, 2, 1]);
+    expect(world.lines.map((group) => group.split("\n").length)).toEqual([2, 3, 2, 2, 2]);
     expect(world.cursor("20")).toBe("106");
   } finally {
     world.live.close();
@@ -119,7 +120,7 @@ test("the documented INBOUND grammar reads media text unchanged and never matche
     ["105", "91", "gone"],
   ]);
   const extra = lines.filter((line) => !grammar.test(line));
-  expect(extra).toHaveLength(5);
+  expect(extra).toHaveLength(6);
   expect(extra.some((line) => line.startsWith("INBOUND discord "))).toBe(false);
   for (const line of extra) JSON.parse(line.split(" ").slice(4).join(" "));
 });
