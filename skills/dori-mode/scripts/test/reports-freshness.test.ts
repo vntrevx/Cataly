@@ -177,12 +177,14 @@ test("a report written in the same millisecond as the last post is still posted 
 test("an adopted lane ignores a journal record and keeps the screen path", async () => {
   // Given an adopted lane (no reportProtocol) with a blocker record and 30 silent minutes.
   const world = newWorld();
+  world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent: "pi", agent_status: "working" }];
   const deps = depsFor(world, fakeClock(T0 + 30 * MIN), state.dir);
   const { reportProtocol: _, ...adopted } = lane;
   await deps.registry.write(adopted);
   reports.report(lane.key, "blocker", "waiting on review", T0);
   // When freshness runs; then the journal does not hold back the nudge.
   expect((await freshnessTick(deps, "/home/test")).map((act) => act.kind)).toEqual(["nudged"]);
+  expect(world.calls.filter((call) => call[2] === "send-text").map((call) => call[3])).toEqual(["w:p7"]);
 });
 
 test("structured lanes never fall back to unrelated pane report text", async () => {

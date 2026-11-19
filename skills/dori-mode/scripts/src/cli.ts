@@ -49,9 +49,10 @@ const USAGE = `dori <command> [options]
                                        close now (Done signals must read back live); an optional lesson never blocks it
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
   resume <key> [--note TEXT]           undo pause: goal resumed (read back), lane back to its earlier status
-  tell   <key> --text TEXT             one verified message to the lane's agent: TOLD (exit 0), TELL_UNCONFIRMED (exit 3,
-                                       never resend), TELL_FAILED (exit 2, nothing sent: shell, approval, hc blocked
-                                       agent, paused lane; a runtime refusal names the status read after it)
+  tell   <key> --text TEXT             TOLD (exit 0), TELL_UNCONFIRMED (exit 3, never resend; later messages held),
+                                       TELL_FAILED or TELL_HELD (exit 2, this message not sent)
+  tell   <key> --status                inspect the latest local dispatch, including its exact request ID
+  tell   <key> --resolve ID --note WHY  release only that uncertain hold; never confirm, cancel, or replay its action
   watch                                long-running: emits LANE_* lines every 30 s
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
@@ -125,6 +126,8 @@ const flags = parseArgs({
     purpose: { type: "string" },
     to: { type: "string" },
     text: { type: "string" },
+    status: { type: "boolean" },
+    resolve: { type: "string" },
     edit: { type: "string" },
     "text-file": { type: "string" },
     reply: { type: "string" },

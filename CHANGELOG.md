@@ -205,3 +205,5 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+- Lane messages persist a private local dispatch identity before delivery. An uncertain send fences later tells, automatic nudges and claim/objection notifications across restart; explicit pause/resume remains available. `dori tell <key> --status` inspects the latest record, and `--resolve ID --note WHY` releases only that exact hold without confirming, cancelling or replaying the original action. These IDs are not native submission/run receipts.

@@ -2,82 +2,20 @@ import { existsSync } from "node:fs";
 
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { anchoredReportLine, scrubForThread } from "./freshness-report.ts";
 import { checkPausedLane } from "./pause.ts";
 import { runtimesOf } from "./run.ts";
-import { readScreen, sendVerified } from "./sessions.ts";
+import { readScreen } from "./sessions.ts";
+import { tellLane } from "./tell.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { type Progress, ReportError, reportLine, Reports } from "./reports.ts";
 import { Supervision, type SupervisionResult } from "./supervision.ts";
 
-export const lastReportLine = (screen: string, key: string): string | null => {
-  const grammar = new RegExp(
-    `\\[REPORT\\] ${key.replace(/[.]/g, "\\.")} \\| (milestone|blocker|question|halted|done) \\| (?!<what)\\S`,
-  );
-  const template = (l: string) => /["'`]\[REPORT\]/.test(l) && /\$?\{[A-Za-z_][\w.]*\}/.test(l);
-  const hits = screen
-    .split("\n")
-    .flatMap((l) => (grammar.test(l) && !template(l) ? [l.slice(l.indexOf("[REPORT]"))] : []));
-  return hits.at(-1)?.replace(/["'\])\s,]+$/, "") ?? null;
-};
-
-export const scrubForThread = (line: string, home: string): string =>
-  line
-    .replace(/^\[REPORT\]\s*[^|]*\|\s*[^|]*\|\s*/, "")
-    .split(home)
-    .join("~")
-    .replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)")
-    .replace(/\bw\w+:p\w+\b/g, "(pane)")
-    .replace(/`/g, "'")
-    .trim();
-
-// A report is a line that starts with [REPORT], or the last quoted element of an argv row, the shape lanes are told
-// to send it in: an argv array ending in "lead:p1", "[REPORT] key | kind | text". Instructions
-// and prompts that quote the grammar mid-sentence are dropped before parsing, so an example is never posted as the
-// lane's progress. A report whose whole text is one unfilled placeholder ($name, ${name}, {name}, %s, <what>) is a
-// template, quoted or not (#29). The match is anchored to the [REPORT] key | kind | text structure, so
-// 'deployed api | %s' stays a real report.
-const placeholderOnly =
-  /^\s*\[REPORT\][^|]*\|[^|]*\|\s*["'`]?(\$\{?[A-Za-z_]\w*\}?|\{[A-Za-z_][\w.]*\}|%[sdif]|<[^>]+>)["'`)\s]*$/;
-// An argv row is the whole line (optionally inside one spawn call): [ then quoted strings separated by commas, then ]. Only its last element can be the
-// report, which is how lanes are told to send it. Prose that happens to contain a quoted report is not an argv row.
-const argvElements = (line: string): string[] | null => {
-  // A spawn call around the row, such as Bun.spawn([...]) or subprocess.run([...]), is the same row.
-  const call = /^\s*[\w.$]+\(\s*(\[.*\])\s*\)\s*;?\s*$/.exec(line);
-  const row = (call?.[1] ?? line).trim();
-  if (!row.startsWith("[") || !row.endsWith("]")) return null;
-  const element = /\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*(,|$)/y;
-  const inner = row.slice(1, -1);
-  const elements: string[] = [];
-  element.lastIndex = 0;
-  while (element.lastIndex < inner.length) {
-    const m = element.exec(inner);
-    if (!m) return null;
-    elements.push(m[1] ?? m[2] ?? "");
-    if (m[3] === "") break;
-  }
-  return element.lastIndex === inner.length && elements.length > 0 ? elements : null;
-};
-const argvReport = (line: string): string | null => {
-  const last = argvElements(line)?.at(-1);
-  return last !== undefined && last.startsWith("[REPORT]") ? last : null;
-};
-const reportCandidate = (l: string): string | null => {
-  if (!l.includes("[REPORT]")) return l;
-  const report = /^\s*\[REPORT\]/.test(l) ? l : argvReport(l);
-  return report !== null && !placeholderOnly.test(report) ? report : null;
-};
-export const anchoredReportLine = (screen: string, key: string): string | null =>
-  lastReportLine(
-    screen
-      .split("\n")
-      .flatMap((l) => reportCandidate(l) ?? [])
-      .join("\n"),
-    key,
-  );
-
 export type SweepAct = {
   readonly kind:
     | "nudged"
+    | "held"
+    | "delivery-error"
     | "posted"
     | "no-report"
     | "post-failed"
@@ -93,6 +31,9 @@ export type SweepAct = {
   readonly detail: string;
 };
 
+// A broken delivery store cannot reliably persist notification bookkeeping. Reset this cache with the sweep process.
+const deliveryErrors = new WeakMap<FlowDeps, Map<string, string>>();
+
 const lastHeard = (lane: Lane): number => lane.lastReplyAt ?? Date.parse(lane.openedAt);
 
 /** Records the sweep's own fields on the lane as stored now, so a claim, objection or pause written meanwhile stays. */
@@ -101,6 +42,8 @@ const remember = (deps: FlowDeps, key: string, patch: Partial<Lane>) =>
 
 export const freshnessTick = async (deps: FlowDeps, home: string): Promise<SweepAct[]> => {
   const acts: SweepAct[] = [];
+  const errors = deliveryErrors.get(deps) ?? new Map<string, string>();
+  deliveryErrors.set(deps, errors);
   const now = deps.clock.now();
   const reports = new Reports(deps.config.stateDir);
   const supervision = new Supervision({ ...deps, stateDir: deps.config.stateDir, reports }, deps.config.supervision);
@@ -179,15 +122,24 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     const silentMin = Math.round((now - heard) / 60_000);
     let current = lane;
     if (running && silentMin >= deps.config.nudgeAfterMin && (current.lastNudgeAt ?? 0) < heard) {
-      const delivery = await sendVerified(
-        runtimesOf(deps),
-        deps.clock,
-        ref,
-        `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`,
-      );
-      current = { ...current, lastNudgeAt: now };
-      await remember(deps, lane.key, { lastNudgeAt: now });
-      acts.push({ kind: "nudged", lane: lane.key, detail: `${silentMin} min silent, delivery ${delivery}` });
+      try {
+        const delivery = await tellLane(
+          deps,
+          lane,
+          `[LEAD] your work thread has had no update for ${silentMin} min. Post a 1-2 sentence progress line (done since last, next) and keep its status true.`,
+          { waitMs: 0 },
+        );
+        await remember(deps, lane.key, { lastNudgeAt: now });
+        errors.delete(lane.key);
+        acts.push({ kind: delivery.code === 2 ? "held" : "nudged", lane: lane.key, detail: delivery.line });
+      } catch (error) {
+        const detail = `${error instanceof Error ? error.message : String(error)}; inspect dori tell ${lane.key} --status and the original session; do not resend`;
+        const signature = `${lane.openedAt}|${detail}`;
+        if (errors.get(lane.key) !== signature) {
+          errors.set(lane.key, signature);
+          acts.push({ kind: "delivery-error", lane: lane.key, detail });
+        }
+      }
     }
     const hook = deps.config.hooks.threadReply;
     // The post waits for the thread to be quiet, not the lane: a report resets the nudge clock only, so a lane that

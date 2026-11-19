@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { type DoriConfig, fill } from "./config.ts";
 import { withDeliveryLock } from "./delivery-lock.ts";
 import { type Lane, type Registry, sessionOf, statusOf, withStatus } from "./registry.ts";
-import { type ChosenRuntimes, type Clock, iso, type Runner, runtimesOf } from "./run.ts";
-import { closeSession, sendVerified } from "./sessions.ts";
+import { type ChosenRuntimes, type Clock, iso, type Runner } from "./run.ts";
+import { closeSession } from "./sessions.ts";
+import { notifyLane } from "./tell.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
 import { Supervision } from "./supervision.ts";
 import { Lessons, type LessonInput } from "./lessons.ts";
@@ -38,10 +39,7 @@ export const movedOn = async (deps: FlowDeps, lane: Lane, what: string): Promise
   return `LANE_CHANGED ${lane.key} moved on while this ran (now ${current ? statusOf(current) : "not registered"}, was ${statusOf(lane)}); ${what} not recorded`;
 };
 
-/**
- * `onRecorded` runs once the claim is recorded and before the lane is told, so a failed notification cannot skip it.
- * It must not throw: a throw would skip telling the lane.
- */
+/** onRecorded runs after persistence and before notification, so send failure cannot skip it; it must not throw. */
 export const claimDone = async (
   deps: FlowDeps,
   lane: Lane,
@@ -54,33 +52,32 @@ export const claimDone = async (
   );
   if (!claimed) return movedOn(deps, lane, "done claim");
   onRecorded?.();
-  const ref = sessionOf(lane);
-  if (ref) {
-    const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
-    await sendVerified(
-      runtimesOf(deps),
-      deps.clock,
-      ref,
-      `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`,
-    );
-  }
+  const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
+  await notifyLane(
+    deps,
+    claimed,
+    `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; the lead reconciles any held objection before sending further instructions.`,
+  );
   return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
 };
 
-export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
+export const objectDone = async (
+  deps: FlowDeps,
+  lane: Lane,
+  reasons: readonly string[],
+  locked = false,
+): Promise<string> => {
   const at = iso(deps.clock);
   const objected = await deps.registry.transition(lane, (current) =>
     withStatus(current, "not-done", reasons.join("; "), at, { objection: { at, reasons } }),
   );
   if (!objected) return movedOn(deps, lane, "objection");
-  const ref = sessionOf(lane);
-  if (ref)
-    await sendVerified(
-      runtimesOf(deps),
-      deps.clock,
-      ref,
-      `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`,
-    );
+  await notifyLane(
+    deps,
+    objected,
+    `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`,
+    locked,
+  );
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 
@@ -214,6 +211,7 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
           deps,
           verified,
           result.lines.filter((l) => l.startsWith("SIGNAL NOT")),
+          true,
         )
       );
     return `LANE_CLOSED ${lane.key} ${result.lines.at(-1)?.split(" ").slice(2).join(" ") ?? ""}`;
@@ -239,7 +237,13 @@ export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
       lane = emitted;
     }
     if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
-    out.push(await settle(deps, lane, claim.evidence));
+    try {
+      out.push(await settle(deps, lane, claim.evidence));
+    } catch (error) {
+      out.push(
+        `LANE_WATCH_ERROR ${lane.key} ${error instanceof Error ? error.message : String(error)}; inspect dori tell ${lane.key} --status and the original session; do not resend`,
+      );
+    }
   }
   return out;
 };

@@ -4,7 +4,8 @@ import { autoTrackLinks } from "./cli-pr.ts";
 import { claimDone, closeLane, objectDone } from "./done-flow.ts";
 import { adoptLane, type LaunchInput, launchLane, prepareLaunch } from "./launch.ts";
 import { pauseLane, resumeLane } from "./pause.ts";
-import { tellLane } from "./tell.ts";
+import { DeliveryState } from "./delivery-state.ts";
+import { resolveTell, tellLane } from "./tell.ts";
 
 const launch: Command = async ({ key, opt, need, ceiling, strings, values, deps }) => {
   const wallMinutes = ceiling("wall-minutes"),
@@ -84,9 +85,18 @@ const pauseOrResume: Command = async ({ command, key, opt, lane, deps }) => {
   process.exit(r.code);
 };
 
-const tell: Command = async ({ key, need, lane, deps }) => {
-  const target = await lane(key ?? die("tell needs a lane key"));
-  const r = await tellLane(deps, target, need("text"));
+const tell: Command = async ({ key, need, values, lane, deps }) => {
+  const target = key ?? die("tell needs a lane key");
+  if ([values["text"], values["status"], values["resolve"]].filter((value) => value !== undefined).length !== 1)
+    die("choose exactly one: --text TEXT, --status, or --resolve REQUEST_ID --note REASON");
+  if (values["status"] === true) {
+    console.log(`TELL_STATE ${target} ${JSON.stringify(new DeliveryState(deps.registry, target).read())}`);
+    return;
+  }
+  const r =
+    values["resolve"] !== undefined
+      ? await resolveTell(deps, target, need("resolve"), need("note"))
+      : await tellLane(deps, await lane(target), need("text"));
   console.log(r.line);
   process.exit(r.code);
 };

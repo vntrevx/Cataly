@@ -99,6 +99,7 @@ test("a corrupt journal fails with its line number instead of hiding a lost repo
 test("one corrupt journal is reported once and does not stop the sweep for other lanes", async () => {
   // Given a lane with a corrupt journal and another lane that is silent past the nudge time.
   const world = newWorld();
+  world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent: "pi", agent_status: "working" }];
   world.screen = "Working (1m)\n❯ ";
   const deps = depsFor(world, fakeClock(T0 + 30 * MIN), state.dir);
   await deps.registry.write({ ...lane, key: "bad-lane", pane: "w:p8" });
@@ -114,6 +115,7 @@ test("one corrupt journal is reported once and does not stop the sweep for other
     `nudged ${lane.key}`,
   ]);
   expect(first.find((act) => act.kind === "journal-error")?.detail).toContain("reports.jsonl:2:");
+  expect(world.calls.filter((call) => call[2] === "send-text").map((call) => call[3])).toEqual(["w:p7"]);
   expect((await freshnessTick(deps, "/home/test")).map((act) => act.kind)).toEqual([]);
 });
 
