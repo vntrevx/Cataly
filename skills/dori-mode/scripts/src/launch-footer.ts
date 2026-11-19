@@ -61,6 +61,7 @@ export const footer = (
       : [
           "- The lead pane or runtime is unavailable, so the command above only records and prints the report. Keep that line and resolve the missing destination with the lead before forwarding.",
         ]),
+    "- Attach what a report or checkpoint rests on with --evidence-file <path> (one flag per file), or in OMP the dori_report tool with files and toolCalls (ids of completed, successful tool calls); forward its [REPORT] line the same way. Supervision counts only evidence not recorded before: rewording or repeating a report, or touching a file, is not progress.",
     ...(Object.keys(identities).length
       ? [
           "- Before committing, set the repository's identity below for that command only; never change the global Git identity. For a repository not listed, ask the lead for its identity before the first commit.",

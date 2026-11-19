@@ -66,6 +66,7 @@ export const DORI_VALUE_OPTIONS: Record<string, true> = {
   step: true,
   result: true,
   "remote-effect": true,
+  "evidence-file": true,
   "wall-minutes": true,
   "token-limit": true,
   "cost-limit": true,

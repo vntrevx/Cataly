@@ -11,12 +11,17 @@
  *   approvals of the Dori/lane session running in HERDR_PANE_ID or HC_TERMINAL_ID.
  * - Lanes without a goal get omp's `goal` tool so the agent can create its goal from the lane brief.
  * - The Dori session gets the `monitor` tool (monitor.ts).
+ * - A lane's main agent gets the `dori_report` tool: `dori report` for the lane registered to its pane, with evidence
+ *   it selects fingerprinted here, including completed tool results on its current branch, which the CLI cannot read.
  * - A lane's main agent on GPT-6.1 Sol is told to carry lane bookkeeping along with real work (lane-bookkeeping.ts).
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Checkpoints } from "../skills/dori-mode/scripts/src/checkpoints.ts";
 import { loadConfig } from "../skills/dori-mode/scripts/src/config";
+import { fileEvidence, novelEvidence } from "../skills/dori-mode/scripts/src/evidence.ts";
+import { COMPLETION_ENTRY, completionReceipt, toolEvidence } from "../skills/dori-mode/scripts/src/tool-evidence.ts";
 import { SourceBundleError } from "../src/release/source-bundle.ts";
 import {
   type DoriRole,
@@ -26,6 +31,9 @@ import {
   readPaneState,
   writePaneState,
 } from "../skills/dori-mode/scripts/src/lane-state";
+import { Registry } from "../skills/dori-mode/scripts/src/registry.ts";
+import { type ReportKind, Reports, reportLine } from "../skills/dori-mode/scripts/src/reports.ts";
+import { selfSession } from "../src/runtime/registry.ts";
 import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./bootstrap.ts";
 import { RuntimeHealthWriter } from "./deployment-health.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
@@ -37,6 +45,8 @@ interface SessionEntry {
   customType?: string;
   data?: unknown;
   mode?: string;
+  /** A `message` entry's native message (toolResult, assistant tool calls); read only by dori_report evidence. */
+  message?: unknown;
 }
 export interface DoriContext {
   cwd: string;
@@ -79,6 +89,9 @@ interface Schema {
   describe(description: string): Schema;
 }
 type Handler = (event: unknown, ctx: DoriContext) => unknown;
+/** OMP's tool_execution_start/update/end events, read only for the start cwd and background job completions. */
+type ToolEvent = { toolCallId?: unknown; toolName?: unknown; partialResult?: unknown; result?: unknown };
+type ToolFrame = { details?: { async?: { state?: unknown; jobId?: unknown } } } | null | undefined;
 export interface DoriApi {
   zod: {
     object(shape: Record<string, Schema>): Schema;
@@ -200,6 +213,18 @@ const recordedMonitors = (branch: readonly SessionEntry[]): Map<string, MonitorS
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+const DORI_REPORT_DESCRIPTION = [
+  "Record a lane report in its journal, as `dori report` does, and return the [REPORT] line to forward to the lead.",
+  "Attach the evidence the report rests on: `files` whose current bytes it describes, and `toolCalls`, the ids of",
+  "completed, successful tool calls on this session whose results show it (a call that started a background job, once",
+  "that job completed successfully). Only evidence not recorded before moves",
+  "the lane's evidence clock: rewording a report, repeating it, touching a file or rerunning a call with the same",
+  "result does not. Reports, messages and other coordination calls are not evidence. A command needs its recorded",
+  "start directory or the host-resolved explicit cwd; select file evidence if that information is unavailable.",
+  "Native eval run events omit their execution directory, and async eval frames omit image bytes. Select files",
+  "or a direct Bash result for those calls rather than repeating an already completed effect.",
+].join(" ");
+
 export default async function ompDori(pi: DoriApi): Promise<void> {
   pi.registerFlag(ROLE_FLAG, {
     description: "Run as a Dori-mode session: dori (the messenger session) or lane; kept on resume",
@@ -231,6 +256,16 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   let goalToolAdded = false;
   let paneWritten: string | undefined;
   const approvals = new Set<string>();
+  /** The lane's tool calls by id, from their start until they return or their background job settles. */
+  const backgroundCalls = new Map<
+    string,
+    { session: string; agent: string; cwd: string; job?: string; pending: Map<string, ToolEvent | null> }
+  >();
+  /**
+   * The session cwd each of the lane's tool calls started in (`ctx.cwd` at its start), where a command without its own
+   * cwd runs; the branch does not record it and `/move` changes it. A call ID started again elsewhere is unknown.
+   */
+  const callDirs = new Map<string, { session: string; agent: string; cwd: string | undefined }>();
   let managedRestorePending = process.env.DORI_MANAGED_STARTUP === "1";
   const monitors = new Monitors(
     async (content, delivery) => {
@@ -387,6 +422,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     const next = new Set(active);
     if (role === "dori") next.add("monitor");
     else next.delete("monitor");
+    if (role === "lane") next.add("dori_report");
+    else next.delete("dori_report");
     // A session with its own goal keeps whatever omp decided. omp does not take the tool back when the session
     // changes, so ours is removed from any later goal-less session that is not a lane.
     if (goal.status === "none" && role === "lane") {
@@ -416,6 +453,54 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       monitors.stopAll();
       retirePane();
     });
+    // A background job's completion arrives as a `tool_execution_update` frame after its call returned, by when another
+    // session, branch or agent may be current. Its receipt is recorded only in the lane session and main agent the call
+    // started in, while the call is on the current branch; dori_report reads it as that call's result.
+    const complete = (event: ToolEvent, ctx: DoriContext): void => {
+      const { toolCallId, toolName, partialResult } = event;
+      if (role !== "lane" || ctx.agent.kind !== "main" || typeof toolCallId !== "string") return;
+      const started = backgroundCalls.get(toolCallId);
+      const job = (partialResult as ToolFrame)?.details?.async;
+      if (!started || typeof job?.jobId !== "string" || job.jobId === "") return;
+      if (job.state !== "completed" && job.state !== "failed" && job.state !== "cancelled") return;
+      if (started.session !== ctx.sessionManager.getSessionId() || started.agent !== ctx.agent.id) return;
+      if (started.job !== undefined && started.job !== job.jobId) return;
+      const branch = ctx.sessionManager.getBranch();
+      const receipt = completionReceipt(branch, toolCallId, toolName, partialResult, started.cwd);
+      if (started.job === undefined) {
+        // A job can finish before its start result returns. Bind that result first; an old job can reuse this call id.
+        started.pending.set(job.jobId, receipt ? event : null);
+        return;
+      }
+      backgroundCalls.delete(toolCallId);
+      if (receipt) pi.appendEntry(COMPLETION_ENTRY, receipt);
+    };
+    pi.on("tool_execution_start", (event, ctx) => {
+      const { toolCallId } = event as ToolEvent;
+      if (role !== "lane" || ctx.agent.kind !== "main" || typeof toolCallId !== "string") return;
+      const source = { session: ctx.sessionManager.getSessionId(), agent: ctx.agent.id };
+      const seen = callDirs.get(toolCallId);
+      const again = seen?.session === source.session && seen.agent === source.agent && seen.cwd !== ctx.cwd;
+      callDirs.set(toolCallId, { ...source, cwd: again ? undefined : ctx.cwd });
+      backgroundCalls.set(toolCallId, { ...source, cwd: ctx.cwd, pending: new Map() });
+    });
+    pi.on("tool_execution_end", (event, ctx) => {
+      const { toolCallId, result } = event as ToolEvent;
+      if (typeof toolCallId !== "string") return;
+      const started = backgroundCalls.get(toolCallId);
+      if (!started || started.session !== ctx.sessionManager.getSessionId() || started.agent !== ctx.agent.id) return;
+      const job = (result as ToolFrame)?.details?.async;
+      if (job?.state !== "running" || typeof job.jobId !== "string" || job.jobId === "") {
+        backgroundCalls.delete(toolCallId);
+        return;
+      }
+      started.job = job.jobId;
+      const pending = started.pending.get(job.jobId);
+      started.pending.clear();
+      if (pending) complete(pending, ctx);
+      else if (pending === null) backgroundCalls.delete(toolCallId);
+    });
+    pi.on("tool_execution_update", (event, ctx) => complete(event as ToolEvent, ctx));
   };
 
   const syncMain = async (ctx: DoriContext, branch: readonly SessionEntry[], bootstrap = false): Promise<void> => {
@@ -425,6 +510,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     if (session?.id !== sessionId) {
       session = { id: sessionId, startedAt: new Date().toISOString() };
       approvals.clear();
+      backgroundCalls.clear();
+      callDirs.clear();
       agentStatus = "idle";
     }
     if (role && !lifecycleRegistered) registerLifecycle();
@@ -655,6 +742,57 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
             : running.map((m) => `${m.name} (pid ${m.pid}) /${m.filter}/: ${m.argv.join(" ")}`).join("\n");
       }
       return { content: [{ type: "text", text }] };
+    },
+  });
+
+  pi.registerTool<{ kind: ReportKind; text: string; files?: string[]; toolCalls?: string[] }>({
+    name: "dori_report",
+    label: "Dori report",
+    description: DORI_REPORT_DESCRIPTION,
+    defaultInactive: true,
+    loadMode: "essential",
+    parameters: z.object({
+      kind: z.enum(["milestone", "blocker", "question", "halted", "done"]).describe("the report's kind"),
+      text: z.string().describe("the report for the lead: what was done, what is next"),
+      files: z
+        .array(z.string())
+        .optional()
+        .describe("files whose current bytes are this report's evidence (relative to the session's cwd)"),
+      toolCalls: z
+        .array(z.string())
+        .optional()
+        .describe("ids of completed, successful tool calls on this session whose results are this report's evidence"),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (role !== "lane" || ctx.agent.kind !== "main")
+        throw new Error("dori_report works only in a lane's main session (omp --dori-role lane)");
+      if (stateDir === undefined) throw new Error(`dori_report needs the Dori config: ${loadError ?? "not loaded"}`);
+      const lane = await new Registry(stateDir).bySession(selfSession(process.env));
+      if (!lane) throw new Error("no open lane is registered for this pane");
+      // Evidence is read before anything is written: a refused file or call records no report.
+      const branch = ctx.sessionManager.getBranch();
+      const source = ctx.sessionManager.getSessionId();
+      const evidence = [
+        ...(params.files ?? []).map((path) => fileEvidence(path, ctx.cwd)),
+        ...(params.toolCalls ?? []).map((id) => {
+          const seen = callDirs.get(id);
+          const cwd = seen?.session === source && seen.agent === ctx.agent.id ? seen.cwd : undefined;
+          return toolEvidence(branch, id, cwd);
+        }),
+      ];
+      const reports = new Reports(stateDir);
+      const novel = novelEvidence(
+        [...(reports.read(lane.key)?.evidenced ?? []), ...new Checkpoints(stateDir).read(lane.key)],
+        evidence,
+      );
+      const line = reportLine(reports.report(lane.key, params.kind, params.text, Date.now(), evidence));
+      const clock =
+        evidence.length === 0
+          ? "no evidence attached; the evidence clock did not move"
+          : novel.length === 0
+            ? "the same evidence was recorded before; the evidence clock did not move"
+            : `${novel.length} of ${evidence.length} evidence items are new; the evidence clock moved`;
+      return { content: [{ type: "text", text: `${line}\n${clock}` }] };
     },
   });
 

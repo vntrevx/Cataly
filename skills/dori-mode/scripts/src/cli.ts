@@ -15,10 +15,11 @@ const USAGE = `dori <command> [options]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
   sync   [--write]                     registry vs live panes; read-only unless --write
   boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
-  report <key> --kind milestone|blocker|question|halted|done --text TEXT
+  report <key> --kind milestone|blocker|question|halted|done --text TEXT [--evidence-file PATH]...
                                        append a durable progress report and print its [REPORT] line
-  checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
+  checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]... [--evidence-file PATH]...
                                        record a completed step once; a conflicting rewrite is refused
+                                       --evidence-file fingerprints the file's bytes: only new bytes are progress
   checkpoints <key>                    read completed steps before resuming remote work
   verify-pr <owner/repo> <num> [--loop N] [--cwd DIR]
                                        check every commit's author/committer email and PR-level tests; print the UI test loop (not run)
@@ -137,6 +138,7 @@ const flags = parseArgs({
     step: { type: "string" },
     result: { type: "string" },
     "remote-effect": { type: "string", multiple: true },
+    "evidence-file": { type: "string", multiple: true },
     "wall-minutes": { type: "string" },
     "token-limit": { type: "string" },
     "cost-limit": { type: "string" },

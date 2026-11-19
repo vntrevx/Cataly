@@ -187,3 +187,7 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+## Unreleased additions
+
+- Lane reports, checkpoints and filesystem observations share an evidence clock independent of report time. Reworded reports, touches, commits of unchanged bytes and identical tool results do not reset it; changed bytes and structured results do. `--evidence-file` and lane-only `dori_report` preserve idempotent receipts and source-bound native background completions. Bounded or failed observations remain explicitly unknown without hiding budget alerts; native timing and declared artifact locators do not masquerade as new results.

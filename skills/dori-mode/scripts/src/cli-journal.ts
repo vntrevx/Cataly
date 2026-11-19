@@ -2,20 +2,26 @@
 import { CheckpointError, Checkpoints } from "./checkpoints.ts";
 import { type Cli, type Command, die } from "./cli-context.ts";
 import { autoTrackLinks } from "./cli-pr.ts";
+import { EvidenceError, type EvidenceRef, fileEvidence } from "./evidence.ts";
 import { isLessonOutcome, LessonError, Lessons } from "./lessons.ts";
 import { isReportKind, ReportError, Reports, reportLine } from "./reports.ts";
 import { realClock, runtimesOf } from "./run.ts";
 import { Worklog, WorklogError } from "./worklog.ts";
 
 /** Journal errors are the user's input refused: one line, never a stack. */
-export const journalErrors = [CheckpointError, LessonError, ReportError, WorklogError] as const;
+export const journalErrors = [CheckpointError, EvidenceError, LessonError, ReportError, WorklogError] as const;
 
-const report: Command = async ({ key, need, lane, config }) => {
+/** `--evidence-file PATH`, each read now: its fingerprint, not the report's wording, is what counts as progress. */
+const evidenceFiles = (strings: Cli["strings"]): EvidenceRef[] =>
+  strings("evidence-file").map((path) => fileEvidence(path, process.cwd()));
+
+const report: Command = async ({ key, need, strings, lane, config }) => {
   const target = await lane(key ?? die("report needs a lane key"));
   const kind = need("kind");
-  if (isReportKind(kind)) {
-    console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, need("text"), realClock.now())));
-  } else die("--kind must be milestone, blocker, question, halted or done");
+  if (!isReportKind(kind)) return die("--kind must be milestone, blocker, question, halted or done");
+  const text = need("text");
+  const evidence = evidenceFiles(strings);
+  console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, text, realClock.now(), evidence)));
 };
 
 const lessonAdd = async (
@@ -143,6 +149,7 @@ const checkpoint: Command = async (cli) => {
       remoteEffects: strings("remote-effect"),
     },
     realClock.now(),
+    () => evidenceFiles(strings),
   );
   console.log(JSON.stringify(result));
   autoTrackLinks(cli, target, result.checkpoint.remoteEffects.join(" "), `checkpoint ${target.key}`);

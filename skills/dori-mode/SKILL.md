@@ -11,7 +11,7 @@ This file is the operating contract. Setup steps, the session protocol and the s
 
 ## OMP host contract
 
-This modified copy runs on OMP. Start the lead with `omp --dori-role dori`; `dori launch` starts lanes with `omp --dori-role lane`. The extension records roles in the session, restores them on resume, applies the pinned omp-ulw only to role sessions, and enables OMP's native `goal` tool for a lane that has no goal. Ordinary OMP sessions keep their existing behavior.
+This modified copy runs on OMP. Start the lead with `omp --dori-role dori`; `dori launch` starts lanes with `omp --dori-role lane`. The extension records roles in the session, restores them on resume, applies the pinned omp-ulw only to role sessions, enables OMP's native `goal` tool for a lane that has no goal, and gives a lane's main agent the `dori_report` tool, which records a report with fingerprinted file and completed tool-call evidence (`references/scripts.md`). Ordinary OMP sessions keep their existing behavior.
 
 The extension records the current session, goal status and open approvals under `<stateDir>/sessions/`. The CLI trusts that record only when it belongs to the live agent process; pause/resume and delivery must use it rather than assuming omo screen wording. Dori monitors use the extension's `monitor` tool and restore from the owning session's recorded start/stop entries. Boot reads a separate desired-monitor manifest under `<stateDir>/monitors/`, so it can report cleanup candidates without opening private session transcripts or stopping anything.
 

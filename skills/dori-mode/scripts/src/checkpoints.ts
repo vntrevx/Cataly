@@ -2,6 +2,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, wr
 import { dirname, join } from "node:path";
 
 import { takeLock } from "./checkpoint-lock.ts";
+import { type EvidenceRef, isEvidenceRefs } from "./evidence.ts";
 import { LANE_KEY } from "./registry.ts";
 
 export type CheckpointInput = {
@@ -9,6 +10,11 @@ export type CheckpointInput = {
   readonly result: string;
   readonly evidence: readonly string[];
   readonly remoteEffects: readonly string[];
+  /**
+   * Fingerprinted evidence (evidence.ts), as observed by the first write of the step. Not part of the step's identity:
+   * a retry returns the recorded step whatever the files hold now.
+   */
+  readonly evidenceRefs?: readonly EvidenceRef[];
 };
 export type Checkpoint = CheckpointInput & { readonly key: string; readonly at: string };
 export class CheckpointError extends Error {}
@@ -26,6 +32,8 @@ const validate = (input: CheckpointInput): void => {
   ) {
     throw new CheckpointError("checkpoint requires step, result, evidence[], and completed remoteEffects[]");
   }
+  if (input.evidenceRefs !== undefined && !isEvidenceRefs(input.evidenceRefs))
+    throw new CheckpointError("invalid checkpoint evidenceRefs");
 };
 const payload = (value: CheckpointInput): string =>
   JSON.stringify({
@@ -80,7 +88,12 @@ export class Checkpoints {
     return held;
   }
 
-  write(key: string, input: CheckpointInput, now: number): { checkpoint: Checkpoint; unchanged: boolean } {
+  write(
+    key: string,
+    input: CheckpointInput,
+    now: number,
+    capture?: () => readonly EvidenceRef[],
+  ): { checkpoint: Checkpoint; unchanged: boolean } {
     validate(input);
     const path = this.path(key);
     const at = new Date(now).toISOString();
@@ -100,7 +113,15 @@ export class Checkpoints {
         if (repeated !== undefined)
           throw new CheckpointError(`remote effect ${repeated} already recorded by step ${entry.step}`);
       }
-      const checkpoint: Checkpoint = { key, at, ...JSON.parse(payload(input)) };
+      // Only a new step reads external evidence; retries and conflicts are resolved from the durable receipt first.
+      const captured = capture ? { ...input, evidenceRefs: capture() } : input;
+      if (capture) validate(captured);
+      const checkpoint: Checkpoint = {
+        key,
+        at,
+        ...JSON.parse(payload(input)),
+        ...(captured.evidenceRefs?.length ? { evidenceRefs: captured.evidenceRefs } : {}),
+      };
       const created = !existsSync(path);
       const fd = openSync(path, "a", 0o600);
       try {

@@ -1,42 +1,23 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { Checkpoints } from "./checkpoints.ts";
 import { fill } from "./config.ts";
 import { Reports } from "./reports.ts";
-import type { Clock, Runner } from "./run.ts";
 import {
-  type BudgetLimits,
-  laneActivity,
+  budgetViolations,
+  laneEvidence,
+  type Observation,
+  type ObservationState,
   type SupervisedLane,
+  type SupervisionDeps,
   type SupervisionOptions,
+  type SupervisionResult,
   type Usage,
   type UsageSnapshot,
   workingTimer,
+  writeObservation,
 } from "./supervision-observe.ts";
-
-export type SupervisionDeps = {
-  readonly stateDir: string;
-  readonly run: Runner;
-  readonly clock: Pick<Clock, "now">;
-  readonly reports?: Reports;
-  readonly alert?: (lane: SupervisedLane, message: string) => void | Promise<void>;
-};
-export type SupervisionResult = {
-  readonly enabled: boolean;
-  readonly state: "running" | "stalled" | "blocked" | "halted" | "done" | null;
-  readonly alerts: readonly string[];
-  readonly usage: UsageSnapshot | null;
-  readonly hung: boolean;
-};
-type Observation = {
-  readonly at: number;
-  readonly timer: number | null;
-  readonly timerKind: string | null;
-  readonly activity: string;
-  readonly activeAt: number;
-  readonly alerts: readonly string[];
-};
 
 export class Supervision {
   readonly reports: Reports;
@@ -97,18 +78,37 @@ export class Supervision {
     appendFileSync(path, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
   }
 
-  private activity(lane: SupervisedLane): Promise<string> {
-    return laneActivity(this.deps.run, this.options, this.reports, this.checkpoints, lane);
-  }
-
   async sweep(lane: SupervisedLane, screen: string): Promise<SupervisionResult> {
-    if (!this.enabled(lane)) return { enabled: false, state: null, alerts: [], usage: null, hung: false };
+    if (!this.enabled(lane))
+      return {
+        enabled: false,
+        state: null,
+        alerts: [],
+        usage: null,
+        hung: false,
+        heldHung: false,
+        coverageComplete: false,
+        lastReportAt: null,
+        lastEvidenceAt: null,
+      };
     const now = this.deps.clock.now();
     const path = join(dirname(this.reports.path(lane.key)), "supervision.json");
-    const previous = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Observation) : null;
-    const activity = await this.activity(lane);
+    const stored = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as ObservationState) : null;
+    const previous = stored && "at" in stored ? stored : null;
+    const evidence = await laneEvidence(
+      this.deps,
+      this.options,
+      this.reports,
+      this.checkpoints,
+      lane,
+      stored,
+      (coverage) => writeObservation(path, { ...previous, coverage }),
+    );
     const timer = workingTimer(screen);
-    const activeAt = !previous || activity !== previous.activity ? now : previous.activeAt;
+    const advanced = previous?.files !== undefined && evidence.signature !== previous.activity;
+    const coverage = evidence.coverage && { ...evidence.coverage, changed: evidence.coverage.changed || advanced };
+    const incomplete = Boolean(coverage?.pending.length || coverage?.deferred.length);
+    const activeAt = !previous || advanced ? now : previous.activeAt;
     const usage = await this.usage(lane, now);
     const limits = {
       wallMinutes: null,
@@ -118,23 +118,13 @@ export class Supervision {
       ...this.options.lanes?.[lane.key],
       ...lane.budget,
     };
-    const violations: string[] = [];
-    const exceeds = (name: keyof BudgetLimits, actual: number | null): void => {
-      const ceiling = limits[name];
-      if (
-        typeof ceiling === "number" &&
-        Number.isFinite(ceiling) &&
-        ceiling >= 0 &&
-        actual !== null &&
-        actual >= ceiling
-      )
-        violations.push(`${name} ceiling reached (${ceiling})`);
-    };
-    exceeds("wallMinutes", (now - Date.parse(lane.openedAt)) / 60_000);
-    exceeds("tokens", usage.tokens);
-    exceeds("costUsd", usage.costUsd);
-    const hung =
+    const violations = budgetViolations(limits, usage, (now - Date.parse(lane.openedAt)) / 60_000);
+    const provedHung =
+      coverage?.changed === false &&
+      !incomplete &&
+      evidence.evidenceError === undefined &&
       previous !== null &&
+      previous.evidenceError === undefined &&
       timer !== null &&
       previous.timer !== null &&
       timer.kind === previous.timerKind &&
@@ -145,11 +135,13 @@ export class Supervision {
       timer.seconds >= (this.options.hungAfterMinutes ?? 20) * 60 &&
       now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000;
     const progress = this.reports.read(lane.key);
+    const hung = provedHung || (!advanced && previous?.hung === true && progress?.state === "stalled");
     const terminal = progress?.state === "done" || progress?.state === "halted";
     const unavailable = (["tokens", "costUsd"] as const)
       .filter((name) => typeof limits[name] === "number" && usage[name] === null)
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
-    const hungMessage = "Working/Running timer exceeded threshold without fresh report, checkpoint, or file activity";
+    const hungMessage =
+      "Working/Running timer exceeded threshold without fresh evidence (selected or changed file bytes)";
     const alerts = terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
     const freshAlerts = alerts.filter((message) => !previous?.alerts.includes(message));
     // A question also reads as blocked; only this same ceiling blocker as the latest report makes a new one a repeat.
@@ -165,13 +157,13 @@ export class Supervision {
         state: "stalled",
         text: hungMessage,
       });
-    } else if (!alerts.length && progress?.state === "stalled" && activity !== previous?.activity) {
+    } else if (!violations.length && progress?.state === "stalled" && advanced) {
       this.reports.append({
         type: "activity",
         key: lane.key,
         at: new Date(now).toISOString(),
         state: "running",
-        text: "Fresh report, checkpoint, or file activity observed",
+        text: "Fresh evidence observed (selected or changed file bytes)",
       });
     }
     // Deliver before saving, so only alerts that reached the callback count as sent; a failed one is sent again next sweep.
@@ -183,24 +175,40 @@ export class Supervision {
         undelivered.set(message, error instanceof Error ? error.message : String(error));
       }
     }
-    // Save the post-blocker signature so our own report does not count as progress.
+    const current = this.reports.read(lane.key);
+    const lastReportAt = current?.lastReport?.at ?? null;
+    const uncertainty = evidence.evidenceError === undefined ? {} : { evidenceError: evidence.evidenceError };
     const observation: Observation = {
       at: now,
       timer: timer?.seconds ?? null,
       timerKind: timer?.kind ?? null,
-      activity: await this.activity(lane),
+      hung: current?.state === "stalled" && hung,
+      activity: evidence.signature,
+      files: evidence.files,
+      ...(coverage === undefined ? {} : { coverage }),
       activeAt,
+      lastReportAt,
+      lastEvidenceAt: evidence.lastEvidenceAt,
+      ...uncertainty,
       alerts: alerts.filter((message) => !undelivered.has(message)),
     };
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(observation), { mode: 0o600 });
-    renameSync(temporary, path);
+    writeObservation(path, observation);
     if (undelivered.size)
       throw new Error(
         `alert delivery failed for ${lane.key}: ${[...undelivered].map(([message, why]) => `${message} (${why})`).join("; ")}`,
       );
-    return { enabled: true, state: this.reports.read(lane.key)?.state ?? "running", alerts: freshAlerts, usage, hung };
+    return {
+      enabled: true,
+      state: current?.state ?? "running",
+      alerts: freshAlerts,
+      usage,
+      hung: provedHung,
+      heldHung: observation.hung === true,
+      coverageComplete: !incomplete && evidence.evidenceError === undefined,
+      lastReportAt,
+      lastEvidenceAt: evidence.lastEvidenceAt,
+      ...uncertainty,
+    };
   }
 
   async close(lane: SupervisedLane): Promise<UsageSnapshot | null> {

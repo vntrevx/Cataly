@@ -95,7 +95,7 @@ test("a new lane carries only its role and resets goal, approvals and working st
   pi.session = fresh;
   await pi.emit("session_switch", { type: "session_switch", reason: "new" });
   expect(fresh.entries).toEqual([roleEntry("lane")]);
-  expect(pi.active).toEqual(["read", "bash", "goal"]);
+  expect(pi.active).toEqual(["read", "bash", "dori_report", "goal"]);
   expect(readPaneState(stateDir, PANE)).toMatchObject({
     role: "lane",
     sessionId: fresh.id,
@@ -166,7 +166,7 @@ test.each(["dori", "lane"] as const)("a recorded %s destination overrides role a
     expect((await run(pi, { op: "list" })).content[0]?.text).not.toContain("inbound (pid");
     expect(pi.active).toEqual(["read", "bash", "monitor"]);
   } else {
-    expect(pi.active).toEqual(["read", "bash", "goal"]);
+    expect(pi.active).toEqual(["read", "bash", "dori_report", "goal"]);
     await expect(run(pi, { op: "list" })).rejects.toThrow("monitor works only in the Dori session");
   }
 });

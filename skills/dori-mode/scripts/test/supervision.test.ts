@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checkpoints } from "../src/checkpoints.ts";
+import { fileEvidence } from "../src/evidence.ts";
 import type { Lane } from "../src/registry.ts";
 import { Reports } from "../src/reports.ts";
 import type { Runner } from "../src/run.ts";
@@ -30,6 +31,7 @@ const fixture = (options: SupervisionOptions = {}) => {
   let dirty = "";
   const run: Runner = async (argv) => {
     calls.push([...argv]);
+    if (argv[0] === "git" && argv.includes("--show-toplevel")) return { code: 0, out: `${state.dir}\n`, err: "" };
     return { code: 0, out: argv[0] === "usage" ? usage : argv[0] === "git" ? dirty : "", err: "" };
   };
   const deps = {
@@ -114,30 +116,64 @@ describe("supervision", () => {
     }
   });
 
-  test("report and checkpoint progress suppress hung detection until stale", async () => {
+  test("a new or reworded report and a checkpoint without evidence do not suppress hung detection", async () => {
     const f = fixture();
     try {
       const reports = new Reports(f.dir);
       reports.report(lane.key, "milestone", "starting", f.clock.now());
-      await f.supervisor.sweep({ ...lane, reportProtocol: undefined }, "Working 21m");
+      await f.supervisor.sweep(lane, "Working 21m");
       f.clock.at += 20 * 60_000;
-      reports.report(lane.key, "milestone", "progress", f.clock.now());
-      expect((await f.supervisor.sweep(lane, "Working 41m")).state).toBe("running");
-      f.clock.at += 20 * 60_000;
+      reports.report(lane.key, "milestone", "progress, in other words", f.clock.now());
       new Checkpoints(f.dir).write(
         lane.key,
         { step: "build", result: "ok", evidence: [], remoteEffects: [] },
         f.clock.now(),
       );
-      expect((await f.supervisor.sweep(lane, "Working 61m")).state).toBe("running");
-      f.clock.at += 20 * 60_000;
-      expect((await f.supervisor.sweep(lane, "Working 81m")).state).toBe("stalled");
+      const swept = await f.supervisor.sweep(lane, "Working 41m");
+      expect(swept.state).toBe("stalled");
+      expect(swept.lastReportAt).toBe(new Date(f.clock.now()).toISOString());
+      expect(swept.lastEvidenceAt).toBeNull();
     } finally {
       f.done();
     }
   });
 
-  test("explicit file and git changed-file activity suppress stalls without scanning", async () => {
+  test("selected evidence moves the evidence clock once per new fingerprint, apart from the report clock", async () => {
+    const f = fixture();
+    try {
+      const reports = new Reports(f.dir);
+      const result = join(f.dir, "result.txt");
+      writeFileSync(result, "first");
+      reports.report(lane.key, "milestone", "starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await f.supervisor.sweep(lane, "Working 21m");
+      f.clock.at += 20 * 60_000;
+      // The same bytes reported again, after a touch and under new words, are the report clock only.
+      utimesSync(result, new Date(f.clock.at), new Date(f.clock.at));
+      reports.report(lane.key, "milestone", "still starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      const repeated = await f.supervisor.sweep(lane, "Working 41m");
+      expect(repeated.state).toBe("stalled");
+      expect(repeated.lastReportAt).toBe(new Date(f.clock.now()).toISOString());
+      expect(repeated.lastEvidenceAt).toBe(new Date(start).toISOString());
+      f.clock.at += 60_000;
+      writeFileSync(result, "second");
+      reports.report(lane.key, "milestone", "second result", f.clock.now(), [fileEvidence(result, f.dir)]);
+      const fresh = await f.supervisor.sweep(lane, "Working 42m");
+      expect(fresh).toMatchObject({
+        state: "running",
+        hung: false,
+        lastEvidenceAt: new Date(f.clock.now()).toISOString(),
+      });
+      // A checkpoint of bytes already reported is not new evidence either.
+      f.clock.at += 20 * 60_000;
+      const step = { step: "s", result: "r", evidence: ["result.txt"], remoteEffects: [] };
+      new Checkpoints(f.dir).write(lane.key, { ...step, evidenceRefs: [fileEvidence(result, f.dir)] }, f.clock.now());
+      expect((await f.supervisor.sweep(lane, "Working 62m")).state).toBe("stalled");
+    } finally {
+      f.done();
+    }
+  });
+
+  test("a touch, a same-bytes rewrite or a status-only change is not activity; new bytes are, once", async () => {
     const f = fixture();
     try {
       const path = join(f.dir, "source.ts");
@@ -146,16 +182,32 @@ describe("supervision", () => {
       await f.supervisor.sweep(activeLane, "Running 21m");
       f.clock.at += 20 * 60_000;
       utimesSync(path, new Date(f.clock.at), new Date(f.clock.at));
-      expect((await f.supervisor.sweep(activeLane, "Running 41m")).state).toBe("running");
-      f.clock.at += 20 * 60_000;
+      writeFileSync(path, "first");
       f.setDirty(" M source.ts\0?? node_modules/\0");
-      expect((await f.supervisor.sweep(activeLane, "Running 61m")).state).toBe("running");
-      f.clock.at += 20 * 60_000;
-      expect((await f.supervisor.sweep(activeLane, "Running 81m")).state).toBe("stalled");
+      expect((await f.supervisor.sweep(activeLane, "Running 41m")).state).toBe("stalled");
       f.clock.at += 60_000;
-      utimesSync(path, new Date(f.clock.at), new Date(f.clock.at));
-      expect((await f.supervisor.sweep(activeLane, "Running 82m")).state).toBe("running");
+      writeFileSync(path, "second");
+      expect((await f.supervisor.sweep(activeLane, "Running 42m")).state).toBe("running");
+      f.clock.at += 20 * 60_000;
+      expect((await f.supervisor.sweep(activeLane, "Running 62m")).state).toBe("stalled");
+      f.clock.at += 60_000;
+      f.setDirty(" M source.ts\0?? added.ts\0");
+      writeFileSync(join(f.dir, "added.ts"), "new");
+      expect((await f.supervisor.sweep(activeLane, "Running 63m")).state).toBe("running");
       expect(f.calls.every((args) => args[0] === "git")).toBe(true);
+    } finally {
+      f.done();
+    }
+  });
+
+  test("a supervision record from before evidence fingerprints is not itself evidence", async () => {
+    const f = fixture();
+    try {
+      new Reports(f.dir).report(lane.key, "milestone", "starting", start);
+      const legacy = { at: start, timer: 21 * 60, timerKind: "working", activity: "{}", activeAt: start, alerts: [] };
+      writeFileSync(join(f.dir, "lanes", lane.key, "supervision.json"), JSON.stringify(legacy));
+      f.clock.at += 20 * 60_000;
+      expect((await f.supervisor.sweep(lane, "Working (41m 0s)")).state).toBe("stalled");
     } finally {
       f.done();
     }

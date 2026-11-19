@@ -1,10 +1,53 @@
-import { lstatSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import type { Checkpoints } from "./checkpoints.ts";
+import { type FileCoverage, observeFiles } from "./evidence-window.ts";
+import { evidenceClock, novelEvidence, type PathMark } from "./evidence.ts";
 import type { Lane } from "./registry.ts";
-import type { Reports } from "./reports.ts";
-import type { Runner } from "./run.ts";
+import type { Activity, Reports } from "./reports.ts";
+import type { Clock, Runner } from "./run.ts";
+
+export type SupervisionDeps = {
+  readonly stateDir: string;
+  readonly run: Runner;
+  readonly clock: Pick<Clock, "now">;
+  readonly reports?: Reports;
+  readonly alert?: (lane: SupervisedLane, message: string) => void | Promise<void>;
+};
+export type SupervisionResult = {
+  readonly enabled: boolean;
+  readonly state: "running" | "stalled" | "blocked" | "halted" | "done" | null;
+  readonly alerts: readonly string[];
+  readonly usage: UsageSnapshot | null;
+  readonly hung: boolean;
+  /** A previous proven hung stall still held, even when this sweep cannot prove a new one. */
+  readonly heldHung: boolean;
+  readonly coverageComplete: boolean;
+  /** The two clocks of laneEvidence: the last report, and the last change of the evidence the lane selected. */
+  readonly lastReportAt: string | null;
+  readonly lastEvidenceAt: string | null;
+  readonly evidenceError?: string;
+};
+export type Observation = {
+  readonly at: number;
+  readonly timer: number | null;
+  readonly timerKind: string | null;
+  /** LaneEvidence.signature. A record without `files` is from before evidence fingerprints: not comparable. */
+  readonly activity: string;
+  readonly files?: Readonly<Record<string, PathMark>>;
+  /** Unfinished windows and cycle changes survive monitor restarts; partial coverage is not a read failure. */
+  readonly coverage?: FileCoverage;
+  /** A confirmed stall survives incomplete windows so its alert is deduplicated or retried, not lost. */
+  readonly hung?: boolean;
+  /** When evidence last changed, or when supervision began watching: the hung check's quiet clock. */
+  readonly activeAt: number;
+  readonly lastReportAt?: string | null;
+  readonly lastEvidenceAt?: string | null;
+  readonly evidenceError?: string;
+  readonly alerts: readonly string[];
+};
 
 export type BudgetLimits = {
   readonly wallMinutes?: number | null | undefined;
@@ -13,6 +56,18 @@ export type BudgetLimits = {
 };
 export type Usage = { readonly tokens: number | null; readonly costUsd: number | null };
 export type UsageSnapshot = Usage & { readonly key: string; readonly at: string; readonly final?: true };
+
+/** Independent of evidence availability: a failed observation must never hide a reached ceiling. */
+export const budgetViolations = (limits: BudgetLimits, usage: Usage, wallMinutes: number): string[] => {
+  const actual = { ...usage, wallMinutes };
+  return (["wallMinutes", "tokens", "costUsd"] as const).flatMap((name) => {
+    const ceiling = limits[name];
+    const value = actual[name];
+    return typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling >= 0 && value !== null && value >= ceiling
+      ? [`${name} ceiling reached (${ceiling})`]
+      : [];
+  });
+};
 export type SupervisedLane = Lane & { readonly activityPaths?: readonly string[]; readonly budget?: BudgetLimits };
 export type SupervisionOptions = {
   readonly hungAfterMinutes?: number;
@@ -50,56 +105,76 @@ export const workingTimer = (screen: string): { kind: string; seconds: number; s
   return null;
 };
 
-/** What counts as the lane's progress: its last report and checkpoint, and the files it touched (git status plus activityPaths). */
-export const laneActivity = async (
-  run: Runner,
+export type LaneEvidence = {
+  /** Changes only with evidence: a newly selected fingerprint in the journals, or new bytes at a watched path. */
+  readonly signature: string;
+  /** The watched paths' marks; settled unchanged stats avoid rereading their bytes. */
+  readonly files: Readonly<Record<string, PathMark>>;
+  readonly coverage?: FileCoverage;
+  /** The report clock: when the lane last reported, whatever it said. Freshness nudges and posts on this one. */
+  readonly lastReportAt: string | null;
+  /** The selected-evidence clock: when a report or checkpoint last carried a fingerprint not seen before. */
+  readonly lastEvidenceAt: string | null;
+  readonly evidenceError?: string;
+};
+
+/** Before the first completed sweep, only the prepared candidate schedule exists. */
+export type ObservationState = Observation | { readonly coverage: FileCoverage };
+
+export const writeObservation = (path: string, observation: ObservationState): void => {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(observation), { mode: 0o600 });
+  renameSync(temporary, path);
+};
+
+/**
+ * What counts as the lane's progress: evidence it selected in its reports and checkpoints, and the content of the
+ * files it changed (git status plus activityPaths). A report's text or time, an unchanged re-report and a touched file
+ * are not progress. Dori's own lane state (`<stateDir>/lanes`) is never the lane's evidence.
+ */
+export const laneEvidence = async (
+  deps: Pick<SupervisionDeps, "run" | "clock">,
   options: SupervisionOptions,
   reports: Reports,
   checkpoints: Checkpoints,
   lane: SupervisedLane,
-): Promise<string> => {
-  const paths = new Set(
-    [...(options.activityPaths ?? []), ...(lane.activityPaths ?? [])].map((path) => resolve(lane.cwd ?? ".", path)),
+  previous: Pick<Observation, "files" | "coverage"> | null,
+  persist: (coverage: FileCoverage) => void,
+): Promise<LaneEvidence> => {
+  const { run, clock } = deps;
+  const { files, coverage, observed, evidenceError } = await observeFiles(
+    run,
+    options,
+    reports.stateDir,
+    lane,
+    previous,
+    persist,
   );
-  const changes: string[] = [];
-  if (options.gitActivity !== false && lane.cwd) {
-    const result = await run(["git", "-C", lane.cwd, "status", "--porcelain=v1", "-z", "--untracked-files=normal"], {
-      timeoutMs: 10_000,
-      preserveOutput: true,
-    });
-    if (result.code === 0) {
-      const entries = result.out.split("\0");
-      for (let index = 0; index < entries.length; index++) {
-        const entry = entries[index];
-        if (!entry) continue;
-        const name = entry.slice(3);
-        const path = resolve(lane.cwd, name);
-        const rel = relative(resolve(lane.cwd), path);
-        // Dependency churn and paths outside the lane's cwd are not the lane's progress.
-        if (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.split("/").includes("node_modules")) {
-          paths.add(path);
-          changes.push(entry);
-        }
-        if (entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C") index++;
-      }
-    }
-  }
-  const files = [...paths].sort().map((path) => {
-    try {
-      const stat = lstatSync(path);
-      return [path, stat.mtimeMs, stat.ctimeMs, stat.size];
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return [path, null];
-    }
-  });
-  // Activity state entries generated by supervision are not agent progress.
   const progress = reports.read(lane.key);
-  const steps = checkpoints.read(lane.key);
-  return JSON.stringify({
-    report: progress?.lastReport ?? null,
-    checkpoint: steps.at(-1) ?? null,
+  const records = [...(progress?.evidenced ?? []), ...checkpoints.read(lane.key)];
+  const evidenceRefs = novelEvidence(records, observed);
+  if (evidenceRefs.length) {
+    const event: Activity = {
+      type: "activity",
+      key: lane.key,
+      at: new Date(clock.now()).toISOString(),
+      state: progress?.state === "stalled" ? "stalled" : "running",
+      text: "Observed filesystem evidence",
+      evidenceRefs,
+    };
+    reports.append(event);
+    records.push(event);
+  }
+  const selected = evidenceClock(records);
+  return {
+    signature: createHash("sha256").update(JSON.stringify(selected)).digest("hex"),
     files,
-    changes: changes.sort(),
-  });
+    ...(coverage === undefined
+      ? {}
+      : { coverage: { ...coverage, changed: coverage.changed || evidenceRefs.length > 0 } }),
+    lastReportAt: progress?.lastReport?.at ?? null,
+    lastEvidenceAt: selected.lastEvidenceAt,
+    ...(evidenceError === undefined ? {} : { evidenceError }),
+  };
 };

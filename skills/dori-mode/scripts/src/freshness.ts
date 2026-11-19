@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { checkPausedLane } from "./pause.ts";
@@ -7,7 +6,8 @@ import { runtimesOf } from "./run.ts";
 import { readScreen, sendVerified } from "./sessions.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { type Progress, ReportError, reportLine, Reports } from "./reports.ts";
-import { Supervision, type SupervisionResult } from "./supervision.ts";
+import { Supervision } from "./supervision.ts";
+import type { SupervisionResult } from "./supervision-observe.ts";
 
 export const lastReportLine = (screen: string, key: string): string | null => {
   const grammar = new RegExp(
@@ -135,18 +135,18 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
         previous = reports.read(lane.key);
         const screen = await readScreen(runtimesOf(deps), ref);
         let supervised: SupervisionResult | null = null;
+        let failure: string | undefined;
         try {
-          // A launched lane is supervised once its journal exists; without one there is no progress to judge.
+          // Without a journal there is no progress to judge.
           if (existsSync(reports.path(lane.key))) supervised = await supervision.sweep(lane, screen);
         } catch (error) {
-          // Supervision is advisory: its failure is printed once per reason, and the lane's reports still flow.
-          const detail = error instanceof Error ? error.message : String(error);
-          if (detail !== lane.lastSupervisionError) {
-            acts.push({ kind: "supervision-error", lane: lane.key, detail });
-            await remember(deps, lane.key, { lastSupervisionError: detail });
-          }
+          failure = error instanceof Error ? error.message : String(error);
         }
-        if (supervised && lane.lastSupervisionError)
+        const detail = failure ?? supervised?.evidenceError;
+        if (detail && detail !== lane.lastSupervisionError) {
+          acts.push({ kind: "supervision-error", lane: lane.key, detail });
+          await remember(deps, lane.key, { lastSupervisionError: detail });
+        } else if (!detail && supervised && lane.lastSupervisionError)
           await remember(deps, lane.key, { lastSupervisionError: undefined });
         for (const detail of supervised?.alerts ?? []) {
           acts.push({
@@ -155,9 +155,9 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
             detail,
           });
         }
-        // Only supervision's own hung result replaces the stall line below; a usage warning is not a stall.
+        const resume = failure === undefined && !supervised?.heldHung;
         supervisedHung = supervised?.hung ?? false;
-        progress = reports.observe(lane.key, screen, now, deps.config.nudgeAfterMin * 60_000, !supervised?.hung);
+        progress = reports.observe(lane.key, screen, now, deps.config.nudgeAfterMin * 60_000, resume);
       } catch (error) {
         // One corrupt journal skips its own lane, printed once per error, and never ends the sweep for the others.
         if (!(error instanceof ReportError)) throw error;

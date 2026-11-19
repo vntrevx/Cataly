@@ -74,10 +74,10 @@ const OPENS_BODY: Record<string, true> = { if: true, while: true, until: true, f
 const CLOSES_BODY: Record<string, true> = { fi: true, done: true, esac: true };
 
 /**
- * The words of a watch's argv (exact) or command string (split at whitespace, quotes trimmed) that may name a lane:
- * every word except its own command words. Anything else gives no words.
+ * Read command identity and the words that may name a lane from the same parse. Lane words retain the existing
+ * argv/whitespace view except for the command's own words; Dori identity comes only from executable position.
  */
-export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] => {
+const commandWords = (command: unknown, cwd: unknown): { lanes: readonly unknown[]; dori: boolean } => {
   const line = typeof command === "string" ? command : undefined;
   const raw: readonly unknown[] = line?.split(/\s+/).filter(Boolean) ?? (Array.isArray(command) ? command : []);
   // The whitespace-split word each character of the line is in.
@@ -99,6 +99,7 @@ export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] =>
   const isDori = (word: string, dirs: Dirs): boolean =>
     DORI_NAMES[basename(word)] === true || within(dirs, word).every((path) => SKILL_SOURCE.test(path ?? word));
   const own = new Set<number>();
+  let dori = false;
 
   // One command run in `dir`; for a `cd`, the directories it moves to.
   const commandOf = (ws: readonly Word[], dir: Dirs): Dirs | undefined => {
@@ -157,7 +158,10 @@ export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] =>
         if (script) run(script(), here);
       }
     }
-    if (program !== undefined) for (const i of doriOwnWords(words, program)) mine(i);
+    if (program !== undefined) {
+      dori = true;
+      for (const i of doriOwnWords(words, program)) mine(i);
+    }
     return undefined;
   };
 
@@ -214,7 +218,16 @@ export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] =>
       : read(line, (at) => baseOf[at] ?? -1),
     [typeof cwd === "string" ? cwd : undefined],
   );
-  return line === undefined
-    ? raw.filter((_, at) => !own.has(at))
-    : raw.map((word) => String(word).replace(/^['"]+|['"]+$/g, "")).filter((word, at) => word && !own.has(at));
+  return {
+    dori,
+    lanes:
+      line === undefined
+        ? raw.filter((_, at) => !own.has(at))
+        : raw.map((word) => String(word).replace(/^['"]+|['"]+$/g, "")).filter((word, at) => word && !own.has(at)),
+  };
 };
+
+export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] => commandWords(command, cwd).lanes;
+
+/** Whether a command invokes Dori, after its shell syntax and supported launcher prefixes are interpreted. */
+export const hasDoriCommand = (command: unknown, cwd: unknown): boolean => commandWords(command, cwd).dori;

@@ -1,6 +1,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { type EvidenceRef, isEvidenceRefs } from "./evidence.ts";
 import { LANE_KEY } from "./registry.ts";
 
 export type ReportKind = "milestone" | "blocker" | "question" | "halted" | "done";
@@ -11,6 +12,8 @@ export type Report = {
   readonly at: string;
   readonly kind: ReportKind;
   readonly text: string;
+  /** The evidence the lane selected for this report (evidence.ts); its text and time are never evidence. */
+  readonly evidenceRefs?: readonly EvidenceRef[];
 };
 export type Activity = {
   readonly type: "activity";
@@ -18,12 +21,16 @@ export type Activity = {
   readonly at: string;
   readonly state: "running" | "stalled";
   readonly text: string;
+  /** Stable filesystem observations share the report/checkpoint clock without moving the report clock. */
+  readonly evidenceRefs?: readonly EvidenceRef[];
 };
 export type LaneEvent = Report | Activity;
 export type Progress = {
   readonly state: ProgressState;
   readonly lastReport: Report | null;
   readonly lastEvent: LaneEvent;
+  /** Evidence-bearing events, oldest first: with checkpoints, they form one evidence clock. */
+  readonly evidenced: readonly LaneEvent[];
 };
 
 export class ReportError extends Error {}
@@ -72,7 +79,10 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
   ) {
     throw new ReportError(`invalid report record for ${key}`);
   }
-  const common = { key, at: value.at, text: value.text };
+  const evidenceRefs = "evidenceRefs" in value ? value.evidenceRefs : undefined;
+  if (evidenceRefs !== undefined && !isEvidenceRefs(evidenceRefs))
+    throw new ReportError(`invalid report evidenceRefs for ${key}`);
+  const common = { key, at: value.at, text: value.text, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) };
   if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
     return { ...common, type: "report", kind: value.kind };
   }
@@ -98,6 +108,7 @@ export class Reports {
     if (!existsSync(path)) return null;
     let progress: Progress | null = null;
     let lastReport: Report | null = null;
+    const evidenced: LaneEvent[] = [];
     for (const [index, line] of readFileSync(path, "utf8").split("\n").entries()) {
       if (!line.trim()) continue;
       let event: LaneEvent;
@@ -107,11 +118,12 @@ export class Reports {
         if (!(error instanceof SyntaxError || error instanceof ReportError)) throw error;
         throw new ReportError(`${path}:${index + 1}: ${error.message}`);
       }
+      if (event.evidenceRefs?.length) evidenced.push(event);
       if (event.type === "report") {
         lastReport = event;
-        progress = { state: reportState(event.kind), lastReport: event, lastEvent: event };
+        progress = { state: reportState(event.kind), lastReport: event, lastEvent: event, evidenced };
       } else if (!progress || progress.state === "running" || progress.state === "stalled") {
-        progress = { state: event.state, lastReport, lastEvent: event };
+        progress = { state: event.state, lastReport, lastEvent: event, evidenced };
       }
     }
     return progress;
@@ -127,8 +139,15 @@ export class Reports {
     appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
-  report(key: string, kind: ReportKind, text: string, now: number): Report {
-    const report: Report = { type: "report", key, kind, text: text.trim(), at: new Date(now).toISOString() };
+  report(key: string, kind: ReportKind, text: string, now: number, evidenceRefs: readonly EvidenceRef[] = []): Report {
+    const report: Report = {
+      type: "report",
+      key,
+      kind,
+      text: text.trim(),
+      at: new Date(now).toISOString(),
+      ...(evidenceRefs.length ? { evidenceRefs } : {}),
+    };
     this.append(report);
     return report;
   }

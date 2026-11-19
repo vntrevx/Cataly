@@ -11,6 +11,7 @@ export type Entry = {
   customType?: string;
   data?: unknown;
   mode?: string;
+  message?: unknown;
 };
 export type FakeSession = { id: string; file?: string; entries: Entry[] };
 type Agent = DoriContext["agent"];

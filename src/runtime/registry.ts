@@ -4,6 +4,19 @@ const nonEmpty = (value: string | undefined): string | undefined =>
   value === undefined || value === "" ? undefined : value;
 
 /**
+ * The caller's own session from whichever runtime it runs in: `HC_TERMINAL_ID` names an hc terminal, else
+ * `HERDR_PANE_ID` a herdr pane (grouped by `HERDR_WORKSPACE_ID` when set).
+ */
+export const selfSession = (env: Readonly<Record<string, string | undefined>>): SessionRef | undefined => {
+  const terminal = nonEmpty(env["HC_TERMINAL_ID"]);
+  if (terminal !== undefined) return { runtime: "hc", id: terminal };
+  const pane = nonEmpty(env["HERDR_PANE_ID"]);
+  if (pane === undefined) return undefined;
+  const workspace = nonEmpty(env["HERDR_WORKSPACE_ID"]);
+  return { runtime: "herdr", id: pane, ...(workspace === undefined ? {} : { group: workspace }) };
+};
+
+/**
  * The runtimes one process talks to: `default` is the selected kind (where new sessions open), `for(ref)` is the
  * runtime that owns a stored session. Each kind is built on first use and then reused.
  */
@@ -29,17 +42,9 @@ export class Runtimes {
     return [...this.built.keys()];
   }
 
-  /**
-   * The caller's own session from whichever runtime it runs in, whatever kind is selected: `HC_TERMINAL_ID` names an
-   * hc terminal, else `HERDR_PANE_ID` a herdr pane (grouped by `HERDR_WORKSPACE_ID` when set). Builds no runtime.
-   */
+  /** The caller's own session whatever kind is selected (see selfSession). Builds no runtime. */
   selfAny(env: Readonly<Record<string, string | undefined>>): SessionRef | undefined {
-    const terminal = nonEmpty(env["HC_TERMINAL_ID"]);
-    if (terminal !== undefined) return { runtime: "hc", id: terminal };
-    const pane = nonEmpty(env["HERDR_PANE_ID"]);
-    if (pane === undefined) return undefined;
-    const workspace = nonEmpty(env["HERDR_WORKSPACE_ID"]);
-    return { runtime: "herdr", id: pane, ...(workspace === undefined ? {} : { group: workspace }) };
+    return selfSession(env);
   }
 
   private of(kind: RuntimeKind): SessionRuntime {
