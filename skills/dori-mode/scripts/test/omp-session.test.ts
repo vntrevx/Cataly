@@ -222,6 +222,8 @@ test("sync --write records the session on the lane as stored now, keeping a clai
     pane: P1.id,
     brief: "/b.md",
     done: "closed acme/app#1",
+    session: "01a11440-ee81-7f90-b2ed-dcc7d51a0aaa",
+    priorSessions: ["01a11440-ee81-7f90-b2ed-dcc7d51a0bbb"],
   };
   await deps.registry.write({ ...lane, openedAt: new Date(T0).toISOString() });
   const at = new Date(T0).toISOString();
@@ -235,5 +237,9 @@ test("sync --write records the session on the lane as stored now, keeping a clai
     return deps.run(argv, opts);
   };
   await syncRegistry({ ...deps, run }, true);
-  expect(await deps.registry.read(lane.key)).toMatchObject({ status: "done-claimed", sessionVia: "extension" });
+  expect(await deps.registry.read(lane.key)).toMatchObject({
+    status: "done-claimed",
+    sessionVia: "extension",
+    priorSessions: ["01a11440-ee81-7f90-b2ed-dcc7d51a0bbb", "01a11440-ee81-7f90-b2ed-dcc7d51a0aaa"],
+  });
 });

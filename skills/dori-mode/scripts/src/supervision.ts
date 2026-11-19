@@ -2,7 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, join } from "node:path";
 
 import { Checkpoints } from "./checkpoints.ts";
-import { fill } from "./config.ts";
+import { type DoriConfig, fill } from "./config.ts";
+import { collectOmpUsage } from "./usage-omp.ts";
 import { Reports } from "./reports.ts";
 import type { Clock, Runner } from "./run.ts";
 import {
@@ -17,6 +18,7 @@ import {
 
 export type SupervisionDeps = {
   readonly stateDir: string;
+  readonly config?: Pick<DoriConfig, "stateDir" | "sessionsDir" | "defaultCwd">;
   readonly run: Runner;
   readonly clock: Pick<Clock, "now">;
   readonly reports?: Reports;
@@ -56,7 +58,7 @@ export class Supervision {
   private async usage(
     lane: SupervisedLane,
     now: number,
-    persist = Boolean(this.options.usageArgv?.length),
+    persist = this.options.usage === "omp" || Boolean(this.options.usageArgv?.length),
   ): Promise<UsageSnapshot> {
     let usage: Usage = { tokens: null, costUsd: null };
     if (this.options.usageArgv?.length) {
@@ -81,7 +83,13 @@ export class Supervision {
         }
       }
     }
-    const snapshot = { key: lane.key, at: new Date(now).toISOString(), ...usage };
+    let basis: { readonly costBasis?: string; readonly issues?: readonly string[] } = {};
+    if (this.options.usage === "omp" && this.deps.config) {
+      const measured = await collectOmpUsage(this.deps.config, lane, now);
+      usage = measured.total;
+      basis = { costBasis: measured.costBasis, issues: measured.issues };
+    }
+    const snapshot = { key: lane.key, at: new Date(now).toISOString(), ...usage, ...basis };
     // Without a usage hook every sweep would append the same unknown reading; close still records its final one.
     if (persist) this.record(snapshot);
     return snapshot;

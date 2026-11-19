@@ -30,6 +30,7 @@ export type Lane = {
   readonly tab?: string;
   readonly session?: string;
   readonly sessionVia?: string;
+  readonly priorSessions?: readonly string[]; // Earlier recorded bindings, not arbitrary fork ancestors.
   readonly brief: string;
   readonly done: string;
   readonly cwd?: string;

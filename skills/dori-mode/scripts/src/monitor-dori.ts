@@ -26,6 +26,7 @@ export const DORI_COMMANDS: Record<string, true> = {
   pause: true,
   pr: true,
   presence: true,
+  quota: true,
   react: true,
   report: true,
   resume: true,
@@ -36,6 +37,7 @@ export const DORI_COMMANDS: Record<string, true> = {
   transcribe: true,
   update: true,
   upstream: true,
+  usage: true,
   "verify-pr": true,
   watch: true,
   worklog: true,
@@ -81,6 +83,8 @@ export const DORI_VALUE_OPTIONS: Record<string, true> = {
   worklog: true,
   "ignore-author": true,
   self: true,
+  by: true,
+  since: true,
 };
 const MESSENGER_COMMANDS: Record<string, true> = {
   send: true,

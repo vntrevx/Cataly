@@ -12,7 +12,13 @@ export type BudgetLimits = {
   readonly costUsd?: number | null | undefined;
 };
 export type Usage = { readonly tokens: number | null; readonly costUsd: number | null };
-export type UsageSnapshot = Usage & { readonly key: string; readonly at: string; readonly final?: true };
+export type UsageSnapshot = Usage & {
+  readonly key: string;
+  readonly at: string;
+  readonly final?: true;
+  readonly costBasis?: string;
+  readonly issues?: readonly string[];
+};
 export type SupervisedLane = Lane & { readonly activityPaths?: readonly string[]; readonly budget?: BudgetLimits };
 export type SupervisionOptions = {
   readonly hungAfterMinutes?: number;
@@ -20,6 +26,7 @@ export type SupervisionOptions = {
   readonly defaults?: BudgetLimits;
   readonly lanes?: Readonly<Record<string, BudgetLimits>>;
   readonly usageArgv?: readonly string[];
+  readonly usage?: "omp";
   readonly recordCostArgv?: readonly string[];
   readonly activityPaths?: readonly string[];
   readonly gitActivity?: boolean;

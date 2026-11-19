@@ -145,6 +145,20 @@ test("a shared dori watch inside a loop, a condition, a subshell, a cd or an env
   expect(monitorCleanup(open, [manifest([{ command: "while true; do dori inbound slack; done # api" }])])).toEqual([]);
 });
 
+test("usage and quota command words do not claim shared monitors as closed-lane work", () => {
+  const result = monitorCleanup(
+    [lane("usage", "closed"), lane("quota", "closed")],
+    [
+      manifest([
+        { argv: ["dori", "usage", "--by", "thread"], monitorId: "mon_USAGE" },
+        { command: "dori quota --json", monitorId: "mon_QUOTA" },
+        { argv: ["dori", "usage", "quota"], monitorId: "mon_LANE" },
+      ]),
+    ],
+  );
+  expect(result.map((m) => [m.monitorId, m.match])).toEqual([["mon_LANE", ["quota:argv:key"]]]);
+});
+
 test("the dori command vocabulary is every command the CLI dispatches", async () => {
   const tables = [
     (await import("../src/cli-journal.ts")).journalCommands,
@@ -153,6 +167,7 @@ test("the dori command vocabulary is every command the CLI dispatches", async ()
     (await import("../src/cli-messenger.ts")).messengerCommands,
     (await import("../src/cli-decisions.ts")).decisionCommands,
     (await import("../src/cli-pr.ts")).prCommands,
+    (await import("../src/cli-usage.ts")).usageCommands,
   ];
   // cli.ts dispatches these three before its command tables.
   const dispatched = ["harness", "update", "upstream", ...tables.flatMap((table) => Object.keys(table))];

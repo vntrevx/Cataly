@@ -7,6 +7,7 @@ import { laneCommands } from "../src/cli-lanes.ts";
 import { messengerCommands } from "../src/cli-messenger.ts";
 import { opsCommands } from "../src/cli-ops.ts";
 import { prCommands } from "../src/cli-pr.ts";
+import { usageCommands } from "../src/cli-usage.ts";
 import { type TestState, withState } from "./fakes.ts";
 
 const cli = resolve(import.meta.dir, "../src/cli.ts");
@@ -17,6 +18,7 @@ const groups = {
   "cli-messenger.ts": messengerCommands,
   "cli-decisions.ts": decisionCommands,
   "cli-pr.ts": prCommands,
+  "cli-usage.ts": usageCommands,
 };
 const blocked = [...Object.keys(groups), "/src/update/cli.ts", "/src/release/cli.ts", "cli-harness.ts"];
 let state: TestState;

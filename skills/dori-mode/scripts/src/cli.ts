@@ -13,6 +13,9 @@ const USAGE = `dori <command> [options]
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+  usage [<key>] [--since 24h|7d] [--by lane|thread|day] [--json]
+                                       lane interval usage, verified children, API price estimates (not bills)
+  quota [--refresh] [--json]            cached OMP account limits; display only, no account or credit changes
   sync   [--write]                     registry vs live panes; read-only unless --write
   boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
   report <key> --kind milestone|blocker|question|halted|done --text TEXT
@@ -117,6 +120,10 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true },
     note: { type: "string" },
     write: { type: "boolean" },
+    json: { type: "boolean" },
+    refresh: { type: "boolean" },
+    since: { type: "string" },
+    by: { type: "string" },
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
@@ -159,6 +166,10 @@ const flags = parseArgs({
 
 let commands: Readonly<Record<string, Command>> = {};
 switch (command) {
+  case "usage":
+  case "quota":
+    commands = (await import("./cli-usage.ts")).usageCommands;
+    break;
   case "report":
   case "lesson":
   case "worklog":
@@ -219,9 +230,12 @@ try {
   const { journalErrors } = await import("./cli-journal.ts");
   const { decisionErrors } = await import("./cli-decisions.ts");
   const { prErrors } = await import("./cli-pr.ts");
+  const { usageErrors } = await import("./cli-usage.ts");
   if (
     e instanceof LaunchError ||
-    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
+    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors, ...usageErrors].some(
+      (type) => e instanceof type,
+    )
   )
     die((e as Error).message);
   throw e;

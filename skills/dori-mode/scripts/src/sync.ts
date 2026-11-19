@@ -33,10 +33,20 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
       drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
     if (!lane.done) drift.push(`${lane.key}: empty Done line, so a done claim can never close it`);
     if (write && hit.id && hit.id !== lane.session)
-      await deps.registry.update(
-        lane.key,
-        (current) => current && { ...current, session: hit.id, sessionVia: hit.via },
-      );
+      await deps.registry.update(lane.key, (current) => {
+        if (!current) return null;
+        const prior = current.priorSessions === undefined ? [] : current.priorSessions;
+        if (!Array.isArray(prior) || prior.some((id) => typeof id !== "string" || !id)) {
+          drift.push(`${lane.key}: invalid prior session bindings; registry unchanged`);
+          return null;
+        }
+        return {
+          ...current,
+          ...(current.session ? { priorSessions: [...new Set([...prior, current.session])] } : {}),
+          session: hit.id,
+          sessionVia: hit.via,
+        };
+      });
     rows.push({
       key: lane.key,
       thread: lane.thread,

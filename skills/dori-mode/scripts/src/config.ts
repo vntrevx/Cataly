@@ -8,7 +8,10 @@ import {
   resolveProcessOmpUlwPath,
 } from "../../../../src/release/runtime.ts";
 import type { RuntimeKind } from "../../../../src/runtime/types.ts";
+import { supervisionOptionsError } from "./supervision-config.ts";
 import type { SupervisionOptions } from "./supervision-observe.ts";
+import type { QuotaOptions } from "./quota.ts";
+import { usageOptionsError } from "./usage-options.ts";
 import type { CommitIdentity } from "./verify-pr-check.ts";
 
 export type ArgvTemplate = readonly string[];
@@ -56,6 +59,7 @@ export type DoriConfig = {
   /** Expected Git author and committer per lowercase `owner/repo`, for `verify-pr` and the lane footer. */
   readonly repoIdentities: Readonly<Record<string, CommitIdentity>>;
   readonly supervision: SupervisionOptions;
+  readonly quota?: QuotaOptions;
   readonly prAutoTrack: boolean; // opt-in: claim and checkpoint PR links are tracked for `dori pr watch`
 };
 
@@ -129,56 +133,6 @@ const checkRuntime = (value: unknown): void => {
     );
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const SUPERVISION_KEYS = new Set([
-  "hungAfterMinutes",
-  "staleAfterMinutes",
-  "defaults",
-  "lanes",
-  "usageArgv",
-  "recordCostArgv",
-  "activityPaths",
-  "gitActivity",
-]);
-const CEILINGS = new Set(["wallMinutes", "tokens", "costUsd"]);
-const checkCeilingNames = (where: string, budget: Record<string, unknown>): void => {
-  for (const name of Object.keys(budget)) {
-    if (!CEILINGS.has(name))
-      throw new ConfigError(
-        `invalid supervision ${where}.${name}: unknown ceiling (expected wallMinutes, tokens or costUsd)`,
-      );
-  }
-};
-
-// A malformed supervision entry stops with its name: dropping it could turn a ceiling off, and keeping it would crash
-// every sweep later. A misspelt name is refused for the same reason.
-const checkSupervision = (value: unknown): void => {
-  if (value === undefined) return;
-  if (!isRecord(value)) throw new ConfigError("invalid supervision: expected an object");
-  for (const name of Object.keys(value)) {
-    if (!SUPERVISION_KEYS.has(name)) throw new ConfigError(`invalid supervision ${name}: unknown setting`);
-  }
-  for (const name of ["defaults", "lanes"] as const) {
-    if (value[name] !== undefined && !isRecord(value[name]))
-      throw new ConfigError(`invalid supervision ${name}: expected an object`);
-  }
-  if (isRecord(value["defaults"])) checkCeilingNames("defaults", value["defaults"]);
-  for (const [key, budget] of Object.entries(isRecord(value["lanes"]) ? value["lanes"] : {})) {
-    if (!isRecord(budget)) throw new ConfigError(`invalid supervision lanes.${key}: expected an object`);
-    checkCeilingNames(`lanes.${key}`, budget);
-  }
-  for (const name of ["usageArgv", "recordCostArgv", "activityPaths"] as const) {
-    const list = value[name];
-    if (list !== undefined && !(Array.isArray(list) && list.every((item) => typeof item === "string"))) {
-      throw new ConfigError(`invalid supervision ${name}: expected an array of strings`);
-    }
-  }
-  if (value["gitActivity"] !== undefined && typeof value["gitActivity"] !== "boolean")
-    throw new ConfigError("invalid supervision gitActivity: expected true or false");
-};
-
 export const loadConfig = async (path = configPath(), home = homedir()): Promise<DoriConfig> => {
   const selectedHome = process.env["DORI_HOME"];
   const base = {
@@ -190,7 +144,10 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   checkRuntime(raw.runtime);
-  checkSupervision(raw.supervision);
+  const usageError =
+    supervisionOptionsError(raw.supervision) ??
+    usageOptionsError(raw.supervision?.usage, raw.supervision?.usageArgv, raw.quota);
+  if (usageError) throw new ConfigError(usageError);
   if (raw.prAutoTrack !== undefined && typeof raw.prAutoTrack !== "boolean")
     throw new ConfigError("invalid prAutoTrack: expected true or false");
   const merged: DoriConfig = {
