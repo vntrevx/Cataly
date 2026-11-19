@@ -154,7 +154,7 @@ export const doctorCheck = async (
         continue;
       }
       try {
-        lanes.push({ ...lane, reportState: reports.read(lane.key)?.state });
+        lanes.push({ ...lane, reportState: reports.read(lane.key, { generation: lane.lifecycleEpoch })?.state });
       } catch {
         findings.push({
           check: "registry",

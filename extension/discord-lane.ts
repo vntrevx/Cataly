@@ -8,7 +8,7 @@ import {
   discordAskReceivers,
   openDiscordAskReceiver,
 } from "../skills/dori-mode/scripts/src/messenger/discord-ask-receiver.ts";
-import { discordInbound } from "../skills/dori-mode/scripts/src/messenger/discord-inbound.ts";
+import { discordInbound, markDiscordInboundSeen } from "../skills/dori-mode/scripts/src/messenger/discord-inbound.ts";
 import { discordInboundQueue } from "../skills/dori-mode/scripts/src/messenger/discord-inbound-queue.ts";
 import {
   discordLaneTarget,
@@ -59,7 +59,7 @@ export class DiscordLane {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let inbox: ReturnType<typeof openDiscordLaneInbox> | undefined;
     let rootInbox: ReturnType<typeof openDiscordLaneInbox> | undefined;
-    let intake: Awaited<ReturnType<typeof discordInbound>> | undefined;
+    let intake: { receiver: Awaited<ReturnType<typeof discordInbound>>; discord: Discord } | undefined;
     let queue: ReturnType<typeof discordInboundQueue> | undefined;
     let receiver: DiscordAskReceiverPublication | undefined;
     let isolatedRoute: string | undefined;
@@ -92,7 +92,9 @@ export class DiscordLane {
           key,
           async () => {
             const current = await delivery.registry.read(key);
-            if (!current || statusOf(current) === "closed" || statusOf(current) === "paused") return;
+            if (!current || current.nativeCloseIntent) return;
+            const status = statusOf(current);
+            if (status === "closed" || status === "paused") return;
             if (!dedicated && (await discordLaneTarget(root, channel))?.session !== session) return;
             if (confirm || !idle() || ctx.isIdle?.() === false || !ownsPane()) return;
             pi.sendMessage(
@@ -157,35 +159,41 @@ export class DiscordLane {
               realClock,
               token,
             );
-            intake = await discordInbound(discord, queue.storeFor, {
+            const scopedIntake = await discordInbound(discord, queue.storeFor, {
               ownerId: explicit.owner,
               channelIds: [explicit.channel],
               threads: false,
             });
+            intake = { receiver: scopedIntake, discord };
             if (!ownsPane()) return;
             receiver = openDiscordAskReceiver(
               stateDir,
               token,
               explicit.owner,
               [explicit.channel],
-              intake.channels,
+              scopedIntake.channels,
               15_000,
             );
           }
           if (!ownsPane()) return;
           const receiverInbox = inbox ?? openDiscordLaneInbox(stateDir);
           inbox = receiverInbox;
-          await intake.poll(async (message) => {
+          const { receiver: scopedIntake, discord } = intake;
+          await scopedIntake.poll(async (message) => {
             signal.throwIfAborted();
-            if (routeDiscordAskReply(stateDir, message, explicit.owner)) return;
+            if (routeDiscordAskReply(stateDir, message, explicit.owner)) {
+              await markDiscordInboundSeen(discord, message);
+              return;
+            }
             const held = await withDeliveryLock(delivery, lane.key, async () => {
               signal.throwIfAborted();
               const current = await delivery.registry.read(lane.key);
-              if (!current || statusOf(current) === "closed" || !ownsPane())
+              if (!current || current.nativeCloseIntent || statusOf(current) === "closed" || !ownsPane())
                 throw new Error("The dedicated Discord lane changed; cursor not advanced");
               receiverInbox.add(session, message);
             });
             if (!held.ok) throw new Error("Discord lane delivery is locked; cursor not advanced");
+            await markDiscordInboundSeen(discord, message);
           });
           if (!ownsPane()) return;
           receiver?.refresh();

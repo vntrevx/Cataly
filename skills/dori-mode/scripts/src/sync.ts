@@ -1,4 +1,5 @@
 import { formatRef } from "../../../../src/runtime/types.ts";
+import { withDeliveryLock } from "./delivery-lock.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { statusOf } from "./registry.ts";
 import { type Ran, type Runner, runtimesOf } from "./run.ts";
@@ -47,11 +48,25 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
     if (lane.session && hit.id && hit.id !== lane.session)
       drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
     if (!lane.done) drift.push(`${lane.key}: empty Done line, so a done claim can never close it`);
-    if (write && hit.id && hit.id !== lane.session)
-      await deps.registry.update(
-        lane.key,
-        (current) => current && { ...current, session: hit.id, sessionVia: hit.via },
+    if (write && session && hit.id && hit.id !== lane.session) {
+      const held = await withDeliveryLock(deps, lane.key, () =>
+        deps.registry.update(lane.key, (current) => {
+          if (
+            !current?.sessionRef ||
+            current.openedAt !== lane.openedAt ||
+            statusOf(current) === "closed" ||
+            current.session !== lane.session ||
+            formatRef(current.sessionRef) !== formatRef(session.ref) ||
+            current.lifecycleEpoch ||
+            current.hold?.outcome
+          )
+            return null;
+          return { ...current, session: hit.id, sessionVia: hit.via };
+        }),
       );
+      if (!held.ok || !held.value)
+        drift.push(`${lane.key}: session drift left unchanged; verify the lane before acting`);
+    }
     rows.push({
       key: lane.key,
       thread: lane.thread,

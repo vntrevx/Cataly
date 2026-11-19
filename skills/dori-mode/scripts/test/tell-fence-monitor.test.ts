@@ -193,6 +193,7 @@ for (const fault of ["corrupt", "write-failure"] as const) {
     orderLanes(base);
     const lines = await watchTick(base);
     expect(lines[0]).toStartWith("LANE_WATCH_ERROR a-fenced");
+    expect(lines[0]).toContain("inspect the lane lifecycle");
     expect(lines[0]).toContain("do not resend");
     expect(filter("done flow").test(lines[0] ?? "")).toBe(true);
     expect(lines[1]).toStartWith("LANE_NOT_DONE z-good");

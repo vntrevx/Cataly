@@ -5,6 +5,9 @@ import { claimDone, closeLane, objectDone } from "./done-flow.ts";
 import { adoptLane, type LaunchInput, launchLane, prepareLaunch } from "./launch.ts";
 import { pauseLane, resumeLane } from "./pause.ts";
 import { DeliveryState } from "./delivery-state.ts";
+import { parkLane } from "./park.ts";
+import { reopenLane } from "./reopen.ts";
+import { holdLines } from "./holds.ts";
 import { resolveTell, tellLane } from "./tell.ts";
 
 const launch: Command = async ({ key, opt, need, ceiling, strings, values, deps }) => {
@@ -55,8 +58,19 @@ const adopt: Command = async ({ key, opt, need, deps }) => {
   console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
 };
 
-const close: Command = async ({ key, opt, lane, deps }) => {
+const close: Command = async ({ key, opt, strings, values, lane, deps }) => {
   const target = await lane(key ?? die("close needs a lane key"));
+  if (values["abandon"]) {
+    const reason = strings("reason")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join("; ");
+    if (!reason) die("close --abandon requires --reason");
+    if (opt("lesson")) die("--lesson is only for a verified completion");
+    const r = await parkLane(deps, target, reason, "abandoned");
+    for (const line of r.lines) console.log(line);
+    process.exit(r.code);
+  }
   const rule = opt("lesson");
   const r = await closeLane(
     deps,
@@ -119,6 +133,27 @@ export const laneCommands: Readonly<Record<string, Command>> = {
     recorded(await objectDone(deps, await lane(key ?? die("object-done needs a lane key")), reasons));
   },
   close,
+  park: async ({ key, need, opt, lane, deps }) => {
+    const r = await parkLane(
+      deps,
+      await lane(key ?? die("park needs a lane key")),
+      need("note"),
+      "parked",
+      opt("resume-when"),
+    );
+    for (const line of r.lines) console.log(line);
+    process.exit(r.code);
+  },
+  reopen: async ({ key, opt, deps }) => {
+    const target = await deps.registry.read(key ?? die("reopen needs a lane key"));
+    if (!target) return die(`no registered lane "${key}"`);
+    const r = await reopenLane(deps, target, opt("note"));
+    for (const line of r.lines) console.log(line);
+    process.exit(r.code);
+  },
+  holds: async ({ opt, deps }) => {
+    for (const line of holdLines(await deps.registry.list(), opt("thread"))) console.log(line);
+  },
   pause: pauseOrResume,
   resume: pauseOrResume,
   tell,

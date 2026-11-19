@@ -25,19 +25,20 @@ export const tellLane = async (
   deps: FlowDeps,
   lane: Lane,
   text: string,
-  options: { readonly locked?: boolean; readonly waitMs?: number } = {},
+  options: { readonly locked?: boolean; readonly waitMs?: number; readonly expectedSessionId?: string } = {},
 ): Promise<TellResult> => {
   const state = new DeliveryState(deps.registry, lane.key);
   const dispatch = async () => {
     const current = await deps.registry.read(lane.key);
     if (!current || statusOf(current) === "closed") return failed(lane, "the lane was closed");
+    if (current.nativeCloseIntent) return failed(current, "native close is in progress");
     const pending = state.read();
     if (pending?.status === "uncertain")
       return {
         line: `TELL_HELD ${lane.key} delivery=held: request=${pending.id} is uncertain; this message was not sent; inspect dori tell ${lane.key} --status, then --resolve ${pending.id} --note REASON to end only its hold`,
         code: 2 as const,
       };
-    return await send(deps, current, text, state);
+    return await send(deps, current, text, state, options.expectedSessionId);
   };
   const held = options.locked
     ? { ok: true as const, value: await dispatch() }
@@ -45,7 +46,13 @@ export const tellLane = async (
   return held.ok ? held.value : failed(lane, `a pause or another tell holds the lane's delivery lock (${held.holder})`);
 };
 
-const send = async (deps: FlowDeps, lane: Lane, text: string, state: DeliveryState): Promise<TellResult> => {
+const send = async (
+  deps: FlowDeps,
+  lane: Lane,
+  text: string,
+  state: DeliveryState,
+  expectedSessionId?: string,
+): Promise<TellResult> => {
   // The owner said wait: a message would start a turn in a paused lane, which only `dori resume` may do.
   if (statusOf(lane) === "paused") return failed(lane, "the lane is paused; resume it first");
   const ref = sessionOf(lane);
@@ -65,7 +72,7 @@ const send = async (deps: FlowDeps, lane: Lane, text: string, state: DeliverySta
   });
   let delivery: Delivery;
   try {
-    delivery = await sendVerified(runtimesOf(deps), deps.clock, ref, text);
+    delivery = await sendVerified(runtimesOf(deps), deps.clock, ref, text, undefined, expectedSessionId);
   } catch (e) {
     if (!(e instanceof UnsafeTextError)) {
       console.error(unconfirmed(`delivery threw: ${e instanceof Error ? e.message : String(e)}`).line);

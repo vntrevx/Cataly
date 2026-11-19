@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { anchoredReportLine } from "../src/freshness-report.ts";
-import { freshnessTick, scrubForThread } from "../src/freshness.ts";
+import { anchoredReportLine, freshnessTick, scrubForThread } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 test("freshness keeps its public scrubber for status consumers", () => {
@@ -84,7 +83,7 @@ test("does not invoke the reply hook when the rendered screen only contains lead
 
 test("rejects the failure row and detects the real report through a Bun script import", async () => {
   // Given captured failure and real output rows, passed as data to a new process.
-  const script = `import { anchoredReportLine } from "./src/freshness-report.ts";
+  const script = `import { anchoredReportLine } from "./src/freshness.ts";
 console.log(JSON.stringify([
   anchoredReportLine(process.argv[1], "docs-research"),
   anchoredReportLine(process.argv[2], "pkg-release-fix")

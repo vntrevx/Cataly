@@ -62,7 +62,24 @@ How the session id is found for a pane, in order:
 
 The extension updates its record when the agent switches sessions. A stale PID, wrong terminal or approval-pending record never becomes permission to type into another process. On hc, OMP reports native OSC 7501 status so the runtime's conditional send gate remains active; unknown status stays held.
 
-When the owner writes in a closed lane's thread, reopen its recorded session with `omp --resume=<id>` in a new runtime session and continue in that thread. OMP restores the recorded Dori/lane role and the Dori's monitors. A resumed goal is paused until `/goal resume` is confirmed through extension state.
+When the owner writes in a closed lane's thread, use `dori reopen <key> [--note TEXT]`. It starts the exact saved OMP session in a new pane, verifies its live identity and paused goal, then confirms `/goal resume` through extension state. It preserves the original thread, Done signals and history, clears the old claim/receipt, and starts a new supervision interval. A missing saved session or working directory, existing old pane, already-running session, or non-OMP command refuses reopening. An advanced `agentCommand` must end in a positional `{prompt}` and contain no preselected session. A startup/readback failure leaves one registered paused lane for inspection, never silently starts another. A failed start that left a confirmed bare shell can be ended with `close --abandon --reason TEXT`, then explicitly reopened; a foreign or unverified agent still holds. Ordinary `resume` verifies the recorded session identity before sending input. An optional note is sent once; exit 3 can mean its delivery is unconfirmed, so never repeat it automatically.
+
+## Pause, park and abandon
+
+- `pause` / `resume` retain their existing short-wait behavior: keep the pane and verify native goal state.
+- `dori park <key> --note TEXT [--resume-when TEXT]` is long-term suspension for an OMP lane. It verifies the exact saved session and goal pause before closing only that lane's pane, keeps all worktrees (including unpushed work), and records `status: closed` with `receipt.outcome: parked`, not a successful completion. An unconfirmed pause or failed pane close leaves the lane open/paused and exits 3.
+- `dori close <key> --abandon --reason TEXT` explicitly ends unfinished work without claiming Done. It pauses a live working/not-done lane before closing its pane, or records an already absent pane. Worktrees are retained and the receipt says `abandoned`. Both terminal operations accept working, not-done or paused lanes; a pending done claim must first be resolved. Neither runs `threadDone`, removes worktrees, or creates a success lesson. Ordinary `close` still checks every Done signal and records `outcome: done`.
+- Both terminal commands hold before pausing or closing a native lane while its accepted Discord messages are still pending. Parking or abandoning a live OMP agent also requires its previously recorded session identity; inspect and bind the correct session with `dori sync --write` before proceeding if it is unbound.
+- `dori holds [--thread REF]` and `dori boot` show paused/parked lanes with their reasons and resume conditions. Conditions are descriptive; passing time or a prerequisite never resumes the lane. Only an explicit `resume` or `reopen` does. A parked lane does not count as open, and the normal done watcher does not settle it.
+- Parked and abandoned lanes do not count as completed samples in `dori eta`.
+
+Parking records the saved session, original reason and resume condition before closing the pane. If interrupted after that close, repeating the same terminal command finishes the stored intent without replacing its reason or condition. For an interrupted park, `dori reopen <key>` instead restores the same saved session when its old pane is absent, including when accepted Discord work must still be delivered. It never discards that work to finish parking.
+
+Reopening uses the delivery lock shared with pause, resume, tell and close. Concurrent reopen attempts cannot create two agents. Older completed lanes can resolve an exact recorded session ID in `sessionsDir` when no path was saved. Deleted completed worktrees are not recreated implicitly. The reopened registry generation starts current progress afresh, even if writing the reopen journal event is interrupted. Old reports and cost receipts remain on disk.
+
+`dori sync --write` still reports identity drift; it cannot replace the exact binding of a prepared or reopened lane.
+
+Ordinary Done close of a reopened lane verifies the saved session's current foreground and records the close intent before removing its pane. Objections can still win before the intent is recorded. After that point, another claim, objection or delivery cannot change that decision. If pane-close readback is interrupted, retry `dori close` or let the active Done watcher confirm the saved intent. A missing pane without a saved intent is not treated as a completed close.
 
 ## Messaging a session
 
@@ -79,7 +96,7 @@ For a registered lane, `dori tell <key> --text TEXT` does steps 1, 3 and 4 throu
 
 An unconfirmed dispatch now keeps a private, durable local request ID. It fences later `tell` messages, automatic nudges, and claim/objection notifications even after restart; a rejected later message is not queued. `dori tell <key> --status` shows that record. Only `dori tell <key> --resolve REQUEST_ID --note REASON` ends that exact hold: it does not prove the action ran, cancel the original input, or resend anything. Inspect the original session and obtain the operator's decision before releasing it. Ordinary activity cannot clear a hold. Explicit pause/resume remains available, and releasing a hold does not resume a paused lane. See the scripts reference for statuses, errors and concurrency.
 
-This hold covers Dori automation, not direct native owner input. Native Discord owner messages and native ASK replies retain their existing admission rules so the owner can still control the session. They do not release the uncertain record; later tells, nudges and claim/objection notices remain held until an exact-ID release.
+This hold covers Dori automation, not direct native owner input. Native Discord owner messages and native ASK replies retain their existing admission rules so the owner can still control the session. They do not release the uncertain record; later tells, nudges and claim/objection notices remain held until an exact-ID release. Explicit `reopen --note` is also operator control: it attempts the note once under its existing session/goal checks without creating or clearing a `.delivery` record. An unconfirmed reopen note is not resent automatically.
 
 ## Watching
 

@@ -60,22 +60,23 @@ test("an unconfirmed objection notification fences the next task", async () => {
   expect(sent(world)).toEqual(["[LEAD] not done: still incomplete; keep working, claim again when fixed"]);
 });
 
-test("a signal that changes under the watch lock can object without reacquiring its own lock", async () => {
+test("a failed signal under the watch lock can object without reacquiring its own lock", async () => {
   await deps().registry.write({
     ...lane,
     status: "done-claimed",
     claim: { at: new Date(T0).toISOString(), evidence: "done", emitted: true },
   });
+  world.prState = "OPEN";
   const base = deps();
   let checks = 0;
   const lines = await watchTick({
     ...base,
     run: async (argv, options) => {
-      if (argv[0] === "gh") world.prState = ++checks === 1 ? "MERGED" : "OPEN";
+      if (argv[0] === "gh") checks++;
       return base.run(argv, options);
     },
   });
-  expect(checks).toBe(2);
+  expect(checks).toBe(1);
   expect(lines[0]).toStartWith("LANE_NOT_DONE");
   expect(store().read()?.status).toBe("uncertain");
   expect(sent(world)).toHaveLength(1);

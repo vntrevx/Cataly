@@ -96,27 +96,41 @@ export function pendingDiscordLane(stateDir: string, lane: Lane): boolean {
   return receiver !== undefined && hasDiscordLaneMessages(receiver.stateDir, session, receiver.channel);
 }
 
-/** Resolve an owner message only when one registered lane owns the exact Discord channel. */
-export async function discordLaneTarget(
-  stateDir: string,
-  channel: string,
-): Promise<{ key: string; session: string } | undefined> {
+type DiscordLaneRoute =
+  | { readonly kind: "closing" | "inactive"; readonly key: string }
+  | { readonly kind: "live"; readonly key: string; readonly session: string };
+
+/** Keep an exact registered owner distinct from an unowned channel, even without a live pane. */
+export async function discordLaneRoute(stateDir: string, channel: string): Promise<DiscordLaneRoute | undefined> {
   const lane = await uniqueDiscordLane(stateDir, (item) => item.thread === `discord:${channel}`);
   if (!lane?.sessionRef) return undefined;
+  const { key } = lane;
+  if (lane.nativeCloseIntent) return { kind: "closing", key };
+  const inactive = { kind: "inactive", key } as const;
   const pane = readPaneState(stateDir, lane.sessionRef.id);
-  if (pane?.role !== "lane" || pane.discordLaneInbox !== true) return undefined;
+  if (pane?.role !== "lane" || pane.discordLaneInbox !== true) return inactive;
   // A cleanly retired exact session can receive queued work for its next resume. The launch-only
   // hint is weaker and cannot bind a retired or dead process to a lane with no recorded session.
-  if (lane.session === pane.sessionId && pane.pid === 0) return { key: lane.key, session: pane.sessionId };
+  const active = { kind: "live", key, session: pane.sessionId } as const;
+  if (lane.session === pane.sessionId && pane.pid === 0) return active;
   if (
     pane.pid <= 0 ||
     (lane.session !== pane.sessionId && (lane.session !== undefined || pane.discordLaneKey !== lane.key))
   )
-    return undefined;
+    return inactive;
   try {
     process.kill(pane.pid, 0);
   } catch {
-    return undefined;
+    return inactive;
   }
-  return { key: lane.key, session: pane.sessionId };
+  return active;
+}
+
+export async function discordLaneTarget(
+  stateDir: string,
+  channel: string,
+): Promise<{ key: string; session: string } | undefined> {
+  const route = await discordLaneRoute(stateDir, channel);
+  if (route?.kind === "live") return { key: route.key, session: route.session };
+  return undefined;
 }

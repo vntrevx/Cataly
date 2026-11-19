@@ -40,7 +40,7 @@ const reports = async (deps: FlowDeps): Promise<Part> => {
     const unreadable: string[] = [];
     for (const lane of (await deps.registry.scan()).lanes) {
       try {
-        const progress = journal.read(lane.key);
+        const progress = journal.read(lane.key, { generation: lane.lifecycleEpoch });
         if (progress) found.push({ key: lane.key, progress });
       } catch {
         unreadable.push(lane.key);

@@ -99,7 +99,7 @@ test("doctor skips malformed stored lane keys before reporting supervision or re
       { check: "registry", severity: "WARN", detail: "lanes=2 unreadable=1 invalidKeys=2" },
     ]);
     expect(result.findings.map((finding) => finding.detail).join("\n")).not.toContain("forged");
-    expect(readJournal.mock.calls).toEqual([["launched"]]);
+    expect(readJournal.mock.calls).toEqual([["launched", { generation: undefined }]]);
   } finally {
     readJournal.mockRestore();
   }

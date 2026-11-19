@@ -6,12 +6,17 @@ import { DiscordChannels, inboundContext } from "./messenger/discord-channels.ts
 import type { GatewayClock, GatewaySocket } from "./messenger/discord-gateway.ts";
 import { routeDiscordAskReply } from "./messenger/discord-ask-mailbox.ts";
 import { type DiscordAskReceiverPublication, openDiscordAskReceiver } from "./messenger/discord-ask-receiver.ts";
-import { discordInbound, formatDiscordInbound, formatInboundContext } from "./messenger/discord-inbound.ts";
+import {
+  discordInbound,
+  formatDiscordInbound,
+  formatInboundContext,
+  markDiscordInboundSeen,
+} from "./messenger/discord-inbound.ts";
 import type { Emit } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
 import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
-import { discordLaneTarget, openDiscordLaneInbox } from "./messenger/discord-lane-inbox.ts";
+import { discordLaneRoute, openDiscordLaneInbox } from "./messenger/discord-lane-inbox.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { recordOwes } from "./owes.ts";
 import { Registry } from "./registry.ts";
@@ -107,20 +112,29 @@ export const discordInboundCommand = async (
     // Context and the owner line remain one stdout group, after the owe is published.
     const emit: Emit = async (message, signal) => {
       signal?.throwIfAborted();
-      if (routeDiscordAskReply(stateDir, message, ownerId)) return;
-      const lane = await discordLaneTarget(stateDir, message.channel);
-      if (lane) {
-        const held = await withDeliveryLock(delivery, lane.key, async () => {
+      if (routeDiscordAskReply(stateDir, message, ownerId)) {
+        await markDiscordInboundSeen(discord, message);
+        return;
+      }
+      const route = await discordLaneRoute(stateDir, message.channel);
+      if (route) {
+        const held = await withDeliveryLock(delivery, route.key, async () => {
           signal?.throwIfAborted();
-          const current = await discordLaneTarget(stateDir, message.channel);
-          if (current?.key !== lane.key || current.session !== lane.session) return false;
+          const current = await discordLaneRoute(stateDir, message.channel);
+          if (current && current.key !== route.key) throw new Error("Discord lane route changed; cursor not advanced");
+          if (current?.kind === "closing")
+            throw new Error("Discord lane native close is in progress; cursor not advanced");
+          if (route.kind !== "live" || current?.kind !== "live" || current.session !== route.session) return false;
           signal?.throwIfAborted();
           laneInbox ??= openDiscordLaneInbox(stateDir);
-          laneInbox.add(lane.session, message);
+          laneInbox.add(current.session, message);
           return true;
         });
         if (!held.ok) throw new Error("Discord lane delivery is locked; cursor not advanced");
-        if (held.value) return;
+        if (held.value) {
+          await markDiscordInboundSeen(discord, message);
+          return;
+        }
       }
       const text = where
         ? `${formatDiscordInbound(message)}\n${formatInboundContext(message, await where(message.channel))}`
