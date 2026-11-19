@@ -44,6 +44,8 @@ describe("a cd that may fail keeps the directory the call ran in", () => {
     `cd /nonexistent || true; ${CHECKPOINT}`,
     // The first `cd` may fail, so the `||` may run where the chain began, not only where either `cd` led.
     `cd /nonexistent && cd app || ${CHECKPOINT}`,
+    `bash -c 'true | cd /tmp && ${CHECKPOINT}'`,
+    `true | cd /tmp && ${CHECKPOINT}`,
   ])("%s may run the CLI where it started", (command) => {
     expect(hasDoriCommand(command, SCRIPTS)).toBe(false);
     expect(hasDoriCommand(command, SCRIPTS, true)).toBe(true);
@@ -57,6 +59,14 @@ describe("a cd that may fail keeps the directory the call ran in", () => {
     const into = `cd skills/dori-mode/scripts && ${CHECKPOINT}`;
     expect(hasDoriCommand(into, ROOT)).toBe(true);
     refuses(into, ROOT, "coordinates");
+  });
+
+  test("a pipeline may also move its last command into the CLI directory", () => {
+    for (const after of ["&&", ";"]) {
+      const command = `bash -O lastpipe -c 'true | cd ${SCRIPTS} ${after} ${CHECKPOINT}'`;
+      expect(hasDoriCommand(command, ROOT, true)).toBe(true);
+      refuses(command, ROOT, "coordinates");
+    }
   });
 
   test("the default reading still takes a cd that starts a list as moved", () => {

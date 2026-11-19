@@ -180,13 +180,12 @@ const commandWords = (
     return undefined;
   };
 
-  // Each command of a run of words, cut where a new command starts. A `cd` moves the commands after it in its own
-  // subshell or substitution, a new one starting where the one around it is. Only a `cd` that surely runs in this
-  // shell replaces the directory: one starting a list, outside a condition or loop body, and not in a pipeline or the
-  // background. One after `&&` or `||` or in a body adds its directory as possible; one in a pipeline changes nothing.
-  // The commands after a `cd` joined to it by `&&` run where it moved (`cd X && true && B`), unless the `cd` itself
-  // follows an `||` (`true || cd X && B` may run where it was); one after a later `||` in either directory, as anything
-  // before it may have failed (`cd X && false || B`).
+  // Commands inherit their subshell's directory. Certainty replaces it only for a `cd` starting a list outside a
+  // condition, loop, pipeline or background; a conditional or loop `cd` adds a possible directory instead.
+  // An `&&` chain uses the moved directory (`cd X && true && B`), unless its `cd` follows `||`: `true || cd X && B`
+  // may stay where it began. A later `||` may also run there because any prefix may fail (`cd X && false || B`).
+  // A pipeline gives no certain new parent cwd. Possible mode keeps original and target in the `&&` chain and outer
+  // scope: the last `cd` may run in a subshell, or in the parent under shell options such as Bash lastpipe.
   const run = (ws: readonly Word[], dirs: Dirs): void => {
     const scopes = new Map<string, Dirs>([["", dirs]]);
     const dirOf = (scope: readonly number[]): Dirs => {
@@ -222,8 +221,9 @@ const commandWords = (
       const next = commands[index + 1]?.[0]?.after;
       // An `&&` after this `cd` runs where it moved only if every way to that `&&` ran the `cd`: not after an `||`.
       const from = possible && after === "&&" && either ? either : here;
-      if (to !== undefined) chains.set(key, { to: after === "||" ? merge(here, to) : to, from });
-      if (to === undefined || after === "|" || next === "|" || next === "&") return;
+      if (to !== undefined)
+        chains.set(key, { to: after === "||" || (possible && after === "|") ? merge(here, to) : to, from });
+      if (to === undefined || next === "|" || next === "&" || (!possible && after === "|")) return;
       const sure = OPENS_LIST[after] === true && bodies === 0 && !possible;
       scopes.set(key, sure ? to : merge(dirOf(scope), to));
     });

@@ -4,7 +4,7 @@ import { Checkpoints } from "../src/checkpoints.ts";
 import { fileEvidence } from "../src/evidence.ts";
 import { Supervision } from "../src/supervision.ts";
 import { type TestState, withState } from "./fakes.ts";
-import { coverageFixture } from "./supervision-coverage.fixture.ts";
+import { coverageFixture, git } from "./supervision-coverage.fixture.ts";
 
 let state: TestState;
 beforeEach(() => {
@@ -89,4 +89,41 @@ test("a reached ceiling still blocks when an awaited alert reports fresh work", 
   expect(result.state).toBe("blocked");
   expect(result.heldHung).toBe(false);
   expect(f.reports.read(f.lane.key)?.lastReport?.text).toBe("tokens ceiling reached (1)");
+});
+
+test("fresh evidence during delivery cannot suppress the next independently proved hung alert", async () => {
+  const f = coverageFixture(state);
+  const watched = f.paths[0];
+  const selected = f.paths[999];
+  if (!watched || !selected) throw new Error("fixture needs its watched and separately selected files");
+  let alerts = 0;
+  const supervisor = new Supervision(
+    {
+      stateDir: state.dir,
+      clock: f.clock,
+      run: git,
+      alert: async () => {
+        if (++alerts !== 1) return;
+        await Promise.resolve();
+        ++f.clock.at;
+        writeFileSync(selected, "real evidence during the first alert");
+        f.reports.report(f.lane.key, "milestone", "new work", f.clock.at, [fileEvidence(selected, f.repo)]);
+      },
+    },
+    { gitActivity: false, activityPaths: [watched], hungAfterMinutes: 1, staleAfterMinutes: 1 },
+  );
+  await f.settle(() => supervisor.sweep(f.lane, "Working 21m"));
+  f.clock.at += 60_000;
+  const recovered = await f.settle(() => supervisor.sweep(f.lane, "Working 22m"));
+  expect(recovered.state).toBe("running");
+  expect(recovered.heldHung).toBe(false);
+  expect(alerts).toBe(1);
+  f.clock.at += 60_000;
+  const next = await f.settle(() => supervisor.sweep(f.lane, "Working 23m"));
+  expect(next.hung).toBe(true);
+  expect(next.alerts).toHaveLength(1);
+  expect(alerts).toBe(2);
+  f.clock.at += 60_000;
+  expect((await f.settle(() => supervisor.sweep(f.lane, "Working 24m"))).alerts).toEqual([]);
+  expect(alerts).toBe(2);
 });

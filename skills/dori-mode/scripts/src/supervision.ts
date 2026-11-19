@@ -112,8 +112,9 @@ export class Supervision {
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
     const hungMessage =
       "Working/Running timer exceeded threshold without fresh evidence (selected or changed file bytes)";
-    const alerts = terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
-    const freshAlerts = alerts.filter((message) => !previous?.alerts.includes(message));
+    const alerts = () =>
+      terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
+    const freshAlerts = alerts().filter((message) => !previous?.alerts.includes(message));
     const reconcile = () => {
       // A question also reads as blocked; only this same ceiling blocker as the latest report makes a repeat.
       const blocker = violations.join("; ");
@@ -176,7 +177,7 @@ export class Supervision {
       lastReportAt,
       lastEvidenceAt: currentEvidence.lastEvidenceAt,
       ...uncertainty,
-      alerts: alerts.filter((message) => !undelivered.has(message)),
+      alerts: alerts().filter((message) => !undelivered.has(message)),
     };
     writeObservation(path, observation);
     if (undelivered.size)
