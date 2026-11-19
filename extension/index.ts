@@ -30,6 +30,7 @@ import type { MonitorSpec } from "../src/update/deployment-types.ts";
 import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./bootstrap.ts";
 import { RuntimeHealthWriter } from "./deployment-health.ts";
 import { DiscordAsk } from "./discord-ask.ts";
+import { type AskLane, automaticDiscordAskRoute, bindAskLane } from "./discord-ask-auto.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
 import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
 import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from "../skills/dori-mode/scripts/src/owes";
@@ -240,6 +241,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   let paneWritten: string | undefined;
   const approvals = new Set<string>();
   const discordAsk = new DiscordAsk();
+  let askLane: AskLane | undefined;
   let managedRestorePending = process.env.DORI_MANAGED_STARTUP === "1";
   const monitors = new Monitors(
     async (content, delivery) => {
@@ -424,8 +426,13 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     // The awaited preflight runs before the built-in opens its form; execution events can arrive later.
     pi.on("tool_call", (event, ctx) => {
       const id = ctx.sessionManager.getSessionId();
-      if (role && stateDir && ctx.agent.kind === "main" && id === session?.id && approvals.size === 0)
-        discordAsk.arm(event, ctx.ui, stateDir, id);
+      const root = stateDir;
+      const currentRole = role;
+      if (root && currentRole && ctx.agent.kind === "main" && id === session?.id && approvals.size === 0)
+        return discordAsk.arm(event, ctx.ui, root, id, async () => {
+          const route = await automaticDiscordAskRoute(root, currentRole, id, askLane);
+          return approvals.size === 0 ? route : undefined;
+        });
     });
     pi.on("tool_execution_end", (event) => discordAsk.finish(event));
     pi.on("session_shutdown", () => {
@@ -549,6 +556,15 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         // Re-record the role and desired monitor starts: an exited child is not a recorded stop, and the fresh
         // branch otherwise loses the intent that `syncMain` uses to restore it.
         if (carried && role && recorded === undefined) pi.appendEntry(ROLE_ENTRY, role);
+        askLane =
+          role === "lane"
+            ? bindAskLane(
+                branch,
+                ctx.sessionManager.getSessionId(),
+                flaggedRole ? process.env["CATALY_ASK_LAUNCHED_LANE"] : undefined,
+                (kind, binding) => pi.appendEntry(kind, binding),
+              )
+            : undefined;
         if (carried && role === "dori" && recorded === undefined) {
           for (const spec of session?.monitorSpecs ?? [])
             pi.appendEntry(MONITOR_ENTRY, {

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 
 import { type CreateSpec, formatRef, type SessionRef } from "../../../../src/runtime/types.ts";
+import { quoteForPane } from "./launch-footer.ts";
+import { isDiscordSnowflake } from "./messenger/discord-inbound-state.ts";
 import { type Lane, type Registry, sessionFields } from "./registry.ts";
 import type { ChosenRuntimes } from "./run.ts";
 
@@ -11,6 +13,15 @@ export type OpenedLane =
   | { readonly kind: "failed"; readonly what: string; readonly error: unknown };
 
 const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** Bind the private route only to this launch, not its shell or a later OMP session in the same pane. */
+export const laneStartCommand = (lane: Pick<Lane, "key" | "thread">, argv: readonly string[]): string => {
+  const prefix =
+    lane.thread.startsWith("discord:") && isDiscordSnowflake(lane.thread.slice("discord:".length))
+      ? `CATALY_ASK_LAUNCHED_LANE=${quoteForPane(lane.key)} `
+      : "";
+  return `${prefix}${argv.map(quoteForPane).join(" ")}`;
+};
 
 // Each cleanup step is tried on its own: one that fails is reported and never stops the others.
 const removeStaged = (staged: string): void => {

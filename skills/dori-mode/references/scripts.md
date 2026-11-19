@@ -82,6 +82,20 @@ wrappers or change running sessions. Setting a model ID alone does not
 install the extension or enable the tier. The 500,000-token window is a local
 context budget, not a server-side capacity increase.
 
+## Read-only diagnostics
+
+`dori doctor [--json] [--repo owner/repo]` checks the selected home's configuration, registry, worklog, lessons, desired monitor metadata and trusted live lead. It exits 1 when a visible WARN remains, otherwise 0; INFO is advisory. It never edits config, starts/stops a monitor, invokes a hook or usage reader, contacts a messenger, or reads private session transcripts. Local runtime/process probes are read-only. `dori boot` includes a local `DOCTOR warn=N` advisory without changing boot's existing exit policy.
+
+Checks are identified by `runtime`, `registry`, `monitors`, `monitor-filter`, `monitor-runtime`, `supervision`, `repo-identities`, `worklog` and `lessons`. Optional `doctor: { "ignore": ["lessons"] }` suppresses named diagnostics; the selected ignore list remains in doctor output. Nothing is ignored by default. Repository identities are checked for open lanes' merged/closed repository signals and the optional `--repo`; doctor does not guess a GitHub repository from a directory name.
+
+`dori monitor-presets [watch|dead-panes|guard|freshness|pr-watch] [--json]` prints recommended structured argv and filters, starting nothing. Review the preset and restart only the explicitly authorized monitor in its owner session. Side installations must use their own bound CLI/PATH. Only the trusted current lead's filter produces WARN; historical or unverified owners stay INFO, so old manifests do not keep doctor failing after an upgrade. Filter diagnostics recognize direct `dori`, `omp-dori`, and `bun .../dori-mode/scripts/src/cli.ts` argv, even when the monitor was renamed; arbitrary shell scripts are not inferred from their name. The probes detect missing event categories, not every possible restriction in a custom regex.
+
+Desired specs alone are not evidence that a child is running. Only the current trusted Dori process, a fresh matching runtime receipt and the child's PID/start identity establish liveness. Other sessions' recorded monitors stay INFO with liveness explicitly unverified; stale, unreadable or mismatched current-lead receipts warn rather than claiming that a monitor is healthy. Doctor does not recommend an unattended restart.
+
+Doctor checks unreadable legacy terminal metadata under the same `PI_SESSION_DIR` or `PI_SESSION_FILE` roots as `dori boot`; those records cannot attest native monitor liveness. A native receipt must also match the desired restart policy, including when no restart policy is set.
+
+Malformed lane keys are counted without being printed. Unrecognized status or approval values in a trusted lead record appear as `unknown`; a record that fails the runtime trust checks does not attest a live lead.
+
 ## Library modules
 
 The CLI is a thin layer over typed modules you can import in your own scripts:

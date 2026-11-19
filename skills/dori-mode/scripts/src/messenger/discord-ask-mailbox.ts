@@ -9,7 +9,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
-  readFileSync,
+  readSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -30,7 +30,14 @@ export function readPrivateAskFile(path: string, maxBytes: number): string | und
     const stat = fstatSync(fd);
     if (!stat.isFile() || !owned(stat.uid) || (stat.mode & 0o077) !== 0 || stat.size > maxBytes)
       throw new Error("ASK file must be an owned, private regular file within the size limit");
-    return readFileSync(fd, "utf8");
+    const bytes = Buffer.allocUnsafe(Math.min(stat.size, maxBytes) + 1);
+    let size = 0;
+    for (;;) {
+      const count = readSync(fd, bytes, size, bytes.length - size, null);
+      if (count === 0) return bytes.toString("utf8", 0, size);
+      size += count;
+      if (size === bytes.length) throw new Error("ASK file grew during the bounded read");
+    }
   } catch (error) {
     if (hasCode(error, "ENOENT")) return undefined;
     throw error;

@@ -4,6 +4,7 @@ import { Discord } from "./messenger/discord.ts";
 import { DiscordChannels, inboundContext } from "./messenger/discord-channels.ts";
 import type { GatewayClock, GatewaySocket } from "./messenger/discord-gateway.ts";
 import { routeDiscordAskReply } from "./messenger/discord-ask-mailbox.ts";
+import { type DiscordAskReceiverPublication, openDiscordAskReceiver } from "./messenger/discord-ask-receiver.ts";
 import { discordInbound, formatDiscordInbound, formatInboundContext } from "./messenger/discord-inbound.ts";
 import type { Emit } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
@@ -76,6 +77,7 @@ export const discordInboundCommand = async (
   if (!all && channelIds.length === 0) discordInboundEnv("DORI_DISCORD_CHANNEL_ID", env["DORI_DISCORD_CHANNEL_ID"]);
   const token = env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
   const queue = discordInboundQueue(stateDir);
+  let receiver: DiscordAskReceiverPublication | undefined;
   try {
     if (!gateway && queue.first())
       die("Discord inbound has pending Gateway work; restart with --gateway before REST mode");
@@ -86,6 +88,15 @@ export const discordInboundCommand = async (
       all,
       threads,
     });
+    if (gateway || pollMinutes > 0)
+      receiver = openDiscordAskReceiver(
+        stateDir,
+        token,
+        ownerId,
+        channelIds,
+        intake.channels,
+        gateway ? Infinity : pollMinutes * 60_000 + 15_000,
+      );
     const watching = all ? "all" : intake.channels().join(",");
     const where = context ? inboundContext(discord, new DiscordChannels(stateDir), realClock.now) : undefined;
     // Context and the owner line remain one stdout group, after the owe is published.
@@ -102,11 +113,47 @@ export const discordInboundCommand = async (
     console.log(
       `INBOUND_READY discord owner=${ownerId} channel=${watching} bot=${intake.botId}${gateway ? " mode=gateway" : ""}`,
     );
-    if (!gateway) return await every(pollMinutes, () => intake.poll(emit));
+    if (!gateway)
+      return await every(pollMinutes, async () => {
+        try {
+          await intake.poll(emit);
+          receiver?.refresh();
+        } catch (error) {
+          receiver?.suspend();
+          throw error;
+        }
+      });
+    // Gateway receipts mean successful backfill on the observed connection, not a separate connectivity probe.
+    let connected = false;
+    let generation = 0;
+    const live = {
+      ...intake,
+      async sync(...args: Parameters<typeof intake.sync>) {
+        const current = generation;
+        try {
+          await intake.sync(...args);
+          if (connected && current === generation) receiver?.refresh();
+        } catch (error) {
+          receiver?.suspend();
+          throw error;
+        }
+      },
+    };
     await untilStopped(
-      discordInboundLive(intake, openDiscordSocket, token, discordClock, emit, (l) => console.log(l), queue),
+      discordInboundLive(live, openDiscordSocket, token, discordClock, emit, (line) => console.log(line), queue, {
+        ready() {
+          connected = true;
+          generation++;
+        },
+        disconnect() {
+          connected = false;
+          generation++;
+          receiver?.suspend();
+        },
+      }),
     );
   } finally {
+    receiver?.close();
     queue.close();
   }
 };

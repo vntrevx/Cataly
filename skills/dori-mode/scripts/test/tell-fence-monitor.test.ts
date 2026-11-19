@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Manifest } from "../src/boot-monitors.ts";
+import { monitorFilterFindings } from "../src/doctor-monitors.ts";
+import { monitorPresets } from "../src/monitor-presets.ts";
 import { withDeliveryLock } from "../src/delivery-lock.ts";
 import { type DeliveryRecord, DeliveryState } from "../src/delivery-state.ts";
 import { claimDone, type FlowDeps, objectDone, watchTick } from "../src/done-flow.ts";
@@ -49,6 +52,33 @@ beforeEach(async () => {
 afterEach(() => {
   mock.restore();
   state.done();
+});
+
+test.each([
+  ["freshness", "HELD"],
+  ["freshness", "DELIVERY-ERROR"],
+  ["watch", "LANE_WATCH_ERROR"],
+  ["watch", "LANE_NOTIFY_HELD"],
+  ["watch", "LANE_NOTIFY_UNCONFIRMED"],
+])("canonical %s monitors and doctor probes cover %s", (name, event) => {
+  const preset = monitorPresets.find((item) => item.name === name);
+  if (!preset) throw new Error(`missing ${name} preset`);
+  expect(preset.events).toContain(event);
+  expect(new RegExp(preset.filter).test(event)).toBe(true);
+  expect(filter(name === "watch" ? "done flow" : name).test(event)).toBe(true);
+  const manifest: Manifest = {
+    path: join(state.dir, "monitor.json"),
+    kind: "omp",
+    data: {
+      version: 1,
+      sessionId: "owner",
+      monitors: [{ name, argv: [...preset.argv], cwd: state.dir, filter: `^(?!${event}(?: |$))` }],
+    },
+  };
+  const findings = monitorFilterFindings([manifest], "owner");
+  expect(findings).toHaveLength(1);
+  expect(findings[0]?.severity).toBe("WARN");
+  expect(findings[0]?.detail).toContain(`misses probes: ${event};`);
 });
 
 test("a working lane's claim hold and later objection reach the lead's documented stdout filter", async () => {
