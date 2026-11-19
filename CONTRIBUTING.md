@@ -41,6 +41,17 @@ applicable to the affected material: Sustainable Use License 1.0 for
 dori-superagent-derived code, and MIT for the pre-existing OMP integration covered
 by [LICENSE.omp-dori](LICENSE.omp-dori). [LICENSE](LICENSE) explains the scope.
 
+For copied or adapted third-party code or prompt text, record provenance in the
+PR's [Provenance section](.github/pull_request_template.md#provenance): upstream
+URL, file paths and immutable revision; the applicable file/component license;
+destination paths and modifications; and retained notice paths. For concept-only
+references, cite the source/revision and identify the independently written work.
+A project's root license is not blanket permission for differently licensed
+files, prompts, SDKs or ULW components; follow [LICENSING.md](LICENSING.md).
+Keep required copyright, permission, license and modified-copy notices with copied
+material. Dependency/SDK/ULW changes must preserve their component-specific license
+and notice files in redistributed material.
+
 Cataly does not require a CLA signature or a CLA comment. The retained [CLA](CLA.md)
 and its workflow belong to upstream `sisyphuslabs/dori-superagent`, not a new
 agreement for this repository.

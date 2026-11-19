@@ -13,6 +13,15 @@ Required remote CI may be pending for review; all three jobs must pass before me
 - Owned state/config and defaults (before -> after):
 - Compatibility and earlier accepted fences preserved:
 
+## Provenance
+
+- Copied/adapted third-party code or prompt text (or none):
+- Upstream URL, file paths, immutable revision and applicable file/component license:
+- Destination paths, modifications and retained copyright/permission/modified-copy notice paths:
+- Dependency/SDK/ULW changes: component-specific license/notice paths retained in redistributed
+  material (or none):
+- Concept-only references: source/revision and independently written work (or none):
+
 ## Evidence
 
 Use the existing [setup/gates](https://github.com/vntrevx/omp-dori/blob/main/CONTRIBUTING.md#run-the-gates)
