@@ -103,8 +103,20 @@ export const bundleEnv = (home: string, bun = process.execPath): Record<string, 
   DORI_TELEMETRY: "0",
   DO_NOT_TRACK: "1",
 });
-export const bundleGit = (argv: readonly string[], cwd: string, home: string): Promise<string> =>
-  command(["/bin/sh", "-c", 'umask 077; exec "$@"', "dori-source-git", ...args(argv)], cwd, bundleEnv(home), 300_000);
+export const bundleGit = (argv: readonly string[], cwd: string, home: string, output?: string): Promise<string> =>
+  command(
+    [
+      "/bin/sh",
+      "-c",
+      output === undefined ? 'umask 077; exec "$@"' : 'umask 077; output=$1; shift; exec "$@" > "$output"',
+      "dori-source-git",
+      ...(output === undefined ? [] : [output]),
+      ...args(argv),
+    ],
+    cwd,
+    bundleEnv(home),
+    300_000,
+  );
 
 function hashChunks(inputs: readonly string[], checkout: string, home: string): string {
   // One synchronous Bun driver keeps admission synchronous while Git children hash in parallel.
@@ -138,8 +150,7 @@ if (!process.exitCode) process.stdout.write(outputs.join(""));
   return proc.stdout.toString().trim();
 }
 
-/**
- * Synchronous admission also runs at launch; a version or a launcher hash alone is never a receipt.
+/** Synchronous admission also runs at launch; a version or a launcher hash alone is never a receipt.
  * Every tracked regular file's content is compared to its index blob through batched attribute-aware
  * hashes, so a legitimate checkout transform is admitted and any real content change is still rejected.
  */
