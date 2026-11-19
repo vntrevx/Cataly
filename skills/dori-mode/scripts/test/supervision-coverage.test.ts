@@ -40,16 +40,21 @@ test("1,000 files are covered in bounded windows, including a late change in the
       expect(f.refs().findLast((ref) => ref.ref === last)?.fingerprint).not.toBe(before);
     }
   }
+  let confirmation = 0;
   for (let window = 0; window < 4; window++) {
-    const { result, stats } = await f.sweep();
+    const { result, stats, confirmations } = await f.sweep();
     counts.push(stats);
     expect(result.hung).toBe(window === 3);
+    // Only the new verdict re-stats every candidate, including the current window, apart from the hash-window cap.
+    expect(confirmations).toBe(window === 3 ? 1_000 : 0);
+    confirmation += confirmations;
     if (window < 3) expect(result.coverageComplete).toBe(false);
     else expect(result.state).toBe("stalled");
   }
   console.info(
     `bounded coverage: 1000 files, 12 sweeps, lstat+fstat per sweep=${counts.join(",")}, max=${Math.max(...counts)}`,
   );
+  console.info(`new-hung confirmation: 1000 files, lstat=${confirmation}, counted apart from the 256-path windows`);
 });
 
 test("new candidates do not restart the current snapshot or starve its final window", async () => {
@@ -120,7 +125,7 @@ test("production freshness keeps a proven stall through partial windows until ac
   const tick = async (turn: number) => {
     f.clock.at = start + turn * 60_000;
     world.screen = `Working ${21 + turn}m`;
-    return freshnessTick({ ...deps, run }, state.dir);
+    return f.settle(() => freshnessTick({ ...deps, run }, state.dir));
   };
   for (let turn = 0; turn < 7; turn++) {
     const acts = await tick(turn);

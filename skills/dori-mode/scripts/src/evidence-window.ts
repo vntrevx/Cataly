@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { type EvidenceRef, type PathMark, pathMark, UnstableEvidenceError } from "./evidence.ts";
+import { type EvidenceRef, markHolds, type PathMark, pathMark, racyMark, UnstableEvidenceError } from "./evidence.ts";
 import type { Runner } from "./run.ts";
 import type { Observation, SupervisedLane, SupervisionOptions } from "./supervision-observe.ts";
 
@@ -37,6 +37,25 @@ const fileWindow = (paths: ReadonlySet<string>, previous: readonly string[], cov
     changed: cycle.changed || manifest !== cycle.manifest,
     ...(coverage?.failed === undefined ? {} : { failed: coverage.failed }),
   };
+};
+
+/**
+ * Before a new hung verdict only: re-stat every known candidate, including this sweep's window. A racy mark, changed
+ * stat or failed lstat leaves the verdict unknown. These sequential lstats are not an atomic filesystem snapshot;
+ * they neither replace marks nor move the schedule. Only a later content read may credit changed bytes as evidence.
+ */
+export const confirmMarks = (
+  files: Readonly<Record<string, PathMark>>,
+  observedAt = Date.now(),
+): { readonly quiet: boolean; readonly stats: number } => {
+  const marks = Object.entries(files);
+  if (marks.some(([, mark]) => racyMark(mark))) return { quiet: false, stats: 0 };
+  let stats = 0;
+  for (const [path, mark] of marks) {
+    stats++;
+    if (!markHolds(path, mark, observedAt)) return { quiet: false, stats };
+  }
+  return { quiet: true, stats };
 };
 
 // Only classify an exit-128 status as non-repository when no Git entry exists in its physical ancestry.

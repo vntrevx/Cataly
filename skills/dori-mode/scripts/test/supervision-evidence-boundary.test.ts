@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Lane } from "../src/registry.ts";
@@ -9,10 +9,23 @@ import { fakeClock, type TestState, withState } from "./fakes.ts";
 
 let state: TestState;
 const start = Date.parse("2026-01-01T00:00:00Z");
+let restoreClock: (() => void) | undefined;
+const observedClock = () => {
+  const clock = fakeClock(start);
+  const wall = Date.now();
+  // A simulated supervision minute is also a filesystem-observation minute; no real-time sleep is needed.
+  const now = spyOn(Date, "now").mockImplementation(() => wall + clock.at - start);
+  restoreClock = () => now.mockRestore();
+  return clock;
+};
 beforeEach(() => {
   state = withState();
 });
-afterEach(() => state.done());
+afterEach(() => {
+  restoreClock?.();
+  restoreClock = undefined;
+  state.done();
+});
 
 const lane = (): Lane => ({
   key: "evidence-lane",
@@ -27,7 +40,7 @@ const lane = (): Lane => ({
 
 test("a failed Git observation does not turn missing output into evidence or change the clock", async () => {
   mkdirSync(join(state.dir, ".git"));
-  const clock = fakeClock(start);
+  const clock = observedClock();
   let failed = false;
   const run: Runner = async (argv) =>
     failed
@@ -51,7 +64,7 @@ test("a failed Git observation does not turn missing output into evidence or cha
 
 test("a failed evidence read cannot suppress a reached budget or its alert", async () => {
   mkdirSync(join(state.dir, ".git"));
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const run: Runner = async () => ({ code: 128, out: "", err: "repository unavailable" });
   const alerts: string[] = [];
   const supervisor = new Supervision(
@@ -70,7 +83,7 @@ test("new bytes inside an untracked directory are observed through the actual Gi
   expect(Bun.spawnSync(["git", "init", "--quiet", repo]).exitCode).toBe(0);
   mkdirSync(join(repo, "out"));
   writeFileSync(join(repo, "out/result.txt"), "first");
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const run: Runner = async (argv) => {
     const result = Bun.spawnSync([...argv], { stdout: "pipe", stderr: "pipe" });
     return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };

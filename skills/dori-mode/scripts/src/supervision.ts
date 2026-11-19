@@ -107,7 +107,7 @@ export class Supervision {
     const timer = workingTimer(screen);
     const advanced = previous?.files !== undefined && evidence.signature !== previous.activity;
     const coverage = evidence.coverage && { ...evidence.coverage, changed: evidence.coverage.changed || advanced };
-    const incomplete = Boolean(coverage?.pending.length || coverage?.deferred.length);
+    const complete = !(coverage?.pending.length || coverage?.deferred.length) && evidence.evidenceError === undefined;
     const activeAt = !previous || advanced ? now : previous.activeAt;
     const usage = await this.usage(lane, now);
     const limits = {
@@ -121,8 +121,7 @@ export class Supervision {
     const violations = budgetViolations(limits, usage, (now - Date.parse(lane.openedAt)) / 60_000);
     const provedHung =
       coverage?.changed === false &&
-      !incomplete &&
-      evidence.evidenceError === undefined &&
+      complete &&
       previous !== null &&
       previous.evidenceError === undefined &&
       timer !== null &&
@@ -133,7 +132,8 @@ export class Supervision {
       // computed origin by up to one unit, plus sweep jitter.
       Math.abs(now - timer.seconds * 1000 - (previous.at - previous.timer * 1000)) <= timer.step * 1000 + 2000 &&
       timer.seconds >= (this.options.hungAfterMinutes ?? 20) * 60 &&
-      now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000;
+      now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000 &&
+      (previous.hung === true || evidence.confirmQuiet());
     const progress = this.reports.read(lane.key);
     const terminal = progress?.state === "done" || progress?.state === "halted";
     const hung = provedHung || (!advanced && previous?.hung === true && !terminal && progress?.state !== "blocked");
@@ -204,7 +204,7 @@ export class Supervision {
       usage,
       hung: provedHung,
       heldHung: observation.hung === true,
-      coverageComplete: !incomplete && evidence.evidenceError === undefined,
+      coverageComplete: complete,
       lastReportAt,
       lastEvidenceAt: evidence.lastEvidenceAt,
       ...uncertainty,

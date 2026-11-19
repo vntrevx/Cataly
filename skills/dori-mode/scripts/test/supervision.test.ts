@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checkpoints } from "../src/checkpoints.ts";
@@ -25,6 +25,8 @@ const lane: Lane = {
 const fixture = (options: SupervisionOptions = {}) => {
   const state = withState();
   const clock = fakeClock(start);
+  const wall = Date.now();
+  const filesystemNow = spyOn(Date, "now").mockImplementation(() => wall + clock.at - start);
   const calls: string[][] = [];
   const alerts: string[] = [];
   let usage = '{"tokens":null,"costUsd":null}';
@@ -44,6 +46,10 @@ const fixture = (options: SupervisionOptions = {}) => {
   };
   return {
     ...state,
+    done: () => {
+      filesystemNow.mockRestore();
+      state.done();
+    },
     clock,
     calls,
     alerts,
@@ -180,9 +186,10 @@ describe("supervision", () => {
       writeFileSync(path, "first");
       const activeLane = { ...lane, cwd: f.dir, activityPaths: [path] };
       await f.supervisor.sweep(activeLane, "Running 21m");
-      f.clock.at += 20 * 60_000;
       utimesSync(path, new Date(f.clock.at), new Date(f.clock.at));
       writeFileSync(path, "first");
+      // Both clocks advance after the metadata-only write, so its mark is settled at the quiet verdict.
+      f.clock.at += 20 * 60_000;
       f.setDirty(" M source.ts\0?? node_modules/\0");
       expect((await f.supervisor.sweep(activeLane, "Running 41m")).state).toBe("stalled");
       f.clock.at += 60_000;

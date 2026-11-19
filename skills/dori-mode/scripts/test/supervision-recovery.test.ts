@@ -121,12 +121,12 @@ test("fresh evidence resumes a confirmed stall even while usage remains unknown"
       defaults: { tokens: 1 },
     },
   );
-  await supervisor.sweep(f.lane, "Working 21m");
+  await f.settle(() => supervisor.sweep(f.lane, "Working 21m"));
   f.clock.at += 20 * 60_000;
-  expect((await supervisor.sweep(f.lane, "Working 41m")).state).toBe("stalled");
+  expect((await f.settle(() => supervisor.sweep(f.lane, "Working 41m"))).state).toBe("stalled");
   fs.writeFileSync(source, "real new evidence");
   f.clock.at += 60_000;
-  const changed = await supervisor.sweep(f.lane, "Working 42m");
+  const changed = await f.settle(() => supervisor.sweep(f.lane, "Working 42m"));
   expect(changed.state).toBe("running");
   expect(changed.lastEvidenceAt).toBe(new Date(f.clock.at).toISOString());
   expect(f.observation().alerts).toContain("tokens ceiling cannot be checked: usage unavailable");

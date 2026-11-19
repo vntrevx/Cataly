@@ -148,6 +148,32 @@ export const fileEvidence = (path: string, cwd: string): EvidenceRef => {
   }
 };
 
+const RACY = "racy:";
+// Filesystem ctime can be coarse: a same-size rewrite may share the preceding read's stat key. A key stays racy until
+// one full unchanged second has elapsed after its ctime; only a settled key may stand for the bytes read under it.
+const statKey = (stat: BigIntStats, observedAt: number): string => {
+  const settled = Math.floor(observedAt / 1_000) > Number(stat.ctimeNs / 1_000_000_000n) + 1;
+  return `${settled ? "" : RACY}${stat.mode}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+};
+
+/** A racy mark's bytes were read too close to its ctime: an equal stat alone cannot show they are still the same. */
+export const racyMark = (mark: PathMark): boolean => mark[0].startsWith(RACY);
+
+/**
+ * Whether one lstat still shows `path` as its settled mark was taken: the same stat key, or still absent. A racy mark
+ * never holds, and a failed lstat is unknown, not unchanged. Its bytes are not read again.
+ */
+export const markHolds = (path: string, mark: PathMark, observedAt = Date.now()): boolean => {
+  if (racyMark(mark)) return false;
+  try {
+    const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    return (stat === undefined ? "missing" : statKey(stat, observedAt)) === mark[0];
+  } catch (error) {
+    const code = errno(error);
+    return (code === "ENOENT" || code === "ENOTDIR") && mark[0] === "missing";
+  }
+};
+
 // Whether lstat positively shows the path changed since a read began: other metadata, or confirmed gone. A failing
 // lstat (EACCES, EIO) confirms nothing, so the read's own error stays a real failure.
 const changedSince = (path: string, stat: BigIntStats): boolean => {
@@ -177,11 +203,9 @@ export const pathMark = (path: string, previous?: PathMark, observedAt = Date.no
       return previous?.[2] ? ["missing", null, previous[2]] : ["missing", null];
     throw error;
   }
-  // Filesystem ctime can be coarse: a same-size rewrite may share the preceding read's stat key.
-  // Re-read until one full unchanged second has elapsed, then retain a reusable mark.
-  const settled = Math.floor(observedAt / 1_000) > Number(stat.ctimeNs / 1_000_000_000n) + 1;
-  const key = `${settled ? "" : "racy:"}${stat.mode}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-  if (settled && previous?.[0] === key) return previous;
+  // Re-read a racy key until one full unchanged second has elapsed, then retain a reusable mark.
+  const key = statKey(stat, observedAt);
+  if (!key.startsWith(RACY) && previous?.[0] === key) return previous;
   try {
     if (stat.isFile()) {
       const evidence = fileEvidence(path, "/");

@@ -3,7 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Checkpoints } from "./checkpoints.ts";
-import { type FileCoverage, observeFiles } from "./evidence-window.ts";
+import { confirmMarks, type FileCoverage, observeFiles } from "./evidence-window.ts";
 import { evidenceClock, novelEvidence, type PathMark } from "./evidence.ts";
 import type { Lane } from "./registry.ts";
 import type { Activity, Reports } from "./reports.ts";
@@ -117,6 +117,11 @@ export type LaneEvidence = {
   /** The selected-evidence clock: when a report or checkpoint last carried a fingerprint not seen before. */
   readonly lastEvidenceAt: string | null;
   readonly evidenceError?: string;
+  /**
+   * Called only for a new hung verdict: re-stats every known candidate, including this sweep (confirmMarks). False is
+   * unknown, never evidence, and leaves the marks and windows as they are.
+   */
+  readonly confirmQuiet: () => boolean;
 };
 
 /** Before the first completed sweep, only the prepared candidate schedule exists. */
@@ -177,5 +182,6 @@ export const laneEvidence = async (
     lastReportAt: progress?.lastReport?.at ?? null,
     lastEvidenceAt: selected.lastEvidenceAt,
     ...(evidenceError === undefined ? {} : { evidenceError }),
+    confirmQuiet: () => confirmMarks(files).quiet,
   };
 };

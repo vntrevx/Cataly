@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Checkpoints } from "../src/checkpoints.ts";
@@ -12,10 +12,23 @@ import { depsFor, fakeClock, newWorld, type TestState, withState } from "./fakes
 
 let state: TestState;
 const start = Date.parse("2026-01-01T00:00:00Z");
+let restoreClock: (() => void) | undefined;
+const observedClock = () => {
+  const clock = fakeClock(start);
+  const wall = Date.now();
+  // A simulated supervision minute is also a filesystem-observation minute; no real-time sleep is needed.
+  const now = spyOn(Date, "now").mockImplementation(() => wall + clock.at - start);
+  restoreClock = () => now.mockRestore();
+  return clock;
+};
 beforeEach(() => {
   state = withState();
 });
-afterEach(() => state.done());
+afterEach(() => {
+  restoreClock?.();
+  restoreClock = undefined;
+  state.done();
+});
 const lane = (): Lane => ({
   key: "review-lane",
   title: "evidence review",
@@ -37,7 +50,7 @@ for (const selectedBy of ["report", "checkpoint"] as const) {
     expect(Bun.spawnSync(["git", "init", "--quiet", repo]).exitCode).toBe(0);
     const source = join(repo, "source.txt");
     writeFileSync(source, "A");
-    const clock = fakeClock(start);
+    const clock = observedClock();
     const reports = new Reports(state.dir);
     const active = { ...lane(), cwd: repo };
     const supervision = new Supervision({ stateDir: state.dir, clock, run: git });
@@ -68,7 +81,7 @@ test("deletion and recreation change the clock, but committing unchanged bytes d
   expect(Bun.spawnSync(["git", "init", "--quiet", repo]).exitCode).toBe(0);
   const source = join(repo, "source.txt");
   writeFileSync(source, "A");
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const supervisor = new Supervision({ stateDir: state.dir, clock, run: git });
   const active = { ...lane(), cwd: repo };
   await supervisor.sweep(active, "Working 21m");
@@ -105,7 +118,7 @@ test("deletion and recreation change the clock, but committing unchanged bytes d
 test("a real non-repository cwd still observes activity paths and reaches the hung threshold", async () => {
   const source = join(state.dir, "result.txt");
   writeFileSync(source, "actual result");
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const supervisor = new Supervision({ stateDir: state.dir, clock, run: git }, { activityPaths: [source] });
   expect((await supervisor.sweep(lane(), "Working 21m")).state).toBe("running");
   clock.at += 20 * 60_000;
@@ -168,7 +181,7 @@ test("a package cwd resolves Git paths from the root and ignores sibling package
   const outside = join(sibling, "outside.txt");
   writeFileSync(source, "A");
   writeFileSync(outside, "other");
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const supervisor = new Supervision({ stateDir: state.dir, clock, run: git });
   const active = { ...lane(), cwd };
   const first = await supervisor.sweep(active, "Working 21m");
@@ -193,7 +206,7 @@ test("a directory replaced by a file retires the old child as absent, not perman
   mkdirSync(directory);
   const child = join(directory, "result.txt");
   writeFileSync(child, "A");
-  const clock = fakeClock(start);
+  const clock = observedClock();
   const supervisor = new Supervision({ stateDir: state.dir, clock, run: git });
   const active = { ...lane(), cwd: repo };
   await supervisor.sweep(active, "Working 21m");
