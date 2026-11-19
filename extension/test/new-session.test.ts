@@ -193,7 +193,7 @@ test("a new Dori session does not reapply its original session-bound bootstrap",
   expect(readMonitorSet(saved, fresh.id, true)).toMatchObject({ sessionId: fresh.id, monitors: [spec], intake });
   expect(fresh.entries).toEqual([
     roleEntry("dori"),
-    { type: "custom", customType: MONITOR, data: { op: "start", ...spec } },
+    { type: "custom", customType: MONITOR, data: { op: "start", ...spec, id: expect.any(String) } },
     { type: "custom", customType: "omp-dori:intake", data: intake },
   ]);
   await until(() => !alive(oldPid));

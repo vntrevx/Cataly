@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { procCmdline } from "../src/update/proc.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type PaneState, writePaneState } from "../skills/dori-mode/scripts/src/lane-state.ts";
@@ -30,6 +30,12 @@ test
   ])("native stop observes shell convergence without crossing live boundaries: %s", async (mode) => {
   const root = mkdtempSync(join(tmpdir(), "dori-native-stop-"));
   const config = { ...deploymentConfig(root), omp: join(root, "omp"), stopTimeoutMs: 200 };
+  mkdirSync(join(config.stateDir, "monitors"), { recursive: true });
+  writeFileSync(
+    join(config.stateDir, "monitors", `${encodeURIComponent(config.sessionId)}.json`),
+    JSON.stringify({ version: 1, sessionId: config.sessionId, monitors: [] }),
+    { mode: 0o600 },
+  );
   const prompt = spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
     cwd: root,
     detached: true,

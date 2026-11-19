@@ -79,11 +79,14 @@ export type MonitorSpec = {
   readonly argv: readonly string[];
   readonly filter: string;
   readonly cwd: string;
+  readonly mode?: "once" | "daemon";
+  readonly restart?: { readonly max: number; readonly backoffSec: number };
+  readonly silentAfterMin?: number;
 };
 export type MonitorProcessIdentity = ProcessIdentity & { readonly name: string; readonly argv: readonly string[] };
 export type IntakeSpec = { readonly path: string; readonly monitor: string; readonly maxAgeMs: number };
 export type MonitorSet = {
-  readonly version: 1;
+  readonly version: 1 | 3;
   readonly sessionId: string;
   readonly monitors: readonly MonitorSpec[];
   readonly intake: IntakeSpec;

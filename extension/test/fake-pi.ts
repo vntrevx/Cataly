@@ -63,6 +63,7 @@ export const fakePi = (options: FakeOptions): FakePi => {
         getSessionId: () => fake.session.id,
         getSessionFile: () => fake.session.file,
         getBranch: () => [...fake.session.entries],
+        ensureOnDisk: async () => {},
       },
       ui: { notify: (message: string) => void fake.notes.push(message) },
     }),
@@ -93,7 +94,13 @@ export const fakePi = (options: FakeOptions): FakePi => {
       await command.handler(args, fake.ctx());
     },
     api: {
-      zod: { object: () => schema, string: () => schema, array: () => schema, enum: () => schema },
+      zod: {
+        object: () => schema,
+        string: () => schema,
+        number: () => schema,
+        array: () => schema,
+        enum: () => schema,
+      },
       setLabel: () => {},
       registerFlag: (name, flag) => {
         if (flag.default !== undefined && !flags.has(name)) flags.set(name, flag.default);

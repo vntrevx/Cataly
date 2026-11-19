@@ -1,6 +1,7 @@
 import { closeSync, mkdtempSync, openSync, rmdirSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MonitorDelivery } from "./monitor.ts";
 
 /** Raw bytes before LF. A larger line is preserved on disk, never filtered as a fragment. */
 const LINE_MAX_BYTES = 64 * 1024;
@@ -49,6 +50,7 @@ export async function readMonitorOutput(
   line: (text: string) => unknown,
   notice: (text: string) => unknown,
   stopped: () => boolean,
+  activity?: () => void,
 ): Promise<void> {
   const buffer = Buffer.alloc(LINE_MAX_BYTES);
   const initialDecoder = new TextDecoder();
@@ -59,6 +61,7 @@ export async function readMonitorOutput(
   try {
     for await (const chunk of stream) {
       if (stopped()) return;
+      if (chunk.byteLength) activity?.();
       let start = 0;
       while (start < chunk.byteLength) {
         if (stopped()) return;
@@ -107,5 +110,116 @@ export async function readMonitorOutput(
     throw new Error(`${String(error)}${saved}`);
   } finally {
     spill?.close();
+  }
+}
+
+type MessageSource = {
+  readonly name: string;
+  readonly session: string;
+  readonly signal: AbortSignal;
+  readonly proc: { readonly pid: number };
+  stopped: boolean;
+};
+
+/** Keep rendered messages bounded, serialized, and admitted only in their originating generation. */
+export class MonitorMessages {
+  #pending: Array<{ readonly entry: MessageSource; readonly text: string }> = [];
+  #timer: Timer | undefined;
+  #pendingBytes = 0;
+  #generation = new AbortController();
+  #flight: Promise<void> | undefined;
+  constructor(
+    readonly deliver: (content: string, delivery: MonitorDelivery) => unknown,
+    readonly currentSession: () => string | undefined,
+    readonly stopEntry: (entry: MessageSource) => void,
+    readonly batchMs: number,
+  ) {}
+  get signal(): AbortSignal {
+    return this.#generation.signal;
+  }
+  current(entry: MessageSource): boolean {
+    return !entry.signal.aborted && entry.signal === this.signal && entry.session === this.currentSession();
+  }
+  clear(): void {
+    this.#generation.abort();
+    this.#generation = new AbortController();
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#pending = [];
+    this.#pendingBytes = 0;
+  }
+  async queue(entry: MessageSource, text: string): Promise<void> {
+    if (!this.current(entry)) return;
+    let bytes = Buffer.byteLength(text);
+    if (bytes > LINE_MAX_BYTES) {
+      const output = new MonitorOutputFile();
+      try {
+        output.write(Buffer.from(text));
+      } finally {
+        output.close();
+      }
+      text = `[monitor] message saved for name=${JSON.stringify(entry.name.slice(0, 256))}${entry.name.length > 256 ? "..." : ""} pid=${entry.proc.pid}: ${bytes} bytes; file=${JSON.stringify(output.path)}`;
+      bytes = Buffer.byteLength(text);
+    }
+    while (
+      this.#pending.length >= 100 ||
+      this.#pendingBytes + bytes + (this.#pending.length ? 1 : 0) > LINE_MAX_BYTES
+    ) {
+      await this.flush();
+      if (!this.current(entry)) return;
+    }
+    this.#pendingBytes += bytes + (this.#pending.length ? 1 : 0);
+    this.#pending.push({ entry, text });
+    if (this.#pending.length >= 100 || this.#pendingBytes >= LINE_MAX_BYTES) await this.flush();
+    else
+      this.#timer ??= setTimeout(() => {
+        void this.flush().catch((error: unknown) => console.error("monitor flush failed", error));
+      }, this.batchMs);
+  }
+
+  async flush(): Promise<void> {
+    const signal = this.#generation.signal;
+    while (this.#flight) {
+      await this.#flight;
+      if (signal.aborted) return;
+    }
+    if (signal.aborted) return;
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    const lines = this.#pending.filter(({ entry }) => this.current(entry));
+    this.#pending = [];
+    this.#pendingBytes = 0;
+    if (lines.length === 0) return;
+    const first = lines[0]!.entry;
+    const delivery: MonitorDelivery = {
+      session: first.session,
+      signal: first.signal,
+      isCurrent: () => this.current(first),
+    };
+    const done = (async () => {
+      try {
+        await this.deliver(lines.map(({ text }) => text).join("\n"), delivery);
+      } catch (error) {
+        if (delivery.signal.aborted && error === delivery.signal.reason) return;
+        if (!delivery.isCurrent()) {
+          console.error("monitor delivery failed after session invalidation", error);
+          return;
+        }
+        const entries = [...new Set(lines.map(({ entry }) => entry))];
+        for (const entry of entries) this.stopEntry(entry);
+        const notice = `[monitor] delivery failed for name=${JSON.stringify(first.name.slice(0, 256))}; stopped ${entries.length} monitor(s); raw output may be incomplete: ${String(error).slice(0, 2048)}`;
+        try {
+          if (delivery.isCurrent()) await this.deliver(notice, delivery);
+        } catch (reportError) {
+          console.error(notice, reportError);
+        }
+      }
+    })();
+    this.#flight = done;
+    try {
+      await done;
+    } finally {
+      if (this.#flight === done) this.#flight = undefined;
+    }
   }
 }
