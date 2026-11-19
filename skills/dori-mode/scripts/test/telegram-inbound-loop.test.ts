@@ -1,14 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
-import {
-  fileTgInboundStore,
-  pollTelegramInbound,
-  type TgInbound,
-  telegramInboundLoop,
-} from "../src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../src/messenger/telegram-inbound-state.ts";
+import { pollTelegramInbound, type TgInbound, telegramInboundLoop } from "../src/messenger/telegram-inbound.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = 5250;
@@ -61,11 +56,11 @@ test("live-location edit refreshes carry no text and are dropped, not one line e
   }));
   // One getUpdates response can carry the whole burst, and so can one poll.
   const { http } = telegramFake([[realEdit, ...locEdits]]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-loc"));
+  const store = fileTgInboundStore(state.dir, 900);
   const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1); // the text edit survives
   expect(out[0]!.text).toBe("moved the pin");
-  expect(store.load()).toBe(207); // the location stream was consumed, not replayed
+  expect(store.load()?.offset).toBe(207); // the location stream was consumed, not replayed
 });
 
 test("--loop re-polls after a poll whose updates were all gate-dropped", async () => {
@@ -75,13 +70,13 @@ test("--loop re-polls after a poll whose updates were all gate-dropped", async (
     [{ update_id: 300, message: msg(999, -1003801002434, "supergroup", "stranger", 3, true) }],
     [],
   ]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-drop"));
+  const store = fileTgInboundStore(state.dir, 900);
   const emitted: TgInbound[] = [];
   const sleeps: number[] = [];
   const stop = new Error("STOP");
   await telegramInboundLoop(
     mk(http),
-    store,
+    async () => store,
     { ownerId: OWNER },
     1,
     (i) => emitted.push(i),

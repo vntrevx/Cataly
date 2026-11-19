@@ -11,7 +11,8 @@ import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
-import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { envInt, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "./messenger/telegram-inbound-state.ts";
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
@@ -98,7 +99,6 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
     realClock,
     process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"),
   );
-  const store = fileTgInboundStore(`${stateDir}/telegram-offset`);
   const num = (name: string): number => {
     try {
       return envInt(name, process.env[name]);
@@ -116,7 +116,23 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
   await telegramInboundLoop(
     tg,
-    store,
+    async () => {
+      let identity: { id?: unknown; is_bot?: unknown };
+      try {
+        identity = await tg.call("getMe", {});
+      } catch {
+        throw new MessengerError("Telegram inbound bot identity could not be verified; check token and API access", 0);
+      }
+      if (
+        !identity ||
+        identity.is_bot !== true ||
+        typeof identity.id !== "number" ||
+        !Number.isSafeInteger(identity.id) ||
+        identity.id <= 0
+      )
+        throw new MessengerError("Telegram getMe returned an invalid bot identity", 0);
+      return fileTgInboundStore(stateDir, identity.id);
+    },
     {
       ownerId,
       ...(groupChatId !== undefined ? { groupChatId } : {}),

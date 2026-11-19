@@ -4,12 +4,8 @@ import { join } from "node:path";
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import type { TgInbound } from "../src/messenger/telegram-inbound.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
-import {
-  envInt,
-  fileTgInboundStore,
-  pollTelegramInbound,
-  telegramInboundLoop,
-} from "../src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../src/messenger/telegram-inbound-state.ts";
+import { envInt, pollTelegramInbound, telegramInboundLoop } from "../src/messenger/telegram-inbound.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const OWNER = 5250;
@@ -45,12 +41,12 @@ const telegramFake = (batches: U[][]) => {
 
 const mk = (http: Http): Telegram => new Telegram(http, fakeClock(0), "T");
 
-test("the store creates its state dir on first save", async () => {
+test("the store creates its nested state dir", async () => {
   const { http } = telegramFake([[{ update_id: 80, message: msg(OWNER, OWNER, "private", "fresh install") }]]);
-  const store = fileTgInboundStore(join(state.dir, "nested", "deeper", "tg-off-8"));
+  const store = fileTgInboundStore(join(state.dir, "nested", "deeper"), 900);
   const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
-  expect(store.load()).toBe(81);
+  expect(store.load()?.offset).toBe(81);
 });
 
 test("edited messages arrive as their own edit kind with the edited text", async () => {
@@ -58,13 +54,13 @@ test("edited messages arrive as their own edit kind with the edited text", async
     [{ update_id: 90, edited_message: { ...msg(OWNER, OWNER, "private", "fixed typo"), edit_date: 1730 } }],
     [{ update_id: 91, message: msg(OWNER, OWNER, "private", "fresh after edit") }],
   ]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-9"));
+  const store = fileTgInboundStore(state.dir, 900);
   const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.kind).toBe("edit");
   expect(out[0]!.text).toBe("fixed typo");
   expect(out[0]!.messageId).toBe(1); // the message_id of the message being edited
-  expect(store.load()).toBe(91);
+  expect(store.load()?.offset).toBe(91);
   expect(bodies[0]!["allowed_updates"]).toEqual(["message", "edited_message"]);
   const { inbound: second } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(second[0]!.kind).toBe("message");
@@ -84,13 +80,13 @@ test("a voice note identifies its media so transcribe can fetch it", async () =>
       },
     ],
   ]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-10"));
+  const store = fileTgInboundStore(state.dir, 900);
   const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.kind).toBe("message");
   expect(out[0]!.text).toBeUndefined();
   expect(out[0]!.media).toEqual({ kind: "voice", fileId: "FID_VOICE", messageId: 55 });
-  expect(store.load()).toBe(101);
+  expect(store.load()?.offset).toBe(101);
 });
 
 test("a photo with a caption carries both the text and the largest photo", async () => {
@@ -108,27 +104,27 @@ test("a photo with a caption carries both the text and the largest photo", async
       },
     ],
   ]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-11"));
+  const store = fileTgInboundStore(state.dir, 900);
   const { inbound: out } = await pollTelegramInbound(mk(http), store, { ownerId: OWNER });
   expect(out.length).toBe(1);
   expect(out[0]!.text).toBe("look at this");
   expect(out[0]!.media).toEqual({ kind: "photo", fileId: "LARGE", messageId: 56 });
 });
 
-test("an unparseable offset warns once across several polls and restarts from 0", async () => {
-  writeFileSync(join(state.dir, "telegram-offset"), "not-a-number");
+test("an unparseable bot cursor warns once across several polls and leaves no saved state", async () => {
+  const store = fileTgInboundStore(state.dir, 900);
+  writeFileSync(join(state.dir, "telegram-inbound", "900.json"), "not-a-number", { mode: 0o600 });
   const warns: string[] = [];
   const orig = console.log;
   console.log = (s?: unknown) => {
     warns.push(String(s));
   };
   try {
-    const store = fileTgInboundStore(join(state.dir, "telegram-offset"));
     // Three polls, no updates: nothing saves over the corrupt file, every poll loads it.
     const { http } = telegramFake([[], [], []]);
     const tg = mk(http);
     for (let i = 0; i < 3; i++) await pollTelegramInbound(tg, store, { ownerId: OWNER });
-    expect(store.load()).toBe(0);
+    expect(store.load()).toBeUndefined();
   } finally {
     console.log = orig;
   }
@@ -154,9 +150,15 @@ test("one-shot (no --loop) returns after a single bounded poll under continuous 
   const { http } = telegramFake(
     Array.from({ length: 20 }, (_, i) => [{ update_id: 100 + i, message: msg(OWNER, OWNER, "private", `msg ${i}`) }]),
   );
-  const store = fileTgInboundStore(join(state.dir, "tg-off-oneshot"));
+  const store = fileTgInboundStore(state.dir, 900);
   const out: TgInbound[] = [];
-  await telegramInboundLoop(mk(http), store, { ownerId: OWNER }, 0, (i) => out.push(i));
+  await telegramInboundLoop(
+    mk(http),
+    async () => store,
+    { ownerId: OWNER },
+    0,
+    (i) => out.push(i),
+  );
   // Returns, and drained exactly one poll's batch — not the whole stream.
   expect(out).toHaveLength(1);
   expect(out[0]!.updateId).toBe(100);
@@ -164,14 +166,14 @@ test("one-shot (no --loop) returns after a single bounded poll under continuous 
 
 test("--loop re-polls immediately after a productive poll and sleeps only when idle", async () => {
   const { http } = telegramFake([[{ update_id: 200, message: msg(OWNER, OWNER, "private", "burst") }], []]);
-  const store = fileTgInboundStore(join(state.dir, "tg-off-loop"));
+  const store = fileTgInboundStore(state.dir, 900);
   const out: TgInbound[] = [];
   const sleeps: number[] = [];
   const stop = new Error("STOP");
   // The first idle sleep throws to end the loop for the test.
   await telegramInboundLoop(
     mk(http),
-    store,
+    async () => store,
     { ownerId: OWNER },
     1,
     (i) => out.push(i),
