@@ -20,6 +20,17 @@ and [CI workflow](https://github.com/vntrevx/omp-dori/blob/main/.github/workflow
 Give actual commands/results and revisions, or links to those runs. Do not relabel carried-forward
 or combined partial counts as a full rerun.
 
+For each run, record the source/head and base SHAs, observed native OMP version/source SHA,
+ULW base SHA and overlay identity (`patchSha256` and `resultTree`), OS/architecture, exact
+command, and actual receipt link or sanitized output. Separate intended pins from identities actually observed; explain unknown
+or N/A when an identity was not observed or a component was not exercised. Describe the
+runtime/fixture setup and separately label provider/service calls as synthetic, loopback, or
+live; a genuine runtime fixture does not prove live-provider behavior. Name unverified
+surfaces. Reuse the receipts rather than creating another evidence ledger.
+After a relevant source, runtime, or environment change, rerun the affected checks or leave
+that surface unverified: an older receipt remains historical evidence, not proof for the new
+configuration.
+
 - Bug reproduction before and after the fix (or not a bug):
 - Relevant boundary and failure regressions:
 - Affected checks rerun after the last code change:
