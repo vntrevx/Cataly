@@ -182,3 +182,11 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+- Add read-only `dori doctor` configuration, adoption and monitor diagnostics, canonical `monitor-presets`, and an advisory boot summary; include missing supervision and loop-error events in the documented filters.
+
+- Unreleased: Distinguish source-lock declarations, configured models, trusted native model readbacks, historical opaque-launch receipts and credential presence in read-only doctor diagnostics.
+
+- Unreleased: Report current managed source and native runtime identities separately from historical updater deployment receipts.
+
+- Unreleased: Diagnose the selected native executable, source revision and public CLI/API capabilities without falling back to another binary or adding an extension peer to the test gate.

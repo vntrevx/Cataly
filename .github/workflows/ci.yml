@@ -56,6 +56,7 @@ jobs:
           bun scripts/source-dependencies.ts assert-native "$GITHUB_WORKSPACE" "$smoke/home"
           version=$(HOME="$smoke/home" "$native/bin/omp" --version)
           test "$version" = '18.20.0'
+          bun scripts/check-native-doctor.ts "$smoke/home"
           for check in code-mode-host-check code-mode-task-host-check; do
             env -i HOME="$smoke/home" LANG=C.UTF-8 \
               PATH="$native/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \

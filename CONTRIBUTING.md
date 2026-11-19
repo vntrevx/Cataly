@@ -96,7 +96,6 @@ Prepare the real fixtures before the full local gate:
 ```sh
 bun install --frozen-lockfile
 (cd skills/dori-mode/scripts && bun install --frozen-lockfile)
-(cd extension && bun install --frozen-lockfile)
 (cd test/fixtures/omp-native-host && bun install --frozen-lockfile)
 export DORI_TEST_OMP_ROOT="$PWD/test/fixtures/omp-native-host/node_modules/@oh-my-pi/pi-coding-agent"
 fixture_home="$(mktemp -d)"
@@ -115,11 +114,15 @@ Fixture preparation needs network access unless the exact packages are already
 available. The compatibility checkout is test-only, outside the repository, and
 does not select a production dependency or change model/auth settings.
 
+Match CI: do not install an additional native peer in `extension`. Extension public types resolve through the pinned-host fixture and the existing TypeScript path aliases; an extra peer can hide a CI-only missing-type failure.
+
+`check:fixtures` prints the resolved interpreter and native package entry, the expected source revision, and explicit public CLI/API probe results. The package fixture does not attest its upstream source revision, so its observed revision remains `unknown`. A missing public export or CLI flag fails with the exact selected path and reason; no alternate binary is selected. These probes do not establish live messenger compatibility. CI also runs `scripts/check-native-doctor.ts` after preparing the bound native source: it exercises both managed entry points through the real doctor CLI, checks the observed revision and unchanged config/state, and rejects an altered consumer wrapper without using a cached executable as a fallback.
+
 The full chain is:
 
 | Command | What it checks |
 | --- | --- |
-| `check:fixtures` | Real ULW, compatibility entry, and exact native-host prerequisites |
+| `check:fixtures` | Real ULW, compatibility entry, exact native host, and public CLI/API prerequisites |
 | `check` | Biome lint and formatting |
 | `typecheck` | Harness, skill, and extension TypeScript projects |
 | `knip` | Unused files, exports, and dependencies |

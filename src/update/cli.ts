@@ -14,7 +14,7 @@ const USAGE = `dori upstream <check|stage|watch|status|snapshot|restore|recover|
   check       detect a changed Dori ref once; resume ready promotion before detection
   stage       explicitly stage the current pinned ref, including the effective baseline (deduplicated)
   watch       keep checking; resume pending exact-head CI, stop on held/interrupted work
-  status      print private local JSON candidate, publication and deployment state
+  status      print private candidate/publication history and current managed runtime identity
   snapshot    --job ID --output NEW_DIR [--app-state DIR]: freeze code, control evidence and explicit candidate app data
   restore     --input SNAPSHOT_DIR --output NEW_DIR: restore an isolated recovery copy, never readiness
   recover     --ack-stopped ID|none: acknowledge every old child stopped; clear ambiguous model ownership
@@ -59,8 +59,8 @@ export async function runUpdate(argv: readonly string[]): Promise<number> {
     process.on("SIGTERM", interrupt);
     process.on("SIGINT", interrupt);
     if (command === "status") {
-      console.log(JSON.stringify(updater.status(), null, 2));
-      return 0;
+      console.log(JSON.stringify(await updater.status(), null, 2));
+      return stop.signal.aborted ? 130 : 0;
     }
     if (command === "snapshot") {
       const snapshot = snapshotUpdate(

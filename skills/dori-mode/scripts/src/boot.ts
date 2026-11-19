@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { configPath } from "./config.ts";
 import type { Decisions } from "./decisions.ts";
 import { decisionBootLines } from "./decisions-render.ts";
+import { doctorLocal } from "./doctor.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { shellQuote } from "./launch-footer.ts";
 import type { SessionInfo } from "../../../../src/runtime/types.ts";
@@ -191,6 +192,9 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
     failed = true;
     lines.push(`MONITORS unreadable ${shellQuote(path)}`);
   }
+  lines.push(
+    `DOCTOR warn=${doctorLocal(deps.config, lanes, manifests).filter((finding) => finding.severity === "WARN").length} ignored=${deps.config.doctor?.ignore?.join(",") || "none"} (local advisory checks; run dori doctor for details)`,
+  );
   const cleanup = monitorCleanup(lanes, manifests);
   // Live watches first, then delivery-paused ones (still running, so still stopped); an expired watch has ended on its
   // own and gets no stop call.

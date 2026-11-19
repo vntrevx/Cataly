@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkTestFixtures } from "../scripts/check-test-fixtures.ts";
@@ -27,7 +27,7 @@ function fixture() {
   };
 }
 
-test("the prerequisite check accepts files and the actual exact native host without executing fixture code", async () => {
+test("the prerequisite check accepts files and the actual exact native host without executing ULW fixture code", async () => {
   const f = fixture();
   const before = readFileSync(f.ulw, "utf8");
   await checkTestFixtures(f.root, f.env);
@@ -83,6 +83,52 @@ test("same-version metadata outside the imported native host is still refused", 
   await expect(checkTestFixtures(f.root, { ...f.env, DORI_TEST_OMP_ROOT: host })).rejects.toThrow(
     "outside DORI_TEST_OMP_ROOT",
   );
+});
+
+test.each(["direct", "alias"])(
+  "native executable evidence identifies the %s host and actual public features",
+  async (kind) => {
+    const f = fixture();
+    const host = kind === "alias" ? join(f.root, "node_modules/@oh-my-pi/pi-coding-agent") : nativeHost;
+    if (kind === "alias") {
+      mkdirSync(dirname(host), { recursive: true });
+      symlinkSync(nativeHost, host, "dir");
+    }
+    expect(await checkTestFixtures(f.root, { ...f.env, DORI_TEST_OMP_ROOT: host })).toMatchObject({
+      native: {
+        root: realpathSync(nativeHost),
+        entry: join(host, "dist/cli.js"),
+        nativeVersion: "18.20.0",
+        publicAPI: expect.arrayContaining(["importExtensionModule", "ExtensionRunner", "Settings.isolated"]),
+      },
+      cli: {
+        realpath: realpathSync(process.execPath),
+        entry: join(host, "dist/cli.js"),
+        version: "18.20.0",
+      },
+    });
+  },
+);
+
+test("a missing public native API fails with its exact resolved module and feature name", () => {
+  const f = fixture();
+  const code = String.raw`
+    Bun.plugin({ name: "missing-native-api", setup(build) {
+      build.onLoad({ filter: /\/extensibility\/extensions\/loader\.ts$/ }, () => ({
+        loader: "object", exports: { ExtensionRuntime: class {}, loadExtensionFromFactory() {} }
+      }));
+    }});
+    const { checkTestFixtures } = await import(${JSON.stringify(join(source, "scripts/check-test-fixtures.ts"))});
+    try { await checkTestFixtures(process.argv[1]); }
+    catch (error) { console.error(error.message); process.exitCode = 1; }
+  `;
+  const child = Bun.spawnSync([process.execPath, "-e", code, f.root], {
+    env: { ...process.env, ...f.env },
+    stdin: "ignore",
+  });
+  expect(child.exitCode).toBe(1);
+  expect(child.stderr.toString()).toContain("missing public native API importExtensionModule");
+  expect(child.stderr.toString()).toContain(realpathSync(join(nativeHost, "src/extensibility/extensions/loader.ts")));
 });
 
 test("the real prerequisite CLI exits nonzero without a successful marker for missing prerequisites", () => {

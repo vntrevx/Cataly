@@ -159,13 +159,18 @@ export function assertSourceBundle(checkout: string, bundle: BoundBundle, home: 
     return proc.stdout.toString().trim();
   };
   const head = git(["rev-parse", "HEAD"]);
-  // write-tree locks its index even with GIT_OPTIONAL_LOCKS=0. Keep that write private to this admission.
+  // Keep both index locking and newly computed tree objects private to this admission.
   const temporary = mkdtempSync(join(tmpdir(), "dori-source-index-"));
   let tree: string;
   try {
     const index = join(temporary, "index");
     copyFileSync(join(checkout, ".git/index"), index);
-    tree = git(["write-tree"], undefined, { ...bundleEnv(home), GIT_INDEX_FILE: index });
+    tree = git(["write-tree"], undefined, {
+      ...bundleEnv(home),
+      GIT_INDEX_FILE: index,
+      GIT_OBJECT_DIRECTORY: temporary,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: JSON.stringify(join(checkout, ".git/objects")),
+    });
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

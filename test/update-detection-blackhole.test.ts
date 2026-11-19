@@ -75,11 +75,11 @@ const { loadUpdateConfig } = await import(${JSON.stringify(new URL("../src/updat
 const updater = new DoriUpdater(loadUpdateConfig(${JSON.stringify(config)}), () => {});
 const firstCode = await runUpdate(["check", "--config", ${JSON.stringify(config)}]);
 const receipt = JSON.parse(readFileSync(${JSON.stringify(join(f.config.root, "detector", "last-detection.json"))}, "utf8"));
-const before = updater.status().state;
+const before = (await updater.status()).state;
 writeFileSync(${JSON.stringify(next)}, "restore the actual configured local remote for the next check");
 const nextCode = await runUpdate(["check", "--config", ${JSON.stringify(config)}]);
 writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({
-  firstCode, receipt, before, nextCode, state: updater.status().state,
+  firstCode, receipt, before, nextCode, state: (await updater.status()).state,
 }));
 `,
   );

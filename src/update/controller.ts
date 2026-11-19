@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { canonical, UpdateInterrupted } from "./config.ts";
+import { inspectActiveDeployment } from "./deployment-active.ts";
 import { buildCandidate } from "./pipeline.ts";
 import { detectHead } from "./prepare.ts";
 import { pendingPromotion, promoteJob, type PromotionOutcome } from "./promotion.ts";
@@ -34,7 +35,7 @@ export class DoriUpdater {
   }
 
   /** Private local state and full reports. A stale or malformed candidate is reported as such, never promoted. */
-  status() {
+  async status() {
     const ctx = this.context;
     const state = readState(ctx);
     let lock: unknown = null;
@@ -71,6 +72,9 @@ export class DoriUpdater {
       state,
       lock,
       jobs,
+      running: ctx.config.promotion?.deployment
+        ? await inspectActiveDeployment(ctx.config.promotion.deployment, ctx.signal)
+        : { status: "unknown", reason: "managed deployment is not configured" },
     };
   }
 

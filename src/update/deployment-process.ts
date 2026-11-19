@@ -110,10 +110,22 @@ export async function command(
   env: Record<string, string>,
   timeoutMs: number,
   signal?: AbortSignal,
+  input?: string,
 ): Promise<string> {
   if (signal?.aborted) throw new DeploymentHeld("deployment interrupted before command");
   if (!argv[0]) throw new Error("deployment command is empty");
-  const proc = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const options = { cwd, env, detached: true };
+  const proc =
+    input === undefined
+      ? spawn(argv[0], argv.slice(1), { ...options, stdio: ["ignore", "pipe", "ignore"] })
+      : spawn(argv[0], argv.slice(1), { ...options, stdio: ["pipe", "pipe", "ignore"] });
+  let inputFailed = false;
+  if (proc.stdin) {
+    proc.stdin.on("error", () => {
+      inputFailed = true;
+    });
+    proc.stdin.end(input);
+  }
   let interrupted = false;
   const chunks: Buffer[] = [];
   proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -137,7 +149,7 @@ export async function command(
       if (signal?.aborted) throw new DeploymentHeld("deployment command interrupted");
       throw new DeploymentRetryable("deployment command timed out");
     }
-    if (code !== 0)
+    if (code !== 0 || inputFailed)
       throw new DeploymentRetryable("deployment command failed; operator data and credentials were not captured");
     return Buffer.concat(chunks).toString().trim();
   } finally {
