@@ -29,6 +29,7 @@ const send: Command = async (cli) => {
   if (platform === "discord") return await sendDiscord(cli);
   // A reply that silently became a plain post would land out of context.
   if (values["reply"] !== undefined) die("--reply is supported for discord only");
+  if (values["render-tables"] === true) die("--render-tables is supported for discord only");
   const to = need("to");
   const text = await messageText(cli);
   const thread = opt("thread");

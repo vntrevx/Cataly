@@ -6,6 +6,7 @@ import { type Command, die, messageText } from "./cli-context.ts";
 import { type DcChannel, Discord, isForumType } from "./messenger/discord.ts";
 import { DiscordChannels, purposeText } from "./messenger/discord-channels.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
+import { renderDiscordTables } from "./messenger/discord-markdown.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { DISCORD_LIMIT } from "./messenger/split.ts";
 import { TranscriptionError } from "./messenger/voice.ts";
@@ -66,7 +67,8 @@ export const sendDiscord: Command = async (cli) => {
   const { need, opt, values, config } = cli;
   const thread = opt("thread");
   const to = thread === undefined ? need("to") : undefined;
-  const text = await messageText(cli);
+  const rawText = await messageText(cli);
+  const text = values["render-tables"] === true ? renderDiscordTables(rawText, 64 * 1024) : rawText;
   // An --edit given empty ("$UNSET") or not a message id is refused before any request: it must never post anew.
   const edit = values["edit"] === undefined ? undefined : discordInboundEnv("--edit", opt("edit"));
   // Likewise a --reply that is not a message id never becomes a plain post.

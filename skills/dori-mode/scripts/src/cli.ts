@@ -65,7 +65,7 @@ const USAGE = `dori <command> [options]
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
   send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH|-) [--thread ID] [--edit ID] [--reply ID]
                                        Discord accepts channel names with DORI_DISCORD_GUILD_ID; --thread needs no --to and also targets edits
-                                       Discord splits text past 2000 characters (SENT lists every id); --reply is Discord only
+                                       Discord splits text past 2000 characters (SENT lists every id); --reply and opt-in --render-tables (bounded pipe tables) are Discord only
   thread discord create --to CHANNEL --title T [--text T] [--tag NAME]... [--message ID]
                                        --message opens the thread on that message of a text channel
   thread discord set <thread> [--title T] [--tag NAME]... [--archive|--unarchive]
@@ -134,6 +134,7 @@ const flags = parseArgs({
     edit: { type: "string" },
     "text-file": { type: "string" },
     reply: { type: "string" },
+    "render-tables": { type: "boolean" },
     tag: { type: "string", multiple: true },
     archive: { type: "boolean" },
     unarchive: { type: "boolean" },

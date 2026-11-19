@@ -136,6 +136,6 @@ Real work runs in its own session, called a lane: a herdr tab, or a labelled ter
 | `dori guard` | host load, memory, disk and pane-count alerts |
 | `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |
-| `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord (body from `--text` or `--text-file`; Discord splits long text and takes `--reply`); stay shown online; voice note to text |
+| `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord (body from `--text` or `--text-file`; Discord splits long text, takes `--reply`, and optionally aligns tables with `--render-tables`); stay shown online; voice note to text |
 | `dori inbound discord` | owner-only REST or opt-in Gateway intake across configured/discovered channels; per-channel cursors; separate presence session; `--context` adds the channel, thread and recorded purposes |
 | `dori channel discord set` / `clear` / `list` | the operator's purpose note per channel or thread, shown beside owner messages by `inbound discord --context` |

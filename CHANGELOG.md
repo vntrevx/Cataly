@@ -211,3 +211,7 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+## Unreleased addendum
+
+- Unreleased (source only): `dori send discord --render-tables` optionally aligns pipe tables in bounded code fences using Unicode display width. The default body, existing escapes/code, split-send replies and receipts remain intact; rendering over 80 columns or a 64 KiB message budget keeps the original text, and oversized edits still fail before any request. The adapted renderer retains its full upstream MIT notice in `NOTICE`.

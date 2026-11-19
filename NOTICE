@@ -52,3 +52,35 @@ Private policy, provider settings, credentials, and QA workspace content
 are not part of these source payloads. Installation and runtime activation
 are separate actions: installing Cataly does not replace a running agent
 or enable another harness, receiver, or service.
+
+Adapted Discord table renderer
+------------------------------
+
+skills/dori-mode/scripts/src/messenger/discord-markdown.ts is adapted from
+omp-superagent (https://github.com/dbc-hbin/omp-superagent),
+src/discord-markdown.ts at db3d74e4f37191dfbb74f8259563d1399c22f3b7.
+Changes preserve source escapes and indentation, bound display width before
+padding, reject ambiguous row/fence syntax, and make rendering opt-in.
+Its MIT terms apply to that adapted component, not to the SUL material above.
+
+MIT License
+
+Copyright (c) 2026 dbc-hbin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
