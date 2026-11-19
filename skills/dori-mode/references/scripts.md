@@ -8,7 +8,7 @@ The CLI loads only the selected command graph, including its existing dependenci
 
 ```sh
 cd skills/dori-mode/scripts
-bun install          # dev dependencies only (types, tsc)
+bun install --frozen-lockfile # pinned runtime and development dependencies
 bun link             # puts `dori` on your PATH
 bun test             # behavior tests with fake herdr/hc/git/gh; nothing real is touched
 bunx tsc --noEmit    # typecheck
@@ -228,6 +228,39 @@ Prints `HOST_GUARD ALERT <reasons>` when load, free memory, free disk or the pan
 
 ### `dori can-launch`
 Prints `CAN_LAUNCH` and exits 0 when the host has room for another lane. Otherwise it prints `HOLD <reasons>` and exits 4. The reasons come from the guard's memory, disk and pane-count thresholds. CPU load alone never holds a launch, because it moves too fast to plan around.
+
+### `dori schedule` / `dori scheduler`
+
+Schedules are opt-in and live in the selected configuration's `<stateDir>/schedule.json`. Adding one never starts a runner or installs an OS service.
+
+```sh
+dori schedule add usage-board --cron "*/15 * * * *" --tz Asia/Seoul --deliver log -- bun usage-board.mjs
+dori schedule list
+dori scheduler
+dori schedule pause usage-board
+dori schedule resume usage-board
+dori schedule remove usage-board
+```
+
+`add NAME --cron EXPR --tz IANA [--cwd DIR] [--deliver wake|log|post:PLATFORM:TARGET] -- COMMAND ARG...` saves the exact argv, not a shell command, and the absolute working directory (default: the caller's directory). Croner 11 parses five-field expressions; seconds and time-dependent `?` substitution are refused. IANA timezone rules apply, with conventional day-of-month/day-of-week OR matching. Fixed-time jobs in a spring-forward gap run after the jump that day and run only once in a fall-back fold. Interval expressions skip the gap and include both repeated intervals. `next` is a stored UTC cursor, not a promise that a runner is alive.
+
+One `scheduler` owns each state directory. It checks every second by default; `--loop MIN` accepts a positive polling ceiling below one minute, with sleep shortened to the earliest unpaused occurrence and `--loop 0` does one due-work pass, waits for its claimed foreground commands and delivery, then exits. Every occurrence is durably claimed and its cursor advanced before spawning. An occurrence at least a minute late is counted as missed, never burst-replayed; a recovery tick advances at most 1000 missed occurrences per job. A job never overlaps its own unfinished run or delivery. Other jobs can run concurrently. Busy occurrences also increment `missed`.
+
+`list` prints the next occurrence, pause state, missed count, and last run's claimed time, start/finish, PID, exit/signal, delivery status and private output path. Recorded PIDs are explicitly unverified, not live-process proof. `pause` affects future runs, not a current command. `resume` starts from the next future occurrence without replaying the paused interval. `remove` refuses a running command or pending delivery and preserves its existing logs.
+
+A restart never re-executes a claimed occurrence. An unfinished claim becomes `interrupted`, pauses that job and requires inspection of its recorded PID/output and any orphan before `schedule resume NAME --ack-interrupted`. Recorded PIDs are never signalled during recovery. An interrupted completed delivery becomes `unknown` and is not posted again. These are conservative at-most-once attempts, not exactly-once execution or delivery. SIGINT/SIGTERM stops the runner's own current children, allowing five seconds before SIGKILL. Commands must stay in the foreground; detached descendants are not supervised, and delivery snapshots the log when the direct child exits.
+
+Output and delivery:
+
+- Raw stdout/stderr share a private `0600` run log under `schedule-runs/`; state updates use a private file, atomic rename and fsync. Logs are retained, including after removal, so the owner controls retention.
+- `wake` (default) emits one `SCHEDULE_WAKE` JSON line with the result. `wake-emitted` means stdout accepted it, not native monitor admission or owner acknowledgement.
+- `log` emits no routine wake or post.
+- `post:discord:CHANNEL_OR_THREAD_ID`, `post:telegram:CHAT_ID[/TOPIC_ID]`, and `post:slack:CHANNEL_ID[/THREAD_TS]` use the existing messenger clients and credentials, including protected `DORI_SLACK_TOKEN_FILE`. Discord thread IDs are channel targets, without a slash suffix. Other credentials are `DORI_DISCORD_TOKEN` and `DORI_TELEGRAM_TOKEN`. The existing message text safety guard still applies.
+- Wake delivery reads at most 64 KiB into the message; larger output sends the exit/byte count and complete private log path rather than silently truncating the raw file. Every message includes the log path. External posts have a conservative 2000 UTF-16-code-unit budget across all platforms: larger output becomes one summary with that path, not a message burst or provider-side truncation. Metadata that cannot fit is rejected before posting. The single post has a 30-second cancellation deadline. Posting never retries an uncertain request, including 429/5xx: the request may have landed, the run records `unknown`, and one `SCHEDULE_ERROR` warning is emitted. A new cron occurrence is separate work, not a retry.
+
+To attach the runner to an owning native session, explicitly start an ordinary persistent monitor with `argv: ["dori", "scheduler"]` and `filter: "^SCHEDULE_(WAKE|ERROR)"`. Bind its selected configuration and child-only credentials as for the other messenger monitors. Routine `log`/`post` results do not wake the owner; operational delivery failures do. No daemon-mode feature is required, and no monitor is installed automatically.
+
+`dori schedule adopt [NAME] --systemd UNIT [--system]` registers an existing `.timer` or `.service` for visibility only (`--user` by default; name defaults to the unit). `list` and `boot` use bounded `systemctl show` calls, including a timer's triggered service, to show its next trigger, last observed service result and active state. Never-started services have no invented exit code; missed occurrences remain `systemd-managed`, not a fabricated count. Missing/inaccessible units are explicit errors. Adoption, pause refusal and removal never start, stop, enable, disable or edit a unit. `boot` also reports cron state read-only; it neither claims work nor recovers interrupted jobs.
 
 ### Discord REST test endpoint
 With `DORI_DISCORD_API_BASE` unset or empty, Discord REST requests use `https://discord.com/api/v10`. For an isolated test server, set it to an HTTP URL on `127.0.0.1`, `localhost` or `[::1]`, optionally with a path prefix; trailing slashes are removed. Credentials, query strings and fragments are refused without echoing the configured value. The local server receives the normal Bot authorization header, so use a synthetic token for tests. This overrides REST only, not Gateway or attachment/CDN URLs.

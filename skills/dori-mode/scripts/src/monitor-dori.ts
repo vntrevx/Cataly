@@ -29,6 +29,8 @@ export const DORI_COMMANDS: Record<string, true> = {
   react: true,
   report: true,
   resume: true,
+  schedule: true,
+  scheduler: true,
   send: true,
   sync: true,
   tell: true,
@@ -81,6 +83,10 @@ export const DORI_VALUE_OPTIONS: Record<string, true> = {
   worklog: true,
   "ignore-author": true,
   self: true,
+  cron: true,
+  tz: true,
+  deliver: true,
+  systemd: true,
 };
 const MESSENGER_COMMANDS: Record<string, true> = {
   send: true,

@@ -212,6 +212,9 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
       `EXPIRED ${item.lanes.join(",")} match=${item.match.join(",")} ownerSession=${item.sessionId} metadata=${shellQuote(item.metadata)} expiresAt=${new Date(item.expiresAt ?? 0).toISOString()}; nothing to stop`,
     );
   }
+  const scheduled = await (await import("./schedule-view.ts")).scheduleBoot(deps.config.stateDir, deps.run, now);
+  lines.push(...scheduled.lines);
+  if (scheduled.failed) failed = true;
   // The network step runs last, after every local check, and gives up at a short deadline.
   const deadlineMs = deps.slackDeadlineMs ?? 10_000;
   let timer: ReturnType<typeof setTimeout> | undefined;

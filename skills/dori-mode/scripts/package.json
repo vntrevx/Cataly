@@ -13,6 +13,9 @@
   "engines": {
     "bun": ">=1.4.4"
   },
+  "dependencies": {
+    "croner": "11.0.1"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.4",
     "typescript": "^5.9.0"

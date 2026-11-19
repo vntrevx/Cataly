@@ -58,6 +58,10 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
+  schedule add NAME --cron EXPR --tz IANA [--deliver wake|log|post:platform:target] [--cwd DIR] -- argv...
+  schedule list | pause NAME | resume NAME [--ack-interrupted] | remove NAME
+  schedule adopt [NAME] --systemd UNIT [--system]   read-only external timer/service observation
+  scheduler [--loop MIN]               opt-in runner, every second by default; --loop 0 claims one tick and waits
   send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH|-) [--thread ID] [--edit ID] [--reply ID]
                                        Discord accepts channel names with DORI_DISCORD_GUILD_ID; --thread needs no --to and also targets edits
                                        Discord splits text past 2000 characters (SENT lists every id); --reply is Discord only
@@ -155,6 +159,12 @@ const flags = parseArgs({
     worklog: { type: "string" },
     "ignore-author": { type: "string", multiple: true },
     self: { type: "string" },
+    cron: { type: "string" },
+    tz: { type: "string" },
+    deliver: { type: "string" },
+    systemd: { type: "string" },
+    system: { type: "boolean" },
+    "ack-interrupted": { type: "boolean" },
   },
 });
 
@@ -201,6 +211,10 @@ switch (command) {
   case "decision":
     commands = (await import("./cli-decisions.ts")).decisionCommands;
     break;
+  case "schedule":
+  case "scheduler":
+    commands = (await import("./cli-schedule.ts")).scheduleCommands;
+    break;
   case "pr":
     commands = (await import("./cli-pr.ts")).prCommands;
     break;
@@ -220,9 +234,12 @@ try {
   const { journalErrors } = await import("./cli-journal.ts");
   const { decisionErrors } = await import("./cli-decisions.ts");
   const { prErrors } = await import("./cli-pr.ts");
+  const { scheduleErrors } = await import("./cli-schedule.ts");
   if (
     e instanceof LaunchError ||
-    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
+    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors, ...scheduleErrors].some(
+      (type) => e instanceof type,
+    )
   )
     die((e as Error).message);
   throw e;

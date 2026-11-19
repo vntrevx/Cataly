@@ -153,6 +153,7 @@ test("the dori command vocabulary is every command the CLI dispatches", async ()
     (await import("../src/cli-messenger.ts")).messengerCommands,
     (await import("../src/cli-decisions.ts")).decisionCommands,
     (await import("../src/cli-pr.ts")).prCommands,
+    (await import("../src/cli-schedule.ts")).scheduleCommands,
   ];
   // cli.ts dispatches these three before its command tables.
   const dispatched = ["harness", "update", "upstream", ...tables.flatMap((table) => Object.keys(table))];

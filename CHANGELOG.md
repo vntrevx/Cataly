@@ -187,3 +187,5 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+Unreleased: add opt-in timezone-aware `dori schedule` / `dori scheduler` with durable occurrence claims, missed/last/next visibility, non-overlapping foreground runs, bounded wake/post/log delivery, conservative interrupted-run recovery and read-only systemd adoption; no scheduler or OS service is enabled automatically.
