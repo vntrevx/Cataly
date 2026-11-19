@@ -11,6 +11,14 @@ import { detectionReceipt, detectorFixture, waitFor } from "./update-detection-s
 import { fixture } from "./update-setup.ts";
 
 describe("bounded configured ref detection", () => {
+  test("status separates candidates from a missing managed runtime", async () => {
+    const f = fixture();
+    expect((await f.updater.status()).running).toEqual({
+      status: "unknown",
+      reason: "managed deployment is not configured",
+    });
+  });
+
   test("a completed unavailable ref check is retryable and the next check recovers without candidate work", async () => {
     const f = fixture();
     const config = join(f.directory, "config.json");
@@ -20,16 +28,16 @@ describe("bounded configured ref detection", () => {
     try {
       expect(await runUpdate(["check", "--config", config])).toBe(4);
       expect(detectionReceipt(f.config.root).exitCode).not.toBe(0);
-      expect(updater.status().state.jobs).toEqual({});
-      expect(updater.status().state.active).toBeUndefined();
-      expect(updater.status().state.observed).toBeUndefined();
+      expect((await updater.status()).state.jobs).toEqual({});
+      expect((await updater.status()).state.active).toBeUndefined();
+      expect((await updater.status()).state.observed).toBeUndefined();
     } finally {
       renameSync(join(f.remote, ".git.offline"), join(f.remote, ".git"));
     }
     expect(await runUpdate(["check", "--config", config])).toBe(0);
     expect(detectionReceipt(f.config.root).exitCode).toBe(0);
-    expect(updater.status().state.observed).toBe(f.config.baseUpstream);
-    expect(updater.status().state.jobs).toEqual({});
+    expect((await updater.status()).state.observed).toBe(f.config.baseUpstream);
+    expect((await updater.status()).state.jobs).toEqual({});
   });
 
   test("resolves the configured head and retains separate private invocation receipts", async () => {
@@ -62,8 +70,8 @@ describe("bounded configured ref detection", () => {
     const updater = new DoriUpdater(f.config, () => {}, controller.signal);
     const error = await updater.once("stage").catch((error: unknown) => error);
     expect(error).toBeInstanceOf(UpdateInterrupted);
-    expect(updater.status().state.jobs).toEqual({});
-    expect(updater.status().state.observed).toBeUndefined();
+    expect((await updater.status()).state.jobs).toEqual({});
+    expect((await updater.status()).state.observed).toBeUndefined();
     expect(existsSync(join(f.config.root, "detector"))).toBe(false);
     expect(existsSync(join(f.config.root, "jobs"))).toBe(false);
   });

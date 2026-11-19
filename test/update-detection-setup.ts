@@ -98,7 +98,7 @@ if (${JSON.stringify(mode)} !== "exit") {
   controller.abort();
 }
 const outcome = await pending;
-writeFileSync(${JSON.stringify(result)}, JSON.stringify({ ...outcome, state: updater.status().state }));
+writeFileSync(${JSON.stringify(result)}, JSON.stringify({ ...outcome, state: (await updater.status()).state }));
 `,
   );
   const proc = Bun.spawn([process.execPath, join(f.directory, "detector.ts")], {
