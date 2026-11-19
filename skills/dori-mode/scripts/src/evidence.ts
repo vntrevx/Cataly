@@ -31,6 +31,8 @@ export type EvidenceClock = { readonly lastEvidenceAt: string | null; readonly l
 export type PathMark = readonly [stat: string, fingerprint: string | null, canonical?: string];
 
 export class EvidenceError extends Error {}
+/** The path changed under its read: an unknown to retry, not a failure. Explicit evidence still refuses it. */
+export class UnstableEvidenceError extends EvidenceError {}
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -125,7 +127,7 @@ const errno = (error: unknown): string | undefined =>
 export const fileEvidence = (path: string, cwd: string): EvidenceRef => {
   const source = resolve(cwd, path);
   const unstable = () =>
-    new EvidenceError(`evidence file ${path} changed while it was read; record it again once it is stable`);
+    new UnstableEvidenceError(`evidence file ${path} changed while it was read; record it again once it is stable`);
   try {
     const ref = realpathSync(source);
     const stat = lstatSync(ref, { bigint: true });
@@ -146,11 +148,24 @@ export const fileEvidence = (path: string, cwd: string): EvidenceRef => {
   }
 };
 
+// Whether lstat positively shows the path changed since a read began: other metadata, or confirmed gone. A failing
+// lstat (EACCES, EIO) confirms nothing, so the read's own error stays a real failure.
+const changedSince = (path: string, stat: BigIntStats): boolean => {
+  try {
+    return !sameFile(lstatSync(path, { bigint: true }), stat);
+  } catch (error) {
+    const code = errno(error);
+    return code === "ENOENT" || code === "ENOTDIR";
+  }
+};
+
 /**
  * A quiet sweep reuses a settled lstat mark. Recent ctime is re-read before a mark becomes reusable;
  * touching a file rereads the same bytes without admitting new evidence.
  * Links use target text, directories use entry names, and special files are never opened. Read failures and races
- * propagate as unknown observations, never as a successful reading of previous bytes.
+ * propagate as unknown observations, never as a successful reading of previous bytes. A read that fails or disagrees
+ * after lstat confirms the path was rewritten, replaced or removed under it throws UnstableEvidenceError; any other
+ * error, including one whose recheck fails too, is rethrown as it is.
  */
 export const pathMark = (path: string, previous?: PathMark, observedAt = Date.now()): PathMark => {
   let stat: BigIntStats;
@@ -167,13 +182,18 @@ export const pathMark = (path: string, previous?: PathMark, observedAt = Date.no
   const settled = Math.floor(observedAt / 1_000) > Number(stat.ctimeNs / 1_000_000_000n) + 1;
   const key = `${settled ? "" : "racy:"}${stat.mode}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
   if (settled && previous?.[0] === key) return previous;
-  if (stat.isFile()) {
-    const evidence = fileEvidence(path, "/");
-    if (!sameFile(lstatSync(path, { bigint: true }), stat))
-      throw new EvidenceError(`evidence file ${path} changed while it was read`);
-    return [key, evidence.fingerprint, evidence.ref];
+  try {
+    if (stat.isFile()) {
+      const evidence = fileEvidence(path, "/");
+      if (!sameFile(lstatSync(path, { bigint: true }), stat))
+        throw new UnstableEvidenceError(`evidence file ${path} changed while it was read`);
+      return [key, evidence.fingerprint, evidence.ref];
+    }
+    if (stat.isSymbolicLink()) return [key, sha256(`link\0${readlinkSync(path)}`)];
+    if (stat.isDirectory()) return [key, sha256(`dir\0${readdirSync(path).sort().join("\0")}`)];
+  } catch (error) {
+    if (error instanceof UnstableEvidenceError || !changedSince(path, stat)) throw error;
+    throw new UnstableEvidenceError(`${path} changed while it was read`);
   }
-  if (stat.isSymbolicLink()) return [key, sha256(`link\0${readlinkSync(path)}`)];
-  if (stat.isDirectory()) return [key, sha256(`dir\0${readdirSync(path).sort().join("\0")}`)];
   return [key, "special"];
 };

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { type EvidenceRef, type PathMark, pathMark } from "./evidence.ts";
+import { type EvidenceRef, type PathMark, pathMark, UnstableEvidenceError } from "./evidence.ts";
 import type { Runner } from "./run.ts";
 import type { Observation, SupervisedLane, SupervisionOptions } from "./supervision-observe.ts";
 
@@ -11,8 +11,10 @@ export type FileCoverage = {
   /** Remember discoveries even when they leave Git status before the next snapshot starts. */
   readonly deferred: readonly string[];
   readonly manifest: string;
-  /** Membership changes, new evidence and read failures disqualify a cycle from a hung verdict. */
+  /** Membership changes, new evidence, and failed or raced reads disqualify a cycle from a hung verdict. */
   readonly changed: boolean;
+  /** A path's read failure stays reported, once, until a later read of that path succeeds; races are not failures. */
+  readonly failed?: Readonly<Record<string, string>>;
 };
 
 /** A fixed snapshot drains even when a failed path must be retried in the next cycle. */
@@ -33,6 +35,7 @@ const fileWindow = (paths: ReadonlySet<string>, previous: readonly string[], cov
     deferred: [...cycle.deferred, ...ordered.filter((path) => !known.has(path))],
     manifest: cycle.manifest,
     changed: cycle.changed || manifest !== cycle.manifest,
+    ...(coverage?.failed === undefined ? {} : { failed: coverage.failed }),
   };
 };
 
@@ -119,6 +122,7 @@ export const observeFiles = async (
     persist(coverage);
     const marks = { ...files };
     const captured: EvidenceRef[] = [];
+    const failed: Record<string, string> = { ...coverage.failed };
     for (const path of coverage.pending.slice(0, 256)) {
       try {
         const mark = pathMark(path, files[path]);
@@ -127,18 +131,33 @@ export const observeFiles = async (
         else delete marks[path];
         if (fingerprint !== "special" && !ownState(canonical ?? path))
           captured.push({ kind: "file", ref: canonical ?? path, fingerprint });
+        delete failed[path];
       } catch (error) {
-        evidenceError ??= error instanceof Error ? error.message : String(error);
+        // A read that raced a change keeps the trusted mark and any earlier failure, and is retried next cycle.
+        if (!(error instanceof UnstableEvidenceError))
+          failed[path] = error instanceof Error ? error.message : String(error);
         coverage = { ...coverage, changed: true, deferred: [...new Set([...coverage.deferred, path])] };
       }
     }
     observed = captured;
     files = marks;
-    coverage = { ...coverage, pending: coverage.pending.slice(256) };
+    coverage = {
+      pending: coverage.pending.slice(256),
+      deferred: coverage.deferred,
+      manifest: coverage.manifest,
+      changed: coverage.changed,
+      ...(Object.keys(failed).length ? { failed } : {}),
+    };
   } catch (error) {
     evidenceError = error instanceof Error ? error.message : String(error);
     if (coverage !== undefined) coverage = { ...coverage, changed: true };
   }
+  // A failing path stays one stable report, not a new one each cycle, until a read of it succeeds; a whole-observation
+  // failure of this sweep is reported first.
+  const failing = Object.entries(coverage?.failed ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
+  const [first] = failing;
+  if (evidenceError === undefined && first)
+    evidenceError = `${first[1]}${failing.length > 1 ? ` (and ${failing.length - 1} more failing paths)` : ""}`;
   return {
     files,
     observed,

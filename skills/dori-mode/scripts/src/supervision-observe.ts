@@ -28,6 +28,7 @@ export type SupervisionResult = {
   /** The two clocks of laneEvidence: the last report, and the last change of the evidence the lane selected. */
   readonly lastReportAt: string | null;
   readonly lastEvidenceAt: string | null;
+  /** This sweep's observation failure, else a path read failure that no later read has resolved; never a raced read. */
   readonly evidenceError?: string;
 };
 export type Observation = {
