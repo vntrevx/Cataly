@@ -125,8 +125,9 @@ export const discordThreadAdmission = (
         if (lookup?.channel === channel) lookup.controller.abort(classified);
       }
     },
-    push(message: Message): void {
-      if (signal.aborted || !intake.needsThread?.(message)) return;
+    /** True when the frame is now staged in volatile memory awaiting scope. */
+    push(message: Message): boolean {
+      if (signal.aborted || !intake.needsThread?.(message)) return false;
       if (!intake.resolveThread || !intake.adoptThread)
         throw new MessengerError("Discord inbound thread resolver is unavailable", 0);
       const size = Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -140,7 +141,9 @@ export const discordThreadAdmission = (
       candidates.push({ message, bytes: size, after: intake.cursorFor(message.channel_id) });
       bytes += size;
       drain();
+      return true;
     },
+    pending: (): boolean => candidates.length > 0,
     close(): void {
       controller.abort(cancelled);
       candidates.length = 0;

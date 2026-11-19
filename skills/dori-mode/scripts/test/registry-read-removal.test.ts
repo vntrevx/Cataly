@@ -48,7 +48,7 @@ test.each(["list", "scan"] as const)("lane %s tolerates registration removal", a
   });
   try {
     if (operation === "list") expect(await registry.list()).toEqual([]);
-    else expect(await registry.scan()).toEqual({ lanes: [], unreadable: [] });
+    else expect(registry.scan()).toEqual({ lanes: [], unreadable: [] });
     expect(removed).toBeDefined();
     await removed;
     expect(await originalFile(target).exists()).toBe(false);

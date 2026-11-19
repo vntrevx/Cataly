@@ -18,7 +18,13 @@ const groups = {
   "cli-decisions.ts": decisionCommands,
   "cli-pr.ts": prCommands,
 };
-const blocked = [...Object.keys(groups), "/src/update/cli.ts", "/src/release/cli.ts", "cli-harness.ts"];
+const blocked = [
+  ...Object.keys(groups),
+  "/src/update/cli.ts",
+  "/src/update/source-update-cli.ts",
+  "/src/release/cli.ts",
+  "cli-harness.ts",
+];
 let state: TestState;
 beforeEach(() => {
   state = withState();
@@ -107,10 +113,23 @@ for (const [group, commands] of Object.entries(groups)) {
   });
 }
 
+test("source updates dispatch without the consumer release or ordinary config graph", () => {
+  writeFileSync(join(state.dir, "config.json"), "invalid config");
+  const result = invoke(
+    ["update", "source", "--help"],
+    blocked.filter((name) => name !== "/src/update/source-update-cli.ts"),
+  );
+  expect(result.code).toBe(0);
+  expect(result.err).toBe("");
+  expect(result.out).toContain("dori update source");
+});
+
 test.each([
   ["harness", "cli-harness.ts"],
   ["update", "/src/release/cli.ts"],
   ["upstream", "/src/update/cli.ts"],
+  ["idle-check", "/src/update/source-update-cli.ts"],
+  ["lead", "/src/update/source-update-cli.ts"],
 ])("%s dispatches before ordinary config validation and propagates its import failure", (command, selected) => {
   writeFileSync(join(state.dir, "config.json"), "invalid config");
   const result = invoke([command], blocked);

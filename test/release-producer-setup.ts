@@ -43,9 +43,9 @@ export function releaseFixture(
   };
 }
 
-export function githubFixture() {
+export function githubFixture(repository = RELEASE_REPOSITORY) {
   const manifest = releaseFixture();
-  const prefix = `repos/${RELEASE_REPOSITORY}`;
+  const prefix = `repos/${repository}`;
   const run: Record<string, unknown> = {
     id: 70,
     run_attempt: 2,
@@ -55,7 +55,7 @@ export function githubFixture() {
     path: ".github/workflows/ci.yml",
     event: "push",
     head_branch: "main",
-    head_repository: { full_name: RELEASE_REPOSITORY },
+    head_repository: { full_name: repository },
     status: "completed",
     conclusion: "success",
   };
@@ -66,7 +66,7 @@ export function githubFixture() {
     run_attempt: 2,
     status: "completed",
     conclusion: "success",
-    check_run_url: `https://api.github.com/repos/${RELEASE_REPOSITORY}/check-runs/${100 + i}`,
+    check_run_url: `https://api.github.com/repos/${repository}/check-runs/${100 + i}`,
   }));
   const checks = jobs.map((job, i) => ({
     id: 100 + i,
@@ -78,7 +78,7 @@ export function githubFixture() {
     check_suite: { id: 90 },
   }));
   const responses: Record<string, unknown> = {
-    [prefix]: { full_name: RELEASE_REPOSITORY },
+    [prefix]: { full_name: repository },
     [`${prefix}/git/ref/tags/${manifest.tag}`]: { object: { type: "commit", sha: manifest.commit } },
     [`${prefix}/git/commits/${manifest.commit}`]: { sha: manifest.commit, tree: { sha: manifest.tree } },
     [`${prefix}/branches/main`]: { commit: { sha: manifest.commit } },

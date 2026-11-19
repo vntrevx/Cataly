@@ -51,13 +51,8 @@ export const envInt = (name: string, raw: string | undefined): number => {
 
 export type TgInboundStore = { load(): number; save(offset: number): void };
 
-/**
- * The inbound watch loop. Without `--loop` (loopMin <= 0) it is one-shot: a single
- * bounded poll, then it returns — scripts rely on that. With `--loop`, it re-polls
- * immediately after any poll that returned updates — kept or gate-dropped alike, since
- * more may be waiting behind that batch — and only sleeps after a truly empty poll
- * (the 25s long-poll already returns on arrival, so bursts deliver without waiting
- * out the interval).
+/** One bounded poll without --loop; otherwise drain every nonempty batch, including gate-dropped updates.
+ * Empty polls sleep (getUpdates already long-polls for 25s). Errors/full batches cannot prove intake health.
  */
 export const telegramInboundLoop = async (
   tg: Telegram,
@@ -67,14 +62,18 @@ export const telegramInboundLoop = async (
   emit: (inbound: TgInbound) => void = () => {},
   warn: (message: string) => void = () => {},
   sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+  observe?: (available: boolean) => void,
 ): Promise<void> => {
   for (;;) {
     let polled: { inbound: readonly TgInbound[]; updates: number } | undefined;
     try {
       polled = await pollTelegramInbound(tg, store, opts, emit);
     } catch (e) {
+      observe?.(false);
       warn(e instanceof Error ? e.message : String(e));
     }
+    // getUpdates defaults to 100: a full batch may leave unread owner messages behind it.
+    if (polled !== undefined) observe?.(polled.updates < 100);
     if (loopMin <= 0) return; // one-shot: one bounded drain
     if (polled !== undefined && polled.updates > 0) continue; // more may be waiting behind this batch
     await sleep(loopMin * 60_000);

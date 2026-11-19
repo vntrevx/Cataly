@@ -30,6 +30,13 @@ export async function requestNativeUiExit(cli: DeploymentCli, pane: string): Pro
   }
 }
 
+export function forwardStopStarted(config: DeploymentConfig, record: DeploymentRecord): boolean {
+  return Boolean(
+    record.nativeExitObservedAt ||
+      (config.nativeStopMode === "ui" ? record.nativeUiExitRequestedAt : record.stopRequestedAt),
+  );
+}
+
 /** Never certify a possibly exiting old actor as restored; keep both consumers' forward intent resumable. */
 export function holdPendingNativeUiExit(record: DeploymentRecord): boolean {
   if (!record.nativeUiExitRequestedAt || record.step !== "stop") return false;

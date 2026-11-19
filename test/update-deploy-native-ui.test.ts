@@ -31,6 +31,7 @@ linux.each([
   "late-approval",
   "working",
   "late-working",
+  "late-source-admission",
   "quiesced",
   "session",
   "source",
@@ -82,6 +83,8 @@ linux.each([
   const keys: string[] = [];
   let observations = 0;
   let requestedAt: string | undefined;
+  let sourceEligible = true;
+  let finalChecks = 0;
   const supported = herdrDeploymentCli(async (cmd, args) => {
     if (cmd === "herdr" && args[3] === "process-info" && ++observations === 2) {
       if (mode === "root") f.front.shell_pid = f.bootstrap.running![0]!.pid;
@@ -90,6 +93,7 @@ linux.each([
     if (cmd === "herdr" && args[3] === "read") {
       if (mode === "late-approval") f.writeState({ approvalPending: true });
       if (mode === "late-working") f.writeState({ agentStatus: "working" });
+      if (mode === "late-source-admission") sourceEligible = false;
       if (mode === "session") f.writeState({ sessionFile: join(f.root, "different-session.jsonl") });
       if (mode === "source") writeFileSync(join(config.liveSource, "changed.txt"), "changed");
       return { code: 0, stdout: screen, stderr: "" };
@@ -109,7 +113,14 @@ linux.each([
   }, config.herdrSession!);
   const { nativeUi: _nativeUi, ...withoutUi } = supported;
   const cli = mode === "unsupported" ? withoutUi : supported;
-  const stopping = stopRuntime(config, cli, record, f.persist, mode === "quiesced");
+  const finalAdmission =
+    mode === "late-source-admission"
+      ? () => {
+          finalChecks++;
+          if (!sourceEligible) throw new DeploymentHeld("source activity changed during native observation");
+        }
+      : undefined;
+  const stopping = stopRuntime(config, cli, record, f.persist, mode === "quiesced", finalAdmission);
   if (mode === "resume") {
     await expect(stopping).rejects.toThrow();
     expect(sameProcess(f.runtime)).toBe(true);
@@ -134,6 +145,7 @@ linux.each([
       expect(existsSync(config.quiesceCheckpointFile)).toBe(true);
     }
   }
+  expect(finalChecks).toBe(mode === "late-source-admission" ? 1 : 0);
   const exited = mode === "modern" || mode === "modern-real" || mode === "legacy" || mode === "resume";
   expect(keys).toEqual(exited ? ["ctrl+d"] : []);
   expect(existsSync(f.signalPath)).toBe(false);

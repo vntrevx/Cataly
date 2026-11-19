@@ -27,9 +27,16 @@ export const envSlackToken = (): string | undefined => {
   }
 };
 
-export const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {
+export const every = async (
+  minutes: number,
+  tick: () => Promise<void>,
+  terminal?: (error: unknown) => boolean,
+): Promise<void> => {
   for (;;) {
-    await tick().catch((e: unknown) => console.log(`WARN ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)));
+    await tick().catch((error: unknown) => {
+      if (terminal?.(error)) throw error;
+      console.log(`WARN ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
+    });
     if (minutes <= 0) return;
     await Bun.sleep(minutes * 60_000);
   }

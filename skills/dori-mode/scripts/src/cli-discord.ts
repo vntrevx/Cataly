@@ -1,10 +1,11 @@
 /** The Discord Gateway plumbing shared by `dori presence discord` and `dori inbound discord --gateway`. */
+import { inboundActivity, InboundActivityError } from "../../../../src/update/source-activity.ts";
 import { die, every } from "./cli-context.ts";
 import { Discord } from "./messenger/discord.ts";
 import { DiscordChannels, inboundContext } from "./messenger/discord-channels.ts";
 import type { GatewayClock, GatewaySocket } from "./messenger/discord-gateway.ts";
 import { discordInbound, formatDiscordInbound, formatInboundContext } from "./messenger/discord-inbound.ts";
-import type { Emit } from "./messenger/discord-inbound-api.ts";
+import { type Emit, isOwnerMessage } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
 import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
@@ -59,6 +60,7 @@ export const discordInboundCommand = async (
   gateway: boolean,
   pollMinutes: number,
   context = false,
+  activityFile?: string,
 ) => {
   const env = process.env;
   const ownerId = discordInboundEnv("DORI_DISCORD_OWNER_ID", env["DORI_DISCORD_OWNER_ID"]);
@@ -75,9 +77,11 @@ export const discordInboundCommand = async (
   if (!all && channelIds.length === 0) discordInboundEnv("DORI_DISCORD_CHANNEL_ID", env["DORI_DISCORD_CHANNEL_ID"]);
   const token = env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
   const queue = discordInboundQueue(stateDir);
+  let activity: ReturnType<typeof inboundActivity>;
   try {
     if (!gateway && queue.first())
       die("Discord inbound has pending Gateway work; restart with --gateway before REST mode");
+    activity = inboundActivity(activityFile, "discord");
     const discord = new Discord(fetchHttp, realClock, token);
     const intake = await discordInbound(discord, queue.storeFor, {
       ownerId,
@@ -89,6 +93,7 @@ export const discordInboundCommand = async (
     const where = context ? inboundContext(discord, new DiscordChannels(stateDir), realClock.now) : undefined;
     // Context and the owner line remain one stdout group, after the owe is published.
     const emit: Emit = async (message, signal) => {
+      activity?.received();
       const text = where
         ? `${formatDiscordInbound(message)}\n${formatInboundContext(message, await where(message.channel))}`
         : formatDiscordInbound(message);
@@ -99,11 +104,46 @@ export const discordInboundCommand = async (
     console.log(
       `INBOUND_READY discord owner=${ownerId} channel=${watching} bot=${intake.botId}${gateway ? " mode=gateway" : ""}`,
     );
-    if (!gateway) return await every(pollMinutes, () => intake.poll(emit));
+    if (!gateway)
+      return await every(
+        pollMinutes,
+        async () => {
+          try {
+            await intake.poll(emit);
+          } catch (error) {
+            if (error instanceof InboundActivityError) throw error;
+            activity?.unavailable();
+            throw error;
+          }
+          activity?.healthy();
+        },
+        (error) => error instanceof InboundActivityError,
+      );
     await untilStopped(
-      discordInboundLive(intake, openDiscordSocket, token, discordClock, emit, (l) => console.log(l), queue),
+      discordInboundLive(
+        intake,
+        openDiscordSocket,
+        token,
+        discordClock,
+        emit,
+        (l) => console.log(l),
+        queue,
+        activity
+          ? {
+              healthy: activity.healthy,
+              unavailable: activity.unavailable,
+              received: (message) => {
+                if (isOwnerMessage(message, ownerId, intake.botId)) activity?.received();
+              },
+            }
+          : undefined,
+      ),
     );
   } finally {
-    queue.close();
+    try {
+      activity?.close();
+    } finally {
+      queue.close();
+    }
   }
 };

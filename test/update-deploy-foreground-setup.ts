@@ -12,24 +12,14 @@ import { procChildren, procCmdline, procStat } from "../src/update/proc.ts";
 import type { MonitorSet, RuntimeHealth, RuntimeIdentity } from "../src/update/deployment-types.ts";
 import { foregroundCli } from "./update-deploy-foreground-cli.ts";
 import { processName } from "./proc-name.ts";
-import { deploymentConfig } from "./update-deploy-setup.ts";
+import { deploymentConfig, type ForegroundFixtureOptions } from "./update-deploy-setup.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 /** Real exec-launched native group and script children; herdr supplies only their observed metadata. */
-export async function foregroundFixture(
-  options: {
-    unknown?: boolean;
-    parentShell?: boolean;
-    rollback?: boolean;
-    paneShell?: boolean;
-    stoppable?: boolean;
-    subshell?: boolean;
-    transient?: boolean;
-  } = {},
-) {
+export async function foregroundFixture(options: ForegroundFixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "dori-foreground-"));
   const config = {
     ...deploymentConfig(root),
@@ -61,12 +51,16 @@ export async function foregroundFixture(
   writeFileSync(unknown, shell, { mode: 0o700 });
   writeFileSync(dori, `#!${process.execPath}\nconsole.log("ready"); await Bun.stdin.text();\n`, { mode: 0o700 });
   writeFileSync(presence, `#!/bin/bash\nexec ${JSON.stringify(dori)} "$@"\n`, { mode: 0o700 });
+  const activityPath = join(config.stateDir, "activity", "discord.json");
+  const intakeArgv = options.activity
+    ? [process.execPath, new URL("./update-source-intake-setup.ts", import.meta.url).pathname, activityPath]
+    : ["/bin/bash", script];
   const specs = [
-    { name: "intake", argv: [script], filter: ".", cwd: root },
+    { name: "intake", argv: options.activity ? intakeArgv : [script], filter: ".", cwd: root },
     { name: "dori-watch", argv: [presence], filter: ".", cwd: root },
   ];
   // Direct shebang exec names /proc/comm after the script; explicit Bash reproduces the production foreground.
-  const commands = [["/bin/bash", script], [presence], ...(options.unknown ? [["/bin/bash", unknown]] : [])];
+  const commands = [intakeArgv, [presence], ...(options.unknown ? [["/bin/bash", unknown]] : [])];
   writeFileSync(
     config.omp,
     `#!${process.execPath}
@@ -164,7 +158,11 @@ await stopChildren();
     sessionId: runtime.sessionId,
     runtime,
     monitors: specs,
-    intake: { path: join(root, "heartbeat"), monitor: "intake", maxAgeMs: 5_000 },
+    intake: {
+      path: options.activity ? `${activityPath}.heartbeat` : join(root, "heartbeat"),
+      monitor: "intake",
+      maxAgeMs: 5_000,
+    },
     running: specs.map(({ name }, index) => {
       const pid = observed.monitors[index]!;
       return { name, pid, identity: processIdentity(pid)! };

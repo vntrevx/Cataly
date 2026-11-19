@@ -362,6 +362,52 @@ Waits until load is under `heavyMaxLoad` and one of `heavySlots` is free, then r
 
 These consumer commands use no porting/review models or GitHub write permission. Install/update/rollback activation holds while any live Dori is detected, including idle sessions; operators explicitly stop their own monitors and end the owning session before retrying. No implicit kill, restart or watcher restoration occurs. Existing config/auth/work/sessions remain intact. Follow the [release guide](../../../docs/releases.md) for canonical download identity, checksum/source verification, interrupted-activation recovery and support limits.
 
+## CI-gated source updates
+
+`dori update source` follows this repository's CI-passing `main` without model porting or consumer-release migration. It is opt-in and reuses the managed deployment transaction for private candidate preparation, same-session resume, monitor/intake health and rollback. Automatic forward stops require the existing draft-aware native UI handoff, currently Linux/herdr; unsupported UI surfaces hold rather than falling back to a signal.
+
+```bash
+dori update source check
+dori update source status
+dori idle-check --owner-quiet 30m
+dori update source apply --when idle --owner-quiet 30m --require-ci check,e2e-herdr,e2e-hc --dry-run
+dori update source apply --when idle
+dori lead restart --when idle
+```
+
+Every command accepts `--config` for an existing source-update configuration. The default is `$DORI_HOME/source-update.json`, or `~/.dori/source-update.json` when `DORI_HOME` is unset. An explicit config wins over ambient home selection. Nothing creates this config, enables a service or changes a live installation implicitly.
+
+The source config is an owned regular JSON file without group/world write permission. Unknown keys are errors. Set real deployment identities and paths from the existing installation, not example session or pane IDs:
+
+| Field | Contract |
+| --- | --- |
+| `version` | Required `1`. |
+| `repository` | GitHub owner/repository; defaults to `vntrevx/Cataly`. |
+| `git`, `gh` | Trusted executable paths; defaults to the installed commands found on PATH. |
+| `credentialHome` | Existing controller-side GitHub authentication home; defaults to `deployment.home`. Inherited model keys and GitHub token variables are not forwarded. |
+| `activityFiles` | Required complete, distinct list of active inbound receiver records, inside `deployment.stateDir`. |
+| `ownerQuietMinutes` | Defaults to `30`; cannot be lower. `--owner-quiet` may use whole minutes or hours, never below 30 minutes. |
+| `activityMaxAgeSeconds` | Defaults to `120`; allowed range 1–300. |
+| `requiredCi` | Defaults to `check`, `e2e-herdr`, `e2e-hc`; all three remain mandatory. Additional exact job names are allowed. |
+| `intervalSeconds` | Resident source-mode check interval; defaults to 86400, allowed range 60–86400. |
+| `deployment` | The existing managed deployment fields described below: live source, release/state/home paths, private toolchain, runtime, exact pane/session/model, shared restart lock and fixed launcher slot. Source mode defaults `nativeStopMode` to `"ui"` and rejects `"signal"`. |
+
+Add `--activity-file` with its owned absolute record path to each existing `dori inbound discord`, `telegram` or `slack` monitor. List every such receiver in `activityFiles`; an omitted custom receiver cannot be discovered automatically. The primary managed intake heartbeat must be that receiver's activity path with `.heartbeat` appended. Keep the existing monitor loop, filtering, protected token loading and launch policy. Setup does not start or reconfigure receivers for you. The freshness bound must exceed the longest successful polling cycle plus network margin: Telegram `--loop 1` can take 25 seconds of long polling plus 60 seconds of sleep, so the default 120 seconds leaves 35 seconds for latency. For a longer loop, shorten it or explicitly raise `activityMaxAgeSeconds` within its supported range. Size the primary managed intake heartbeat's `maxAgeMs` for the same cadence.
+
+These receipts contain process identity, quiet/health timestamps and availability, not message content or session history. Actual inbound receipts and transitions from unavailable to healthy start a fresh quiet window; healthy heartbeats alone do not. Receiver restart also starts a new quiet window; downtime never counts as proven quiet. Telegram health waits until a polling backlog drains. Discord Gateway health starts after the current connection completes backfill and refreshes on heartbeat acknowledgements only while its durable delivery queue is empty and no volatile thread-scope candidate is pending. An owner frame staged for thread-scope resolution counts as a receipt when staged. Accepted frames remain on disk if activity observation fails. Missing, stale, future-dated, unavailable, dead or wrongly parented receiver evidence holds. Slack conservatively counts every delivered watched-thread inbound item and remains unavailable while any polled response reports more pages or a continuation cursor. All configured writers must be current descendants of the same lead.
+
+Idle means no non-closed registered lane (the reserved lead record is excluded), no unreadable lane record, the exact live lead/session marked idle, no pending approval, and at least the configured quiet period for every receiver. Paused and done-claimed lanes still block. The policy is checked again synchronously after the final native input observation and immediately before recording the first native UI exit request. A generic stop-intent record without that UI request receipt does not bypass admission, including during pending restart recovery. Run apply/restart outside the lead process tree.
+
+`check` reads the clean ordinary Git installation and selects the newest qualifying commit within 40 first-parent commits of current `main`. It binds the canonical repository, exact commit/tree, latest trusted Actions CI attempt and all required successful jobs. Unknown API/trust errors do not authorize falling back to an older success. The target must be a forward descendant of installed HEAD; dirty source, linked worktrees and consumer installations hold. A new candidate is privately cloned; the running checkout is never reset. The selected target stays fixed during preparation and its main ancestry and CI are revalidated before stopping.
+
+`--dry-run` proves current policy eligibility, including the failed-target circuit, without locks, ownership files, candidate preparation or native effects. It is not a claim that unprepared dependencies or future runtime health passed. `status` describes the last durable attempt, not current readiness. Successful apply preserves the private session by reference and requires matching code, native process, restored monitor descendants and a fresh intake heartbeat. Runtime health failure rolls back when existing identity/idle/approval guards permit it; new owner work is never interrupted to force rollback.
+
+A verified rollback circuit-blocks that target and older or unrelated targets. Inspect and fix its cause, then explicitly use `dori update source apply --when idle --retry-failed`, or wait for a passing descendant newer than the failed commit. Neither success nor failure of an explicitly permitted older installation erases another failed target. `status.failedCommits` retains all such receipts; each commit's receipt clears only when that exact target succeeds. Automatic candidates must be descendants of every retained failed commit. The resident supervisor never supplies that flag. Once native effects began, re-entering apply reconciles the managed write-ahead journal before fresh CI or quiet checks, so a stopped receiver or unavailable GitHub cannot strand recovery. A stale outer source receipt cannot replay the UI exit request. If that request remains unconfirmed, inspect the recorded actor/pane and complete its graceful exit; do not delete the receipt or blindly send the exit request again. Keep the recorded deployment configuration intact for recovery. Separate `lead restart` is held while a source transaction needs recovery. If a separately requested lead restart already has an exit-effect receipt, source `check` and `--dry-run` report that pending recovery without GitHub or fresh idle checks. `apply` first reconciles it and returns `recovery: "lead-restart"`; a subsequent apply performs fresh source selection. A held attempt with no exit-effect receipt may be superseded after its retry window, but the identity-bound inner journal takes precedence over a stale outer receipt.
+
+Apply/check exit `0` for a successful result, `4` for a policy hold or verified rollback, `6` for durable recovery pending and `2` for a failure requiring operator inspection. Interrupted operations exit `130`. Read the JSON status and error fields; neither a live process nor a printed result alone substitutes for managed health.
+
+For resident operation, use `scripts/update-supervisor.ts --mode source` with the real source config, private Bun and `--controller` equal to `deployment.liveSource`. That stable source pointer lets the supervisor exit `75` after a successful cutover so its service manager reloads accepted code. Normal checks use the daily default interval; pending recovery is revisited within 60 seconds, and `SIGUSR1` wakes an idle supervisor without interrupting its active operation. The interval is elapsed time, not a wall-clock schedule. To restrict attempts to night, an operator may instead schedule the same apply command with a user timer, such as `OnCalendar=daily` (local midnight). Installation enables neither supervision nor a timer. Existing upstream-supervisor mode and model-porting behavior are unchanged.
+
 ## Staged Dori updates
 
 `dori upstream` is the maintainer source-porting interface, with its own required `--config FILE`, dispatched before normal Dori config/state loading. It is separate from consumer `dori update`. Without `promotion`, it only stages source candidates and never commits, pushes or replaces live Dori. An explicit owner-approved promotion policy enables exact-source publication and optional managed herdr replacement after all checks and fresh review pass. That policy is standing authorization for its configured target, not permission for arbitrary repositories or sessions. Installation and boot never enable it. Neither mode upgrades global Bun, changes global model policy or updates ULW.

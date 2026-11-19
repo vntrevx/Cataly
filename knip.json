@@ -20,6 +20,8 @@
         "skills/dori-mode/scripts/test/record-discord-inbound.ts",
         "skills/dori-mode/scripts/test/record-discord-gateway.ts",
         "skills/dori-mode/scripts/test/record-fetch.ts",
+        "skills/dori-mode/scripts/test/record-inbound-activity-failure.ts",
+        "skills/dori-mode/scripts/test/record-slack-activity-backlog.ts",
         "skills/dori-mode/scripts/test/record-discord.ts"
       ],
       "project": [

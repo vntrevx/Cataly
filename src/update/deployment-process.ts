@@ -147,7 +147,7 @@ export async function command(
 }
 
 /** Recover only a provably dead holder. Unknown ownership remains held, regardless of age. */
-export function acquireRestartLock(config: DeploymentConfig): () => void {
+export function acquireRestartLock(config: Pick<DeploymentConfig, "restartLock">): () => void {
   mkdirSync(dirname(config.restartLock), { recursive: true, mode: 0o700 });
   const own = processIdentity(process.pid);
   if (!own) throw new DeploymentHeld("deployment process identity is unavailable");

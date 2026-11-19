@@ -195,3 +195,5 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+- Opt-in `dori update source check|status|apply`, `idle-check` and `lead restart` follow CI-passing main through the existing managed same-session deployment and rollback engine. Actual inbound activity receipts enforce zero open lanes, idle/no approval and at least 30 minutes of owner quiet at the final stop boundary; a source-mode outside-lead supervisor adds daily checks, durable recovery and failed-target circuit protection without enabling services or changing consumer/upstream defaults.

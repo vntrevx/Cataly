@@ -73,6 +73,11 @@ Read the [source installation guide](docs/releases.md#source-checkouts-for-maint
 for isolation, configuration, and explicit startup. Native sessions
 use your own provider authentication and allowance.
 
+Opt-in [source updates](skills/dori-mode/references/scripts.md#ci-gated-source-updates)
+follow CI-passing main with idle/quiet admission, same-session restart, monitor
+health and rollback. Their outside-lead supervisor is separate from consumer
+release updates and the model-porting `dori upstream` pipeline.
+
 ### Use a published release
 
 The existing **v0.1.2 prerelease** has an immutable Linux x64 / herdr / Discord

@@ -144,6 +144,7 @@ export type DeploymentRecord = {
   pointers?: readonly PointerRecord[];
   stopRequestedAt?: string;
   nativeUiExitRequestedAt?: string;
+  nativeExitObservedAt?: string;
   launchRequestedAt?: string;
   runtime?: RuntimeIdentity;
   launchProcess?: ProcessIdentity;

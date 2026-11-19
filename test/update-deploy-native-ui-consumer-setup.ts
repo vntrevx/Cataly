@@ -6,8 +6,11 @@ import { digest } from "../src/update/source.ts";
 import { managedBashFixture } from "./update-deploy-managed-setup.ts";
 
 /** Reuse the managed Bash actor; real replacement children publish their own process-bound health. */
-export async function nativeUiConsumerFixture(outcome: "delayed" | "late" | "undelivered") {
-  const f = await managedBashFixture();
+export async function nativeUiConsumerFixture(
+  outcome: "delayed" | "late" | "undelivered",
+  options: Parameters<typeof managedBashFixture>[0] = {},
+) {
+  const f = await managedBashFixture(options);
   const config = {
     ...f.config,
     nativeStopMode: "ui" as const,

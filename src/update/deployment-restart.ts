@@ -4,7 +4,7 @@ import { captureStartedMonitors } from "./deployment-handoff.ts";
 import { observeDeploymentHealth, waitDeploymentHealth } from "./deployment-health.ts";
 import { launchRuntime } from "./deployment-launch.ts";
 import { nativeCli, stopRecordedMonitors, stopRuntime } from "./deployment-native.ts";
-import { holdPendingNativeUiExit } from "./deployment-native-ui.ts";
+import { forwardStopStarted, holdPendingNativeUiExit } from "./deployment-native-ui.ts";
 import { acquireRestartLock, DeploymentBusy, DeploymentHeld } from "./deployment-process.ts";
 import {
   deferRestartIntent,
@@ -17,7 +17,11 @@ import { rollbackDeployment, waitLaunchedProcess } from "./deployment-rollback.t
 import type { DeploymentConfig, DeploymentRecord } from "./deployment-types.ts";
 
 /** Model-watch enters here before any signal. Interrupted restarts reconcile their durable native identity first. */
-export async function restartDeployment(config: DeploymentConfig, signal?: AbortSignal): Promise<DeploymentRecord> {
+export async function restartDeployment(
+  config: DeploymentConfig,
+  signal?: AbortSignal,
+  beforeForwardStop?: (record: DeploymentRecord) => Promise<void> | Promise<() => void>,
+): Promise<DeploymentRecord> {
   ownReleaseRoot(config);
   const releaseLock = acquireRestartLock(config);
   let record: DeploymentRecord | undefined;
@@ -60,10 +64,11 @@ export async function restartDeployment(config: DeploymentConfig, signal?: Abort
     }
     persist(record);
     if (record.step === "prepare" || record.step === "stop") {
+      const admission = !forwardStopStarted(config, record) ? await beforeForwardStop?.(record) : undefined;
       record.status = "stopping";
       record.step = "stop";
       persist(record);
-      await stopRuntime(config, cli, record, persist);
+      await stopRuntime(config, cli, record, persist, false, typeof admission === "function" ? admission : undefined);
       await stopRecordedMonitors(config, record.oldMonitors ?? []);
       record.step = "start";
       persist(record);
@@ -106,7 +111,7 @@ export async function restartDeployment(config: DeploymentConfig, signal?: Abort
       persist(record);
       return record;
     }
-    if (!completed && record.stopRequestedAt) {
+    if (!completed && forwardStopStarted(config, record)) {
       try {
         const restored = await rollbackDeployment(config, record, persist);
         saveActiveDeployment(config, restored, true);
@@ -121,7 +126,7 @@ export async function restartDeployment(config: DeploymentConfig, signal?: Abort
       }
     } else record.status = "held";
     persist(record);
-    if (error instanceof DeploymentBusy && !record.stopRequestedAt) {
+    if (error instanceof DeploymentBusy && !forwardStopStarted(config, record)) {
       deferRestartIntent(config, record);
       throw error;
     }

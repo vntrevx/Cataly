@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync } from "no
 import { join } from "node:path";
 import { saveDeploymentJson } from "./deployment-files.ts";
 import { captureHandoff } from "./deployment-handoff.ts";
+import { forwardStopStarted } from "./deployment-native-ui.ts";
 import { command, DeploymentHeld } from "./deployment-process.ts";
 import type { DeploymentConfig, DeploymentRecord } from "./deployment-types.ts";
 import { digest, sourceManifest } from "./source.ts";
@@ -56,8 +57,8 @@ export function deferRestartIntent(config: DeploymentConfig, record: DeploymentR
     pending?.id !== record.id ||
     pending.status !== "held" ||
     pending.step !== "stop" ||
-    pending.stopRequestedAt ||
-    record.stopRequestedAt ||
+    forwardStopStarted(config, pending) ||
+    forwardStopStarted(config, record) ||
     record.launchRequestedAt
   )
     throw new DeploymentHeld("busy restart intent has runtime effects");

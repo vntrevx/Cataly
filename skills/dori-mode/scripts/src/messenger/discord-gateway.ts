@@ -26,6 +26,8 @@ export type GatewayOptions = {
   /** Identify and resume as online; off leaves the account's presence to whoever else holds a connection. */
   online: boolean;
   onReady?: (event: "READY" | "RESUMED") => void;
+  /** Structured connection health; every established heartbeat ACK and every disconnect. */
+  onHealth?: (available: boolean) => void;
   /** Every dispatch other than READY/RESUMED, once the session is established. */
   onDispatch?: (type: string, data: unknown) => void;
 };
@@ -67,6 +69,7 @@ export const discordGateway = (
     if (handshake !== undefined) clock.clearTimeout(handshake);
     heartbeat = handshake = undefined;
     previous?.close(code);
+    options.onHealth?.(false);
   };
   const finish = (error?: MessengerError) => {
     stopped = true;
@@ -179,6 +182,7 @@ export const discordGateway = (
         if (!session && authenticated) lastIdentify = clock.now();
       } else if (m.op === 11 && awaitingAck) {
         awaitingAck = false;
+        if (established) options.onHealth?.(true);
         if (!acknowledged) {
           acknowledged = true;
           report(`${options.label}_ACK discord seq=${heartbeatSeq ?? "-"}`);

@@ -9,6 +9,9 @@ const USAGE = `dori <command> [options]
 
   harness <command> [args...]          dispatch every upstream harness command (up, inbox, duty, review, merge, loop, backlog, migrate...)
   update <command> [options]           verified releases: check, install, status, rollback, cache [--version TAG] [--from DIST]
+  update source check|status|apply     own main source updates; apply requires --when idle [--config FILE]
+  idle-check [--owner-quiet 30m]        source update eligibility; exit 0 if idle, else 4 [--config FILE]
+  lead restart --when idle             same-session managed restart [--config FILE]
   upstream <command> --config FILE     maintainer staging: check, stage, watch, status, snapshot, restore, recover, restart
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
@@ -71,7 +74,7 @@ const USAGE = `dori <command> [options]
                                        the operator's purpose note per channel or thread, shown by inbound --context
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file|url>           run hooks.transcribe and print the text; HTTP(S) downloads are private and temporary
-  inbound slack|telegram|discord [--loop MIN] [--gateway] [--context]
+  inbound slack|telegram|discord [--loop MIN] [--gateway] [--context] [--activity-file PATH]
                                        print INBOUND lines: Slack unread thread replies / Telegram owner DMs, edits and media + configured topic
                                        the Dori posted in (any helper), DMs and channels with unread mentions
                                        Discord requires DORI_DISCORD_TOKEN, DORI_DISCORD_OWNER_ID and configured channel IDs
@@ -89,8 +92,12 @@ if (command === "--version") {
   console.log(releaseVersion);
   process.exit(0);
 }
+if (command === "update" && rest[0] === "source")
+  process.exit(await (await import("../../../../src/update/source-update-cli.ts")).runSourceUpdate(rest.slice(1)));
 if (command === "update") process.exit(await (await import("../../../../src/release/cli.ts")).runConsumerUpdate(rest));
 if (command === "upstream") process.exit(await (await import("../../../../src/update/cli.ts")).runUpdate(rest));
+if (command === "idle-check" || command === "lead")
+  process.exit(await (await import("../../../../src/update/source-update-cli.ts")).runSourceUpdate([command, ...rest]));
 
 const { die, makeCli } = await import("./cli-context.ts");
 const { ConfigError, loadConfig } = await import("./config.ts");
@@ -121,6 +128,7 @@ const flags = parseArgs({
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
+    "activity-file": { type: "string" },
     purpose: { type: "string" },
     to: { type: "string" },
     text: { type: "string" },

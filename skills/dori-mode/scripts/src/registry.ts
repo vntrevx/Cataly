@@ -217,7 +217,7 @@ export class Registry {
   }
 
   /** Like list(), but a lane file that cannot be read, parsed, or holds no lane key is returned in `unreadable` instead of throwing. */
-  async scan(): Promise<{ lanes: Lane[]; unreadable: string[] }> {
+  scan(): { lanes: Lane[]; unreadable: string[] } {
     const lanes: Lane[] = [];
     const unreadable: string[] = [];
     for (const f of this.files()) {

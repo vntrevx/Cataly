@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readActiveDeployment } from "./deployment-active.ts";
 import { captureHandoff, prepareLauncher } from "./deployment-handoff.ts";
 import { captureRuntime, nativeCli } from "./deployment-native.ts";
+import { forwardStopStarted } from "./deployment-native-ui.ts";
 import { DeploymentHeld, sameProcess, underProcess } from "./deployment-process.ts";
 import type { DeploymentConfig, DeploymentRecord } from "./deployment-types.ts";
 import { sourceManifest } from "./source.ts";
@@ -12,7 +13,7 @@ export function assertPreparedLayout(config: DeploymentConfig, record: Deploymen
     !record.preparedAt ||
     !record.oldSourceHash ||
     !record.pointers ||
-    record.stopRequestedAt ||
+    forwardStopStarted(config, record) ||
     (record.step !== "prepare" && record.step !== "stop")
   )
     throw new DeploymentHeld("busy hold is no longer before native effects");

@@ -90,7 +90,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   // An unreadable lane file, or a lanes path that cannot be listed, is named; the other lanes and checks still run.
   let registered: Lane[] = [];
   try {
-    const scanned = await deps.registry.scan();
+    const scanned = deps.registry.scan();
     registered = scanned.lanes;
     for (const path of scanned.unreadable) {
       failed = true;

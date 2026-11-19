@@ -154,11 +154,12 @@ test("the dori command vocabulary is every command the CLI dispatches", async ()
     (await import("../src/cli-decisions.ts")).decisionCommands,
     (await import("../src/cli-pr.ts")).prCommands,
   ];
-  // cli.ts dispatches these three before its command tables.
-  const dispatched = ["harness", "update", "upstream", ...tables.flatMap((table) => Object.keys(table))];
+  // cli.ts dispatches these before its command tables.
+  const early = ["harness", "update", "upstream", "idle-check", "lead"];
+  const dispatched = [...early, ...tables.flatMap((table) => Object.keys(table))];
   expect(Object.keys(DORI_COMMANDS).sort()).toEqual([...new Set(dispatched)].sort());
   const cli = readFileSync(join(import.meta.dir, "../src/cli.ts"), "utf8");
-  for (const name of ["harness", "update", "upstream"]) expect(cli).toContain(`command === "${name}"`);
+  for (const name of early) expect(cli).toContain(`command === "${name}"`);
   // The options cli.ts parses with a value: the words a dori command line never takes for its platform.
   const values = [...cli.matchAll(/^\s+"?([\w-]+)"?: \{ type: "string"/gm)].map((m) => m[1] ?? "");
   expect(Object.keys(DORI_VALUE_OPTIONS).sort()).toEqual(values.sort());
