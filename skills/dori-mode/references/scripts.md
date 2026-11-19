@@ -258,6 +258,10 @@ A paused lane is skipped by `freshness`: no nudge, no post. Only `dori resume` e
 
 Both print `PAUSED` / `RESUMED` and exit 0 on success. A lane in any other state is refused (`NOT_PAUSED` / `NOT_RESUMED`, exit 2), and a second `pause` is a no-op. A lane claimed, objected to or closed while the goal command ran is left as that writer put it (`LANE_CHANGED`, exit 3); the goal command itself was confirmed, so check the lane before retrying. `claim-done` and `object-done` on a paused lane move it out of `paused` in the registry while its goal stays paused.
 
+### `dori park <key> --note TEXT [--resume-when TEXT]` / `dori reopen <key> [--note TEXT]` / `dori holds [--thread REF]`
+
+`park` pauses an exact bound OMP session and closes only its pane; `close <key> --abandon --reason TEXT` explicitly ends unfinished work. Neither claims Done or removes worktrees. `holds` lists pauses and parked or interrupted park intents without changing anything. Reopen is explicit and reuses the recorded session. See [pause, park and abandon](sessions.md#pause-park-and-abandon) for identity, pending Discord work and recovery rules.
+
 ### `dori tell <key> --text TEXT`
 Sends the lead's message to a registered lane's session once through `sendVerified`, the same path `claim-done`, `object-done`, `pause` and the freshness nudge use, and prints one line:
 

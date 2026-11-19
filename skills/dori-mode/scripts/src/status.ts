@@ -4,6 +4,7 @@ import { Checkpoints, type Checkpoint } from "./checkpoints.ts";
 import { Decisions } from "./decisions.ts";
 import { type Decision, settled } from "./decisions-record.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { unfinishedOutcome } from "./holds.ts";
 import type { PaneState } from "./lane-state.ts";
 import { type Lane, LANE_KEY, type LaneStatus, sessionOf, statusOf } from "./registry.ts";
 import { type Progress, Reports } from "./reports.ts";
@@ -105,7 +106,7 @@ export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSn
     let checkpoint: Checkpoint | null = null;
     let runtime: RuntimeStatus | null = null;
     try {
-      progress = reports.read(lane.key);
+      progress = reports.read(lane.key, { generation: lane.lifecycleEpoch });
     } catch {
       problems.push("report journal unreadable");
     }
@@ -174,7 +175,7 @@ export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSn
 /** Historical elapsed time, not a completion promise. Groups use an explicit key prefix, not inferred dates. */
 export const laneEta = (lanes: readonly Lane[], prefix: string) => {
   const minutes = lanes
-    .filter((l) => l.key.startsWith(prefix) && l.closedAt)
+    .filter((l) => l.key.startsWith(prefix) && l.closedAt && !unfinishedOutcome(l))
     .flatMap((l) => {
       const elapsed = (Date.parse(l.closedAt ?? "") - Date.parse(l.openedAt)) / 60_000;
       return Number.isFinite(elapsed) && elapsed >= 0 ? [elapsed] : [];

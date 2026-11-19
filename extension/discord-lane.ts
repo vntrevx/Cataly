@@ -92,7 +92,9 @@ export class DiscordLane {
           key,
           async () => {
             const current = await delivery.registry.read(key);
-            if (!current || statusOf(current) === "closed" || statusOf(current) === "paused") return;
+            if (!current || current.nativeCloseIntent) return;
+            const status = statusOf(current);
+            if (status === "closed" || status === "paused") return;
             if (!dedicated && (await discordLaneTarget(root, channel))?.session !== session) return;
             if (confirm || !idle() || ctx.isIdle?.() === false || !ownsPane()) return;
             pi.sendMessage(
@@ -181,7 +183,7 @@ export class DiscordLane {
             const held = await withDeliveryLock(delivery, lane.key, async () => {
               signal.throwIfAborted();
               const current = await delivery.registry.read(lane.key);
-              if (!current || statusOf(current) === "closed" || !ownsPane())
+              if (!current || current.nativeCloseIntent || statusOf(current) === "closed" || !ownsPane())
                 throw new Error("The dedicated Discord lane changed; cursor not advanced");
               receiverInbox.add(session, message);
             });

@@ -24,6 +24,7 @@ export const tellLane = async (deps: FlowDeps, lane: Lane, text: string): Promis
   const held = await withDeliveryLock(deps, lane.key, async () => {
     const current = await deps.registry.read(lane.key);
     if (!current || statusOf(current) === "closed") return failed(lane, "the lane was closed");
+    if (current.nativeCloseIntent) return failed(current, "native close is in progress");
     return await send(deps, current, text);
   });
   return held.ok ? held.value : failed(lane, `a pause or another tell holds the lane's delivery lock (${held.holder})`);

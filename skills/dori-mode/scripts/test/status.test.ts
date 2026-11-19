@@ -189,7 +189,10 @@ test("ETA reports sample count and historical range, not a made-up estimate", ()
     closedAt: new Date(Date.parse(lane.openedAt) + m * 60_000).toISOString(),
   }));
   expect(laneEta(closed.slice(0, 2), "deploy-").medianMinutes).toBeNull();
-  expect(laneEta(closed, "deploy-")).toEqual({
+  const parked = { ...closed[0]!, key: "deploy-parked", receipt: { outcome: "parked" } };
+  const abandoned = { ...closed[1]!, key: "deploy-abandoned", receipt: { outcome: "abandoned" } };
+  const done = { ...closed[2]!, receipt: { outcome: "done" } };
+  expect(laneEta([closed[0]!, closed[1]!, done, closed[3]!, parked, abandoned], "deploy-")).toEqual({
     prefix: "deploy-",
     samples: 4,
     medianMinutes: 30,

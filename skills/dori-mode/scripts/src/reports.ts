@@ -5,21 +5,22 @@ import { LANE_KEY } from "./registry.ts";
 
 export type ReportKind = "milestone" | "blocker" | "question" | "halted" | "done";
 export type ProgressState = "running" | "blocked" | "halted" | "done" | "stalled";
-export type Report = {
+type EventFields = {
+  readonly key: string;
+  readonly at: string;
+  readonly text: string;
+  readonly generation?: string;
+};
+export type Report = EventFields & {
   readonly type: "report";
-  readonly key: string;
-  readonly at: string;
   readonly kind: ReportKind;
-  readonly text: string;
 };
-export type Activity = {
+export type Activity = EventFields & {
   readonly type: "activity";
-  readonly key: string;
-  readonly at: string;
   readonly state: "running" | "stalled";
-  readonly text: string;
 };
-export type LaneEvent = Report | Activity;
+export type LaneEvent = Report | Activity | (EventFields & { readonly type: "reopen" });
+type EventScope = { readonly generation: string | undefined };
 export type Progress = {
   readonly state: ProgressState;
   readonly lastReport: Report | null;
@@ -68,11 +69,18 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
     !("text" in value) ||
     typeof value.text !== "string" ||
     !value.text.trim() ||
-    !("type" in value)
+    !("type" in value) ||
+    ("generation" in value && typeof value.generation !== "string")
   ) {
     throw new ReportError(`invalid report record for ${key}`);
   }
-  const common = { key, at: value.at, text: value.text };
+  const common = {
+    key,
+    at: value.at,
+    text: value.text,
+    ...("generation" in value && typeof value.generation === "string" ? { generation: value.generation } : {}),
+  };
+  if (value.type === "reopen") return { ...common, type: "reopen" };
   if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
     return { ...common, type: "report", kind: value.kind };
   }
@@ -93,7 +101,8 @@ export class Reports {
     return join(this.stateDir, "lanes", key, "reports.jsonl");
   }
 
-  read(key: string): Progress | null {
+  // With no scope, inspect the raw journal. An explicit undefined generation selects only legacy records.
+  read(key: string, scope?: EventScope): Progress | null {
     const path = this.path(key);
     if (!existsSync(path)) return null;
     let progress: Progress | null = null;
@@ -107,7 +116,11 @@ export class Reports {
         if (!(error instanceof SyntaxError || error instanceof ReportError)) throw error;
         throw new ReportError(`${path}:${index + 1}: ${error.message}`);
       }
-      if (event.type === "report") {
+      if (scope && event.generation !== scope.generation) continue;
+      if (event.type === "reopen") {
+        lastReport = null;
+        progress = { state: "running", lastReport, lastEvent: event };
+      } else if (event.type === "report") {
         lastReport = event;
         progress = { state: reportState(event.kind), lastReport: event, lastEvent: event };
       } else if (!progress || progress.state === "running" || progress.state === "stalled") {
@@ -127,14 +140,28 @@ export class Reports {
     appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
-  report(key: string, kind: ReportKind, text: string, now: number): Report {
-    const report: Report = { type: "report", key, kind, text: text.trim(), at: new Date(now).toISOString() };
+  report(key: string, kind: ReportKind, text: string, now: number, generation?: string): Report {
+    const report: Report = {
+      type: "report",
+      key,
+      kind,
+      text: text.trim(),
+      at: new Date(now).toISOString(),
+      ...(generation === undefined ? {} : { generation }),
+    };
     this.append(report);
     return report;
   }
 
-  observe(key: string, screen: string, now: number, staleAfterMs: number, resumeOnWorking = true): Progress | null {
-    const progress = this.read(key);
+  observe(
+    key: string,
+    screen: string,
+    now: number,
+    staleAfterMs: number,
+    resumeOnWorking = true,
+    scope?: EventScope,
+  ): Progress | null {
+    const progress = this.read(key, scope);
     if (!progress || (progress.state !== "running" && progress.state !== "stalled")) return progress;
     const visible = Bun.stripANSI(screen);
     const lastAt = (pattern: RegExp): number => {
@@ -154,11 +181,13 @@ export class Reports {
     const state =
       failed || (idle && !working && stale) ? "stalled" : working && resumeOnWorking ? "running" : progress.state;
     if (state === progress.state) return progress;
+    const { generation } = progress.lastEvent;
     const event: Activity = {
       type: "activity",
       key,
       at: new Date(now).toISOString(),
       state,
+      ...(generation === undefined ? {} : { generation }),
       text: failed
         ? "compaction failed"
         : state === "stalled"
@@ -166,6 +195,6 @@ export class Reports {
           : "Working activity resumed",
     };
     this.append(event);
-    return this.read(key);
+    return this.read(key, scope);
   }
 }

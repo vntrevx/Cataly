@@ -29,6 +29,16 @@ const sameAgent = (into: AgentIdentity, seen: Probe): boolean =>
   (into.pid === undefined || into.pid === seen.pid) &&
   (into.sessionId === undefined || into.sessionId === seen.sessionId);
 
+function deliveryHold(seen: Probe, expectedSessionId: string | undefined): DeliverOutcome | undefined {
+  if (seen.status === "gone" || seen.status === "shell" || seen.shellInFront) return NO_AGENT;
+  if (seen.approvalPending) return { kind: "not-ready", status: "blocked" };
+  if (
+    seen.status === "unknown" ||
+    (expectedSessionId !== undefined && (seen.pid === undefined || seen.sessionId !== expectedSessionId))
+  )
+    return { kind: "not-ready", status: "unknown" };
+}
+
 /**
  * Delivers one message to the agent in a pane as a single argv element: nothing in it is ever expanded by a shell.
  * `no-agent`, having typed nothing: the pane has no running agent, and text typed into a bare shell runs as a command
@@ -41,6 +51,7 @@ export async function deliver(
   text: string,
   sleep: Sleep,
   stateDir?: string,
+  expectedSessionId?: string,
 ): Promise<DeliverOutcome> {
   // Probe first (#66): a gone pane or a shell in front gets nothing, whatever herdr's status word says. herdr types
   // whatever the status is (the caller decided), so the #62 screen read is skipped here.
@@ -53,9 +64,8 @@ export async function deliver(
     process.stderr.write(`dori: herdr pane get failed for ${paneId} (${reasonOf(e)}); ${HOLDING}\n`);
     return { kind: "not-ready", status: "unknown" };
   }
-  if (first.status === "gone" || first.status === "shell" || first.shellInFront) return NO_AGENT;
-  if (first.status === "unknown" || first.approvalPending)
-    return { kind: "not-ready", status: first.approvalPending ? "blocked" : "unknown" };
+  const promptHold = deliveryHold(first, expectedSessionId);
+  if (promptHold) return promptHold;
   try {
     await cli.call(["agent", "prompt", paneId, text]);
     return { kind: "delivered" };
@@ -69,9 +79,8 @@ export async function deliver(
     // agent_not_ready also covers an agent that exited and left a shell in front: typing would run the text there.
     // Re-read right before typing (#66): only a pane that still has an agent gets keystrokes.
     const ready = await probe(cli, paneId, false, HOLDING, stateDir);
-    if (ready.status === "shell" || ready.status === "gone" || ready.shellInFront) return NO_AGENT;
-    if (ready.status === "unknown" || ready.approvalPending)
-      return { kind: "not-ready", status: ready.approvalPending ? "blocked" : "unknown" };
+    const pasteHold = deliveryHold(ready, expectedSessionId);
+    if (pasteHold) return pasteHold;
     // A multi-line paste swallows the Enter that follows it, so type the message as one line.
     // A failed send-text may still have typed some or all of it: ambiguous as well.
     try {

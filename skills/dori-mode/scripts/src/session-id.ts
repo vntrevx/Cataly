@@ -87,11 +87,14 @@ const sessionProcs = async (
   ref: SessionRef,
   table: readonly Proc[],
   deps: SessionDeps,
+  requireForeground = false,
 ): Promise<{ readonly candidates: readonly Proc[]; readonly probe?: Probe }> => {
   const config = deps.stateDir === undefined ? {} : { stateDir: deps.stateDir };
   const rts = deps.rts ?? runtimesFor(config, process.env, deps.run);
   try {
-    const probe = await rts.for(ref).probe(ref);
+    const rt = rts.for(ref);
+    const probe =
+      requireForeground && ref.runtime === "hc" ? await rt.probe(ref, { foregroundOnly: true }) : await rt.probe(ref);
     const root = probe.rootPid;
     return { probe, candidates: root ? [...table.filter((p) => p.pid === root), ...descendants(table, root)] : [] };
   } catch {
@@ -129,10 +132,13 @@ export const trustedPaneState = async (
   stateDir: string,
   ref: SessionRef,
   rts?: ChosenRuntimes,
+  requireForeground = false,
 ): Promise<PaneState | null> => {
   if (!readPaneState(stateDir, ref.id)) return null;
   const deps: SessionDeps = { run, stateDir, sessionsDir: "", ...(rts === undefined ? {} : { rts }) };
-  const { candidates, probe } = await sessionProcs(ref, await procTable(run), deps);
+  const { candidates, probe } = await sessionProcs(ref, await procTable(run), deps, requireForeground);
+  // The runtime only returns non-shell OMP identity when its writer owns the foreground.
+  if (requireForeground && (probe?.shellInFront !== false || probe.approvalPending !== false)) return null;
   return stateForAgent(stateDir, ref, candidates, probe);
 };
 
