@@ -105,6 +105,21 @@ test("programmatic overrides do not inherit an incorrect default or file provena
   }
 });
 
+test.each(["default", "config"] as const)(
+  "same-text programmatic assignments retain matching %s provenance, not assignment history",
+  async (selectedBy) => {
+    const base = await configured({ launchKeywords: "file request" });
+    const source = selectedBy === "default" ? defaultConfig(state.dir) : base.config;
+    const deps = { ...base, config: { ...source, stateDir: state.dir } };
+    const before = await prepareLaunch(deps, input());
+    const config = { ...deps.config, launchKeywords: deps.config.launchKeywords };
+    const after = await prepareLaunch({ ...deps, config }, input());
+    expect(after.lane.launchSelection).toEqual(source.launchSelection);
+    expect(after.lane.launchSelection?.selectedBy).toBe(selectedBy);
+    expect(after.preamble).toBe(before.preamble);
+  },
+);
+
 test("launch persists requested metadata but keeps the exact prompt and refuses to infer an active goal", async () => {
   const base = await configured();
   world.panes = [{ pane_id: "w:p9", workspace_id: "w", agent: "omp", agent_status: "working" }];

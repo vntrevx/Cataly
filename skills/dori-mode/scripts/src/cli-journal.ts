@@ -14,7 +14,8 @@ const report: Command = async ({ key, need, lane, config }) => {
   const target = await lane(key ?? die("report needs a lane key"));
   const kind = need("kind");
   if (isReportKind(kind)) {
-    console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, need("text"), realClock.now())));
+    const reports = new Reports(config.stateDir);
+    console.log(reportLine(reports.report(target.key, kind, need("text"), realClock.now(), target.lifecycleEpoch)));
   } else die("--kind must be milestone, blocker, question, halted or done");
 };
 

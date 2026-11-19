@@ -157,7 +157,8 @@ test("an empty prune lock directory is not replaced: the prune refuses and remov
 });
 
 test("a preparation killed before it cleaned up is removed under the lock, unless its identity is still leased", () => {
-  const c = pruneFixture();
+  // The only live holder created here is this worker's lease; the shell below has exited before any prune.
+  const c = pruneFixture(() => ownProcessFiles([String(process.pid)]));
   const x = c.native("x");
   const cache = join(c.home, ".cache/omp-dori");
   // A preparation whose owner was killed (a pid that has exited), as nativeStagePrefix names it.

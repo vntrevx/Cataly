@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-/** Requested launch text and its configuration origin, never proof of native activation or an active goal. */
+/** Provenance of matching launch text, not assignment history or proof of native activation or an active goal. */
 export type LaunchSelection = {
   readonly invocation: string;
   readonly selectedBy: "default" | "config" | "provided";
@@ -22,7 +22,8 @@ export const launchConfig = (invocation = "ulw set goal and work", path?: string
   },
 });
 
-// Programmatic callers can replace launchKeywords without going through loadConfig. Do not keep stale provenance.
+// Same-text programmatic assignments retain matching provenance; normalized objects have no assignment history.
+// A different invocation must not retain stale provenance.
 export const selectionFor = (config: LaunchConfig): LaunchSelection =>
   config.launchSelection?.invocation === config.launchKeywords
     ? config.launchSelection

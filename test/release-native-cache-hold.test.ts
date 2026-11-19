@@ -25,12 +25,13 @@ function cache() {
     rmSync(f.source, { recursive: true });
     return receipt;
   };
+  // These filesystem-only cases leave no live writer or child; exclude unrelated host writers and descriptors.
   const reasons = (scanned: readonly string[] = [refs]) =>
     Object.fromEntries(
-      reportNativeCache(home, [], scanned, ownProcessCwds, { files: ownProcessFiles }).map((entry) => [
-        entry.directory,
-        entry.protectedBy,
-      ]),
+      reportNativeCache(home, [], scanned, ownProcessCwds, {
+        table: () => "",
+        files: () => ownProcessFiles([String(process.pid)]),
+      }).map((entry) => [entry.directory, entry.protectedBy]),
     );
   return { root, refs, native, reasons };
 }

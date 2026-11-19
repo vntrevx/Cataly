@@ -20,6 +20,27 @@ On Linux, `sampleHost` also exposes `cgroup`: the tightest visible ancestor hard
 
 Each budget retains raw `currentBytes` and `chargedFreePct`. Admission uses `freePct`, an available-budget estimate that subtracts clean, unmapped file cache from current usage: `max(0, file - shmem - file_mapped - file_dirty - file_writeback)`, capped at current usage. This prevents ordinary file caching from permanently holding a constrained account. It does not treat shared, mapped, dirty, writeback or kernel pages as free, and it is an estimate rather than an allocation guarantee. v1 uses `cache`/`mapped_file` and the matching local or `total_*` counters according to `memory.use_hierarchy`. Missing or malformed cache statistics set `cgroup.incomplete` and keep the raw charged budget as the conservative fallback. Missing limit or usage readings also set `incomplete`; readable budgets still apply, and unavailable budgets retain the existing host fallback rather than becoming an invented zero or unlimited value. No supported cgroup membership yields `version: null`. A resolved v2 hierarchy retains `version: 2` when memory interface files are absent: missing non-root limits set `incomplete: true`, while absent interfaces at the hierarchy root are expected. A fully readable unlimited hierarchy has null budgets with `incomplete: false`. Cgroup namespaces can hide outer ancestors, so only the visible hierarchy is covered. macOS does not read cgroup files.
 
+## Lane status and one-message boards
+
+`dori status [<key>] [--json]` reads open lanes, or one named lane including a closed lane. It joins registry state, PID/session-verified OMP runtime state, report/checkpoint journals, open decisions and recorded monitor metadata. Unreadable registry files and invalid status fields are isolated with `registryIncomplete: true`; healthy lanes remain visible, and an empty incomplete view is unknown rather than "none open". Each source keeps its timestamp; unavailable runtime or journal observations are unknown, not idle or zero. Runtime identity must also match the lane's recorded session binding (`sync --write` establishes it); an unbound lane is unknown even if its pane contains a live agent. Damaged decision or monitor metadata makes its count unknown rather than reporting the remaining readable subset as a complete count. Monitor flags and expiry values are validated before counting. Legacy argv that boot can match through command still makes status counts unknown when malformed. Monitor metadata does not prove a process is running. The last sweep note and nudge/post timestamps are recorded evidence, not a prediction of the next freshness action. Status never runs a sweep, writes journals, sends messages or reads private session transcripts.
+
+`dori eta <key-prefix> [--json]` summarizes historical opening-to-close elapsed minutes for that explicit prefix. Fewer than three valid closed lanes produces no estimate; otherwise the median, range and sample count are shown. An incomplete registry also suppresses the estimate and identifies the readable sample count. This is not a completion promise.
+
+Start a board only when its destination is authorized:
+
+```sh
+dori board discord --thread 123456789 --loop 2
+dori board telegram --to -100123456789 --thread 42 --loop 2
+```
+
+The existing `DORI_DISCORD_TOKEN` or `DORI_TELEGRAM_TOKEN` supplies authentication. Discord accepts numeric channel IDs with `--to` or a thread ID with `--thread`; Telegram requires a numeric chat ID. `--lane KEY` limits the view. Omit `--loop` (or set it to `0`) for one update; a positive value is minutes. No board starts with installation, boot, status or launch. Supervise the command with a native monitor if desired; stopping that monitor stops updates.
+
+The board rejects unsupported options or extra positional arguments. A supplied `--lane` must name exactly one valid lane; it never falls back to all lanes.
+
+Each destination owns one private `<stateDir>/boards/<sha256>.json` record. A lock serializes writers, and the message ID survives restart. Unchanged content sends nothing; changed content edits that message, never splits it. The bounded summary scrubs local paths and pane IDs, neutralizes mentions, and states when lanes were omitted. HTTP(S) evidence links retain their origin and path, not URL userinfo, query strings or fragments. Because spaces can belong to an unquoted path, text from a local path to the end of its non-URL segment is omitted conservatively. Its timestamp is the last successful content update, not a heartbeat: a stopped updater leaves that timestamp unchanged.
+
+Before a send/edit, a durable pending record is written. An ambiguous create or any failed edit stops the command and holds future calls rather than creating another message. A definitively rejected initial create (HTTP/API 4xx, including exhausted 429 backoff) removes only its own uncreated intent; after correcting permissions, a new explicit invocation can create the board. There is no automatic resend. Even an edit with a known ID requires explicit acknowledgement after failure: inspect the destination and pass `--message ID`. Discord scopes an edit to the selected channel. Telegram edits identify only the chat and message, not the topic, so a Telegram recovery ID must already be recorded for the exact board destination. An ambiguous Telegram create without a recorded ID stays pending; the command cannot safely attach an unbound ID. A missing message is not automatically replaced. Do not delete a pending record or retry a create merely because the response was lost. API acceptance is not proof that the owner read the board.
+
 ## Configuration
 
 `~/.dori/config.json` (or the path in `DORI_CONFIG`). Every field is optional; see `config.example.json`. `DORI_STATE_DIR`, `DORI_LEAD_PANE` and `DORI_RUNTIME` override the file.
@@ -82,6 +103,20 @@ wrappers or change running sessions. Setting a model ID alone does not
 install the extension or enable the tier. The 500,000-token window is a local
 context budget, not a server-side capacity increase.
 
+## Read-only diagnostics
+
+`dori doctor [--json] [--repo owner/repo]` checks the selected home's configuration, registry, worklog, lessons, desired monitor metadata and trusted live lead. It exits 1 when a visible WARN remains, otherwise 0; INFO is advisory. It never edits config, starts/stops a monitor, invokes a hook or usage reader, contacts a messenger, or reads private session transcripts. Local runtime/process probes are read-only. `dori boot` includes a local `DOCTOR warn=N` advisory without changing boot's existing exit policy.
+
+Checks are identified by `runtime`, `registry`, `monitors`, `monitor-filter`, `monitor-runtime`, `supervision`, `repo-identities`, `worklog` and `lessons`. Optional `doctor: { "ignore": ["lessons"] }` suppresses named diagnostics; the selected ignore list remains in doctor output. Nothing is ignored by default. Repository identities are checked for open lanes' merged/closed repository signals and the optional `--repo`; doctor does not guess a GitHub repository from a directory name.
+
+`dori monitor-presets [watch|dead-panes|guard|freshness|pr-watch] [--json]` prints recommended structured argv and filters, starting nothing. Review the preset and restart only the explicitly authorized monitor in its owner session. Side installations must use their own bound CLI/PATH. Only the trusted current lead's filter produces WARN; historical or unverified owners stay INFO, so old manifests do not keep doctor failing after an upgrade. Filter diagnostics recognize direct `dori`, `omp-dori`, and `bun .../dori-mode/scripts/src/cli.ts` argv, even when the monitor was renamed; arbitrary shell scripts are not inferred from their name. The probes detect missing event categories, not every possible restriction in a custom regex.
+
+Desired specs alone are not evidence that a child is running. Only the current trusted Dori process, a fresh matching runtime receipt and the child's PID/start identity establish liveness. Other sessions' recorded monitors stay INFO with liveness explicitly unverified; stale, unreadable or mismatched current-lead receipts warn rather than claiming that a monitor is healthy. Doctor does not recommend an unattended restart.
+
+Doctor checks unreadable legacy terminal metadata under the same `PI_SESSION_DIR` or `PI_SESSION_FILE` roots as `dori boot`; those records cannot attest native monitor liveness. A native receipt must also match the desired restart policy, including when no restart policy is set.
+
+Malformed lane keys are counted without being printed. Unrecognized status or approval values in a trusted lead record appear as `unknown`; a record that fails the runtime trust checks does not attest a live lead.
+
 ## Library modules
 
 The CLI is a thin layer over typed modules you can import in your own scripts:
@@ -120,6 +155,8 @@ The lane never gets the Slack token itself: on hc every env value is a command-l
 `--dry-run` prints the brief as the lane would get it, lessons and footer included, and changes nothing.
 
 New launches record `launchSelection` in the registry and footer: `invocation` is the unchanged `launchKeywords` text, `selectedBy` is `default` (built-in), `config` (an explicit setting, including an empty string), or `provided` (programmatic configuration without matching load provenance), and `reason` identifies that origin. The configuration loader derives the origin, including the loaded file path, rather than trusting a supplied metadata field or rereading a file after it changes. Older and adopted lanes have no invented historical selection.
+
+`selectedBy` describes the provenance attached to matching invocation text, not assignment history. A file that explicitly supplies the built-in text is still `config`. Spreading a default or loaded configuration and assigning the same text again retains its matching `default` or `config` origin; the normalized object cannot identify that reassignment. Without matching provenance, the source is `provided`.
 
 This is requested-selection metadata, not proof of native activation, delivery or goal creation. The default remains `ulw set goal and work`; prompt bytes, raw `tell` delivery and startup goal checks are unchanged. Workflow names in a brief, quoted example or path do not choose this metadata. Native OMP/ULW still owns activation and workflow semantics; there is no new per-lane workflow switch.
 
@@ -226,6 +263,10 @@ A paused lane is skipped by `freshness`: no nudge, no post. Only `dori resume` e
 `resume` sends `/goal resume` and confirms the trusted OMP goal state is active, then restores the lane's `pausedFrom` status and resets quiet time so a long pause does not become an instant nudge. Missing/stale state, an approval hold or an unconfirmed send gives `RESUME_UNVERIFIED`, exit 3.
 
 Both print `PAUSED` / `RESUMED` and exit 0 on success. A lane in any other state is refused (`NOT_PAUSED` / `NOT_RESUMED`, exit 2), and a second `pause` is a no-op. A lane claimed, objected to or closed while the goal command ran is left as that writer put it (`LANE_CHANGED`, exit 3); the goal command itself was confirmed, so check the lane before retrying. `claim-done` and `object-done` on a paused lane move it out of `paused` in the registry while its goal stays paused.
+
+### `dori park <key> --note TEXT [--resume-when TEXT]` / `dori reopen <key> [--note TEXT]` / `dori holds [--thread REF]`
+
+`park` pauses an exact bound OMP session and closes only its pane; `close <key> --abandon --reason TEXT` explicitly ends unfinished work. Neither claims Done or removes worktrees. `holds` lists pauses and parked or interrupted park intents without changing anything. Reopen is explicit and reuses the recorded session. See [pause, park and abandon](sessions.md#pause-park-and-abandon) for identity, pending Discord work and recovery rules.
 
 ### `dori tell <key> --text TEXT`
 Sends the lead's message to a registered lane's session once through `sendVerified`, the same path `claim-done`, `object-done`, `pause` and the freshness nudge use, and prints one line:

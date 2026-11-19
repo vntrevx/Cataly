@@ -1,86 +1,9 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { releaseVersion } from "../../../../src/release/version.ts";
-
 import type { Command } from "./cli-context.ts";
+import { USAGE } from "./cli-usage.ts";
 import type { FlowDeps } from "./done-flow.ts";
-
-const USAGE = `dori <command> [options]
-
-  harness <command> [args...]          dispatch every upstream harness command (up, inbox, duty, review, merge, loop, backlog, migrate...)
-  update <command> [options]           verified releases: check, install, status, rollback, cache [--version TAG] [--from DIST]
-  upstream <command> --config FILE     maintainer staging: check, stage, watch, status, snapshot, restore, recover, restart
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
-         [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
-  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
-  sync   [--write]                     registry vs live panes; read-only unless --write
-  boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
-  report <key> --kind milestone|blocker|question|halted|done --text TEXT
-                                       append a durable progress report and print its [REPORT] line
-  checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
-                                       record a completed step once; a conflicting rewrite is refused
-  checkpoints <key>                    read completed steps before resuming remote work
-  verify-pr <owner/repo> <num> [--loop N] [--cwd DIR]
-                                       check every commit's author/committer email and PR-level tests; print the UI test loop (not run)
-  pr track <owner/repo#N|pull-url> [--lane K] [--thread REF] / pr untrack <ref> / pr list
-  pr watch [--loop MIN] [--ignore-author LOGIN]... [--self LOGIN]
-                                       follow tracked PRs after their lane: PR_FEEDBACK, PR_CI_FAIL, PR_HEAD_MOVED, PR_MERGED
-  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for your own session (HC_TERMINAL_ID or HERDR_PANE_ID)
-  object-done <key> --reason TEXT [--reason TEXT ...]
-  lesson add <key> --rule TEXT --evidence PATH [--cwd DIR]
-  lesson add --global --rule TEXT --evidence REF
-                                       the lead's lesson for every lane, whatever its repo
-  lesson list [--cwd DIR]             show current lessons (global ones included), newest first
-  lesson mark <id> --outcome pending|helped|no-effect|harmful|encoded
-  worklog add <title> --source REF     record an owner request when it arrives
-  worklog next|note <id> <text>        set the item's next step, or add a note (a decision, an owner)
-  worklog close <id> --result TEXT     close the item with what came of it
-  worklog list [--open]                items as JSON; <stateDir>/worklog.md holds the same for reading
-  decision ask <question> --source REF [--lane K] [--thread REF] [--option TEXT]... [--recommend N] [--worklog ID] [--message REF]
-                                       record a choice put to the owner (up to 9 numbered options)
-  decision posted <id> --message REF   record where the question was posted; a reply to that message answers it
-  decision answer <id> <answer> --source REF
-                                       record the owner's answer: a bare number picks that option, other text stays free text
-  decision withdraw <id> --reason TEXT no longer needed
-  decision match <message-ref>         print the open decision posted as that message; exit 1 when there is none
-  decision list [--open]               decisions as JSON, oldest first
-  decision digest                      one line per open decision, to paste into a status message
-  close  <key> [--note TEXT] [--lesson TEXT] [--evidence PATH]
-                                       close now (Done signals must read back live); an optional lesson never blocks it
-  pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
-  resume <key> [--note TEXT]           undo pause: goal resumed (read back), lane back to its earlier status
-  tell   <key> --text TEXT             one verified message to the lane's agent: TOLD (exit 0), TELL_UNCONFIRMED (exit 3,
-                                       never resend), TELL_FAILED (exit 2, nothing sent: shell, approval, hc blocked
-                                       agent, paused lane; a runtime refusal names the status read after it)
-  watch                                long-running: emits LANE_* lines every 30 s
-  freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
-  dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
-  guard [--loop MIN]                   host load, memory, disk and pane-count alerts
-  heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
-  can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH|-) [--thread ID] [--edit ID] [--reply ID]
-                                       Discord accepts channel names with DORI_DISCORD_GUILD_ID; --thread needs no --to and also targets edits
-                                       Discord splits text past 2000 characters (SENT lists every id); --reply is Discord only
-  thread discord create --to CHANNEL --title T [--text T] [--tag NAME]... [--message ID]
-                                       --message opens the thread on that message of a text channel
-  thread discord set <thread> [--title T] [--tag NAME]... [--archive|--unarchive]
-                                       open a forum post or text-channel thread; rename, replace tags, archive or reopen
-  react discord --to CHANNEL [--thread ID] --message ID [--emoji E] [--remove]
-                                       add or remove the bot's own reaction (eyes by default); --thread needs no --to
-  channel discord set <channel> --purpose T | clear <channel> | list
-                                       the operator's purpose note per channel or thread, shown by inbound --context
-  presence <slack|discord>             keep the account shown as online until stopped
-  transcribe <audio-file|url>           run hooks.transcribe and print the text; HTTP(S) downloads are private and temporary
-  inbound slack|telegram|discord [--loop MIN] [--gateway] [--context]
-                                       print INBOUND lines: Slack unread thread replies / Telegram owner DMs, edits and media + configured topic
-                                       the Dori posted in (any helper), DMs and channels with unread mentions
-                                       Discord requires DORI_DISCORD_TOKEN, DORI_DISCORD_OWNER_ID and configured channel IDs
-                                       (more channels or threads: DORI_DISCORD_CHANNEL_IDS=a,b; threads of a watched channel are followed unless
-                                       DORI_DISCORD_THREADS=off; every readable one: DORI_DISCORD_SCOPE=all)
-                                       Discord polls every 3 seconds by default; --loop MIN overrides the interval;
-                                       --gateway delivers owner messages live with REST backfill and ignores --loop, including 0
-                                       --context (Discord) adds INBOUND_CONTEXT: channel, thread, topic and recorded purposes
-  inbound-lag [--limit N]              receive-lag percentiles from state/telegram-lag.jsonl (the meter behind the INBOUND lines)`;
 
 const [command = "", ...rest] = process.argv.slice(2);
 // Command-selected imports keep unrelated graphs out of short-lived CLI processes.
@@ -101,7 +24,6 @@ const config = await loadConfig().catch((e: unknown) =>
   e instanceof ConfigError ? die(e.message) : Promise.reject(e),
 );
 const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
-
 const flags = parseArgs({
   args: rest,
   allowPositionals: true,
@@ -117,7 +39,11 @@ const flags = parseArgs({
     evidence: { type: "string" },
     reason: { type: "string", multiple: true },
     note: { type: "string" },
+    abandon: { type: "boolean" },
+    "resume-when": { type: "string" },
     write: { type: "boolean" },
+    json: { type: "boolean" },
+    repo: { type: "string" },
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
@@ -157,7 +83,6 @@ const flags = parseArgs({
     self: { type: "string" },
   },
 });
-
 let commands: Readonly<Record<string, Command>> = {};
 switch (command) {
   case "report":
@@ -172,13 +97,23 @@ switch (command) {
   case "claim-done":
   case "object-done":
   case "close":
+  case "park":
+  case "reopen":
+  case "holds":
   case "pause":
   case "resume":
   case "tell":
     commands = (await import("./cli-lanes.ts")).laneCommands;
     break;
+  case "status":
+  case "board":
+  case "eta":
+    commands = (await import("./cli-status.ts")).statusCommands;
+    break;
   case "sync":
   case "boot":
+  case "doctor":
+  case "monitor-presets":
   case "verify-pr":
   case "watch":
   case "freshness":
@@ -204,6 +139,10 @@ switch (command) {
   case "pr":
     commands = (await import("./cli-pr.ts")).prCommands;
     break;
+  case "voice":
+    // Keep the opt-in voice graph out of unrelated command startup paths.
+    commands = { voice: (await import("./cli-voice.ts")).voiceCommand };
+    break;
 }
 const handler = Object.hasOwn(commands, command) ? commands[command] : undefined;
 
@@ -220,9 +159,12 @@ try {
   const { journalErrors } = await import("./cli-journal.ts");
   const { decisionErrors } = await import("./cli-decisions.ts");
   const { prErrors } = await import("./cli-pr.ts");
+  const { statusErrors } = await import("./cli-status.ts");
   if (
     e instanceof LaunchError ||
-    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
+    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors, ...statusErrors].some(
+      (type) => e instanceof type,
+    )
   )
     die((e as Error).message);
   throw e;

@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { leaseNativeIdentity } from "../src/release/native-cache-lease.ts";
 import type { processCwds } from "../src/release/process-cwd.ts";
 import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
-import { ownProcessCwds } from "./source-bundle-setup.ts";
+import { ownProcessCwds, ownProcessFiles } from "./source-bundle-setup.ts";
 
 // Quarantine and its second prune: writers, other prunes, errors and copies an earlier prune left behind.
 
@@ -26,7 +26,8 @@ const leaseDuringPrune = (home: string, identity: string) => {
 // Contract (owner decision, R1): a prune never removes an identity by itself; only --delete-quarantined does, after
 // the grace period. The removal steps below therefore ask for it.
 test("a prune quarantines what nothing uses; only an asked prune after the grace period removes it, and says why", () => {
-  const c = pruneFixture();
+  // Synchronous fixture setup leaves no live child; this grace-period case has no external file holder.
+  const c = pruneFixture(() => ownProcessFiles([String(process.pid)]));
   const free = c.native("free");
   const used = c.native("used");
   writeFileSync(join(c.refs, "omp"), c.wrapper(used.omp));

@@ -111,6 +111,7 @@ and reports. Optional telemetry can be disabled with `DORI_TELEMETRY=0` or
 - [Container setup](docs/container.md)
 - [Scheduling and backlog](docs/hourly-loop.md)
 - [Shared locks and lane priority](docs/locks.md)
+- [Opt-in Discord voice assistant (paid)](docs/discord-voice.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Licenses and source attribution](LICENSE) · [Licensing guide](LICENSING.md) · [Modified-copy notice](NOTICE)

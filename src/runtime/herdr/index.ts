@@ -72,8 +72,8 @@ export class HerdrRuntime implements SessionRuntime {
   }
 
   /** Native herdr delivery keeps its status semantics; OMP approvals always hold delivery. */
-  deliver(ref: SessionRef, text: string, _opts?: DeliverOptions): Promise<DeliverOutcome> {
-    return deliver(this.cli, ref.id, text, this.sleep, this.stateDir);
+  deliver(ref: SessionRef, text: string, opts?: DeliverOptions): Promise<DeliverOutcome> {
+    return deliver(this.cli, ref.id, text, this.sleep, this.stateDir, opts?.expectedSessionId);
   }
 
   submitTyped(ref: SessionRef, into: AgentIdentity): Promise<SubmitResult> {

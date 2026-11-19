@@ -31,10 +31,15 @@ export async function deliver(
   opts: DeliverOptions = {},
   stateDir?: string,
 ): Promise<DeliverOutcome> {
-  const { when = "idle", force = false } = opts;
+  const { when = "idle", force = false, expectedSessionId } = opts;
   let probed: HcProbe;
   try {
-    probed = await probeWithWord(exec, id, stateDir);
+    probed = await probeWithWord(
+      exec,
+      id,
+      stateDir,
+      expectedSessionId === undefined ? "observe" : "refresh-foreground",
+    );
   } catch (e) {
     process.stderr.write(`dori: hc get ${id} failed (${messageOf(e)}); holding delivery\n`);
     return { kind: "not-ready", status: "unknown" };
@@ -42,6 +47,8 @@ export async function deliver(
   const before = probed.probe;
   if (before.status === "gone" || before.status === "shell" || before.shellInFront) return { kind: "no-agent" };
   if (before.approvalPending) return { kind: "not-ready", status: "blocked" };
+  if (expectedSessionId !== undefined && (before.pid === undefined || before.sessionId !== expectedSessionId))
+    return { kind: "not-ready", status: "unknown" };
   if (!force && (before.status === "blocked" || before.status === "error"))
     return { kind: "not-ready", status: before.status };
   // A terminal that has never reported (status null, no shell in front: an editor, a program without OSC 7501) gets

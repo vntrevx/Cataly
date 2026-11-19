@@ -14,6 +14,7 @@ type Intake = ThreadIntake & {
 };
 
 export type DiscordInboundLive = { done: Promise<void>; close(): void };
+export type DiscordInboundLifecycle = { ready(): void; disconnect(): void };
 
 /**
  * Scoped dispatches and backfills share the durable FIFO. Unknown thread scope is resolved in bounded RAM
@@ -27,6 +28,7 @@ export const discordInboundLive = (
   emit: Emit,
   report: (line: string) => void,
   queue: DiscordInboundQueue,
+  lifecycle?: DiscordInboundLifecycle,
 ): DiscordInboundLive => {
   const admission = new AbortController();
   const cancelled = new Error("Discord inbound closed before ledger admission");
@@ -111,8 +113,10 @@ export const discordInboundLive = (
     label: "DISCORD_GATEWAY",
     intents: GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT,
     online: false,
+    onDisconnect: () => lifecycle?.disconnect(),
     onReady: () => {
       try {
+        lifecycle?.ready();
         enqueue("sync");
       } catch (error) {
         fail(error);
