@@ -181,3 +181,7 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+## Unreleased addendum
+
+- `dori decision` records who may settle each choice: `ask --kind routine` (reversible, in scope, at least two options, in the work's thread) lets the lead record `decision choose <id> <N> --reason TEXT --source REF --thread REF` after posting its choice and reason in that thread, while unmarked and pre-existing decisions stay owner-only; `list` shows `kind` and the answer's `authority`, `digest` shows `kind`, the same rules hold for hand-written or raced records, and no decision answer or choice grants a native execution approval.

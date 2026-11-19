@@ -45,6 +45,7 @@ test("ask, posted and a numeric answer take one decision through its life, and e
     question: "Which store?",
     source: "discord:c1/100",
     askedAt: at(0),
+    kind: "owner",
     options: ["Postgres", "SQLite"],
     recommend: 2,
     message: "discord:c1/101",
@@ -52,6 +53,7 @@ test("ask, posted and a numeric answer take one decision through its life, and e
     answer: "2",
     option: 2,
     answerSource: "discord:c1/102",
+    authority: "owner",
   });
   expect(new Decisions(state.dir).read()).toEqual({ items: [answered], problems: [], warnings: [] });
   expect(asked.id).toMatch(/^[0-9a-f]{8}$/);
@@ -129,7 +131,7 @@ test("racing answers: the first wins, a later answer, withdraw or posted is a wa
     `${ledger.path}:6: decision ${raced.id} was already answered; posted ignored`,
   ]);
   expect(read.items.filter((d) => d.answeredAt === undefined && d.withdrawnAt === undefined)).toEqual([
-    { id: open.id, question: "Still open?", source: "s:2", askedAt: at(1), options: [] },
+    { id: open.id, question: "Still open?", source: "s:2", askedAt: at(1), kind: "owner", options: [] },
   ]);
   // And the command refuses to resolve it again.
   expect(() => ledger.withdraw(raced.id, "late", T0 + 6)).toThrow(`decision ${raced.id} is answered: first`);
@@ -237,8 +239,8 @@ test("digest prints one line per open decision with numbered options and the rec
   // Then only the open ones print, oldest first, with the age in whole hours.
   expect([result.code, result.err]).toEqual([0, ""]);
   expect(result.out.trim().split("\n")).toEqual([
-    `${a.id} 3h lane=store-lane Which store? | 1) Postgres | 2) SQLite (recommended)`,
-    `${b.id} 0h lane=- Rename the bot?`,
+    `${a.id} 3h lane=store-lane kind=owner Which store? | 1) Postgres | 2) SQLite (recommended)`,
+    `${b.id} 0h lane=- kind=owner Rename the bot?`,
   ]);
   expect(existsSync(join(state.dir, "decisions.md"))).toBe(false);
 });

@@ -36,11 +36,15 @@ const USAGE = `dori <command> [options]
   worklog next|note <id> <text>        set the item's next step, or add a note (a decision, an owner)
   worklog close <id> --result TEXT     close the item with what came of it
   worklog list [--open]                items as JSON; <stateDir>/worklog.md holds the same for reading
-  decision ask <question> --source REF [--lane K] [--thread REF] [--option TEXT]... [--recommend N] [--worklog ID] [--message REF]
-                                       record a choice put to the owner (up to 9 numbered options)
+  decision ask <question> --source REF [--lane K] [--thread REF] [--kind owner|routine] [--option TEXT]... [--recommend N] [--worklog ID] [--message REF]
+                                       record a choice put to the owner (up to 9 numbered options); without --kind it is the owner's,
+                                       routine (reversible, in scope, 2+ options, a thread) lets the lead choose too
   decision posted <id> --message REF   record where the question was posted; a reply to that message answers it
   decision answer <id> <answer> --source REF
                                        record the owner's answer: a bare number picks that option, other text stays free text
+  decision choose <id> <N> --reason TEXT --source REF --thread REF
+                                       record the lead's choice of option N of a routine decision, posted with its reason in
+                                       the decision's thread (--source); never an owner answer or a permission grant
   decision withdraw <id> --reason TEXT no longer needed
   decision match <message-ref>         print the open decision posted as that message; exit 1 when there is none
   decision list [--open]               decisions as JSON, oldest first

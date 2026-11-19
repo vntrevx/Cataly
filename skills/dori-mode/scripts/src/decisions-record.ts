@@ -1,4 +1,17 @@
 /** The decisions.jsonl record format: one event per line, each validated alone and then folded in order. */
+
+/**
+ * Who may settle a decision. `owner` (every question recorded without a kind reads as one): only the owner's answer
+ * does. `routine`: a reversible choice inside the work's original scope, between at least two numbered options, in the
+ * thread of that work; the lead may also choose one of those options with a reason. Cost, permissions, outside
+ * commitments, irreversible work, a change of scope or goal, and open questions stay `owner`. Neither kind is a
+ * permission grant: a native execution approval is answered only at its own prompt, never by this record.
+ */
+export type DecisionKind = "owner" | "routine";
+export const DECISION_KINDS: readonly DecisionKind[] = ["owner", "routine"];
+/** A routine choice is a pick between options the question already named, so it needs at least two of them. */
+const ROUTINE_MIN_OPTIONS = 2;
+
 export type Decision = {
   readonly id: string;
   readonly question: string;
@@ -6,6 +19,7 @@ export type Decision = {
   readonly askedAt: string;
   readonly lane?: string;
   readonly thread?: string;
+  readonly kind: DecisionKind;
   /** Numbered 1..n in this order; an answer names an option by its number. */
   readonly options: readonly string[];
   readonly recommend?: number;
@@ -15,8 +29,12 @@ export type Decision = {
   readonly answeredAt?: string;
   readonly answer?: string;
   readonly option?: number;
+  /** The owner's reply, or for the lead's choice the message that told the decision's thread. */
   readonly answerSource?: string;
+  /** Who settled the answer: the owner's reply, or the lead's choice of a routine decision's option. */
+  readonly authority?: "owner" | "lead";
   readonly withdrawnAt?: string;
+  /** Why it was withdrawn, or why the lead chose that option. */
   readonly reason?: string;
 };
 export type DecisionAsk = {
@@ -24,17 +42,21 @@ export type DecisionAsk = {
   readonly source: string;
   readonly lane?: string;
   readonly thread?: string;
+  readonly kind?: DecisionKind;
   readonly options?: readonly string[];
   readonly recommend?: number;
   readonly worklog?: string;
   readonly message?: string;
 };
+/** The lead's choice of a routine decision's option: its reason, the message that told the thread, and that thread. */
+export type DecisionChoice = { readonly reason: string; readonly source: string; readonly thread: string };
 /** `n` is the writing event's own random nonce: a writer finds its own event in the readback by it, never by content. */
 type Stamp = { readonly id: string; readonly at: string; readonly n: string };
 export type Event =
   | (Stamp & { readonly op: "ask" } & DecisionAsk)
   | (Stamp & { readonly op: "posted"; readonly message: string })
   | (Stamp & { readonly op: "answer"; readonly answer: string; readonly source: string; readonly option?: number })
+  | (Stamp & { readonly op: "choose"; readonly option: number } & DecisionChoice)
   | (Stamp & { readonly op: "withdraw"; readonly reason: string });
 /** problems are damage; warnings are the normal results of racing writers that are still worth naming. */
 export type DecisionRead = { readonly items: Decision[]; readonly problems: string[]; readonly warnings: string[] };
@@ -58,9 +80,15 @@ const SHAPES = {
   ask: { need: { question: 1000, source: 400 }, may: { lane: 200, thread: 400, worklog: 8, message: 400 } },
   posted: { need: { message: 400 }, may: {} },
   answer: { need: { answer: 1000, source: 400 }, may: {} },
+  choose: { need: { reason: 1000, source: 400, thread: 400 }, may: {} },
   withdraw: { need: { reason: 1000 }, may: {} },
 } as const satisfies Record<Event["op"], { need: Record<string, number>; may: Record<string, number> }>;
-const NUMBERS: Readonly<Record<string, readonly string[]>> = { ask: ["options", "recommend"], answer: ["option"] };
+/** The fields that are not one line of text, each checked on its own below. */
+const OTHERS: Readonly<Record<string, readonly string[]>> = {
+  ask: ["kind", "options", "recommend"],
+  answer: ["option"],
+  choose: ["option"],
+};
 
 export const parseEvent = (value: unknown): Event => {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -74,9 +102,9 @@ export const parseEvent = (value: unknown): Event => {
     throw new DecisionError('decision field "n" must be 8 lowercase hex digits');
   const op = record["op"];
   if (typeof op !== "string" || !Object.hasOwn(SHAPES, op))
-    throw new DecisionError('decision field "op" must be ask, posted, answer or withdraw');
+    throw new DecisionError('decision field "op" must be ask, posted, answer, choose or withdraw');
   const shape: { need: Record<string, number>; may: Record<string, number> } = SHAPES[op as Event["op"]];
-  const known = ["op", "id", "at", "n", ...Object.keys(shape.need), ...Object.keys(shape.may), ...(NUMBERS[op] ?? [])];
+  const known = ["op", "id", "at", "n", ...Object.keys(shape.need), ...Object.keys(shape.may), ...(OTHERS[op] ?? [])];
   const unknown = Object.keys(record).find((name) => !known.includes(name));
   if (unknown !== undefined) throw new DecisionError(`unknown decision field "${unknown}"`);
   for (const [name, max] of Object.entries({ ...shape.need, ...shape.may })) {
@@ -102,6 +130,18 @@ export const parseEvent = (value: unknown): Event => {
     );
   if (record["option"] !== undefined && !inRange(record["option"], MAX_OPTIONS))
     throw new DecisionError(`decision field "option" must be an option number from 1 to ${MAX_OPTIONS}`);
+  if (op === "choose" && record["option"] === undefined)
+    throw new DecisionError("the lead's choice must name an option number");
+  const kind = record["kind"];
+  if (kind !== undefined && !DECISION_KINDS.includes(kind as DecisionKind))
+    throw new DecisionError(`decision field "kind" must be ${DECISION_KINDS.join(" or ")}`);
+  // A routine decision is a pick between named options in a known thread; anything else stays the owner's.
+  if (kind === "routine" && count < ROUTINE_MIN_OPTIONS)
+    throw new DecisionError(
+      `a routine decision needs at least ${ROUTINE_MIN_OPTIONS} options; an open question is the owner's`,
+    );
+  if (kind === "routine" && (record["thread"] === undefined || record["thread"] === "none"))
+    throw new DecisionError("a routine decision needs the thread of the work it belongs to");
   return record as Event;
 };
 
