@@ -84,7 +84,7 @@ async function verifyFooterRuntime() {
     process.env["DORI_CONFIG"] = configFile;
     const brief = join(dir, "brief.md");
     writeFileSync(brief, "Perform the fixture work.");
-    for (const bin of ["herdr", "hc"])
+    for (const bin of ["herdr", "hc", "tern"])
       writeFileSync(
         join(dir, bin),
         `#!/usr/bin/env bun\nawait Bun.write(process.env.ARGV_LOG, JSON.stringify([${JSON.stringify(bin)}, ...process.argv.slice(2)]));\n`,
@@ -104,6 +104,8 @@ next line`;
       { configured: "herdr", env: { DORI_RUNTIME: "hc" }, selected: "hc" },
       { env: { HC_TERMINAL_ID: "t1" }, selected: "hc" },
       { env: { HERDR_PANE_ID: "w:p1" }, selected: "herdr" },
+      { configured: "tern", env: {}, selected: "tern" },
+      { env: { TERN_PANE: "5001" }, selected: "tern" },
       { env: { PATH: dir }, selected: "hc" },
       { configured: "herdr", env: {}, lead: "" },
       { env: {} },
@@ -162,7 +164,9 @@ next line`;
         const sent =
           fixture.selected === "herdr"
             ? ["pane", "run", config.leadPane, report]
-            : ["send", config.leadPane, "--", report];
+            : fixture.selected === "tern"
+              ? ["run", config.leadPane, "--", report]
+              : ["send", config.leadPane, "--", report];
         expect(await Bun.file(argvLog).json()).toEqual([fixture.selected, ...sent]);
       } else expect(forward).toBeUndefined();
       expect(await Bun.file(journal.path(key)).text()).toBe(beforeForward);

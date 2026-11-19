@@ -182,12 +182,12 @@ export async function migrate(d: Deps, t: Target, opts: MigrateOpts): Promise<nu
   return code;
 }
 
-const KINDS: readonly RuntimeKind[] = ["herdr", "hc"];
+const KINDS: readonly RuntimeKind[] = ["herdr", "hc", "tern"];
 const ROLE_NAMES: readonly Role[] = [...AGENT_ROLES, ...LOOP_ROLES];
 
 export async function runMigrate(d: Deps, a: Args): Promise<number> {
   const to = (one(a, "to") ?? d.choice().kind) as RuntimeKind;
-  if (!KINDS.includes(to)) throw new Refusal(`--to must be herdr or hc`);
+  if (!KINDS.includes(to)) throw new Refusal(`--to must be herdr, hc or tern`);
   const role = one(a, "role") as Role | undefined;
   if (role !== undefined && !ROLE_NAMES.includes(role))
     throw new Refusal(`--role must be one of ${ROLE_NAMES.join(", ")}`);

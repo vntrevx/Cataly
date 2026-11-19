@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { groupId } from "../src/runtime/group.ts";
+import { Runtimes } from "../src/runtime/registry.ts";
+import { TernRuntime } from "../src/runtime/tern/index.ts";
 import { Store } from "../src/store.ts";
 import { Refusal } from "../src/refusal.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { href } from "./fake.ts";
+import { block, FakeTern } from "./fake-tern.ts";
 import { setup } from "./harness-setup.ts";
 
 describe("lanes", () => {
@@ -93,5 +96,37 @@ describe("startLane group fallback", () => {
     expect(run).not.toContain("w9");
     expect(run).not.toContain("w9:p9");
     expect(run).not.toContain("--workspace");
+  });
+
+  test("a tern lane is a named tab in the caller's own Tern session, else in the session named dori", async () => {
+    const { d: base, lead, brief } = setup();
+    const fake = new FakeTern({ "5001": block() });
+    const tern = new TernRuntime(fake.exec, { env: process.env, sleep: async () => {} });
+    const d = {
+      ...base,
+      runtimes: new Runtimes("tern", (k) => (k === "tern" ? tern : base.runtimes.for(href("w1:p1")))),
+    };
+    await withEnv({ ...clear, TERN_PANE: "5001" }, async () => {
+      await startLane(d, "inside", brief);
+    });
+    await withEnv({ ...clear, TERN_PANE: undefined }, async () => {
+      await startLane(d, "outside", brief);
+    });
+    const opened = fake.calls.filter((c) => c[0] === "new").map((c) => c.slice(0, 3));
+    expect(opened).toEqual([
+      ["new", "tab", "7001"],
+      ["new", "session", "dori"],
+    ]);
+    expect(fake.calls.filter((c) => c[0] === "rename").map((c) => c[2])).toEqual(["inside", "outside"]);
+    expect(fake.ran.map((r) => r.command.split(" ")[0])).toEqual(["omo", "omo"]);
+    expect(d.store.lane("inside")).toMatchObject({
+      sessionRef: { runtime: "tern", id: "8000", group: "7001", container: "8001" },
+      paneId: "8000",
+      tabId: "8001",
+    });
+    expect(lead.received).toEqual([
+      "[START inside] lane opened in tern:8000",
+      "[START outside] lane opened in tern:8003",
+    ]);
   });
 });

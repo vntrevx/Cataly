@@ -119,7 +119,7 @@ export const queueDefaultCwd = (config: DoriConfig): string => queueCwds.get(con
 
 export class ConfigError extends Error {}
 
-const RUNTIMES: Readonly<Record<TerminalRuntimeKind, true>> = { herdr: true, hc: true };
+const RUNTIMES: Readonly<Record<TerminalRuntimeKind, true>> = { herdr: true, hc: true, tern: true };
 const checkRuntime = (value: unknown): void => {
   if (value !== undefined && !(typeof value === "string" && Object.hasOwn(RUNTIMES, value)))
     throw new ConfigError(

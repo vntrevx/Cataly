@@ -37,9 +37,10 @@ export const validateLaunch = async (
     input.runtime !== undefined &&
     input.runtime !== "herdr" &&
     input.runtime !== "hc" &&
+    input.runtime !== "tern" &&
     input.runtime !== "headless"
   )
-    throw new LaunchError("launch runtime must be headless, hc or herdr");
+    throw new LaunchError("launch runtime must be headless, hc, herdr or tern");
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
   const queued = new LaunchQueue(deps.config.stateDir).read(input.key);
   if (queued && queued.status !== "cancelled" && !(queued.status === "starting" && input.queueId === queued.id))

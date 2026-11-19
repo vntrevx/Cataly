@@ -18,6 +18,7 @@ import { ompStateDir } from "./runtime/omp.ts";
 import { isOmpArgv } from "./runtime/omp-argv.ts";
 import { ownerPaths } from "./owner.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "./runtime/select.ts";
+import { TernRuntime } from "./runtime/tern/index.ts";
 import { Store } from "./store.ts";
 import { type HostLoad, KEY_RE, type Role, reservedKey } from "./store-types.ts";
 import { Telemetry, type Usage } from "./telemetry.ts";
@@ -58,6 +59,7 @@ export const defaultDeps = (): Deps => {
           const stateDir = ompStateDir(process.env);
           if (k === "headless") return new HeadlessRuntime(stateDir);
           if (k === "hc") return new HcRuntime(spawnExec, { stateDir });
+          if (k === "tern") return new TernRuntime(spawnExec, { stateDir });
           return new HerdrRuntime(spawnExec, process.env["DORI_HERDR_SESSION"], { stateDir });
         },
       );

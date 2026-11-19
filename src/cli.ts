@@ -68,8 +68,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const given = a.pos[2];
       const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
       if (given !== undefined && ref === undefined)
-        throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
-      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr or hc?)\n\n${USAGE}`);
+        throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3, hc:t7 or tern:42)`);
+      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr, hc or tern?)\n\n${USAGE}`);
       d.store.setRole(role, ref);
       console.log(`ROLE ${role}=${refText(ref)}`);
       return 0;

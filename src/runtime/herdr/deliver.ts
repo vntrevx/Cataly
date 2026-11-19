@@ -17,13 +17,13 @@ const ambiguous = (step: string, failure: unknown): DeliverOutcome => ({
   detail: `herdr ${step} failed: ${reasonOf(failure)}`,
   failure,
 });
-const identity = (seen: Probe): AgentIdentity => ({
+export const identity = (seen: Probe): AgentIdentity => ({
   ...(seen.agent !== undefined ? { agent: seen.agent } : {}),
   ...(seen.pgid !== undefined ? { pgid: seen.pgid } : {}),
   ...(seen.pid !== undefined ? { pid: seen.pid } : {}),
   ...(seen.sessionId !== undefined ? { sessionId: seen.sessionId } : {}),
 });
-const sameAgent = (into: AgentIdentity, seen: Probe): boolean =>
+export const sameAgent = (into: AgentIdentity, seen: Probe): boolean =>
   (into.agent === undefined || into.agent === seen.agent) &&
   (into.pgid === undefined || into.pgid === seen.pgid) &&
   (into.pid === undefined || into.pid === seen.pid) &&

@@ -8,7 +8,7 @@
  * - A nonempty config `ompUlwPath` applies omp-ulw through a gated API: its event, command and tool handlers run
  *   only in role sessions; load-time registrations stay visible everywhere. Source installs leave it empty for OMP loading.
  * - Pane state (`{stateDir}/sessions/<pane>.json`, read by the `dori` CLI): session id, goal status and open tool
- *   approvals of the Dori/lane session running in HERDR_PANE_ID or HC_TERMINAL_ID.
+ *   approvals of the Dori/lane session running in HC_TERMINAL_ID, HERDR_PANE_ID or TERN_PANE.
  * - Lanes without a goal get omp's `goal` tool so the agent can create its goal from the lane brief.
  * - The Dori session gets the `monitor` tool (monitor.ts).
  * - Root Dori/lane agents get compact role guidance on each turn; children do not.
@@ -443,8 +443,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   };
 
   /**
-   * Only the process that owns the pane reports it. `HERDR_PANE_ID` and `HC_TERMINAL_ID` are inherited by every
-   * child, so a nested `omp` run (a `-p` check, a subagent's own session) would otherwise take the pane record of
+   * Only the process that owns the pane reports it. `HERDR_PANE_ID`, `HC_TERMINAL_ID` and `TERN_PANE` are inherited by
+   * every child, so a nested `omp` run (a `-p` check, a subagent's own session) would otherwise take the pane record of
    * the live session above it and delete that record on its own shutdown — which reads to the watchdog as a dead
    * lead, so it restarts the lead every tick. An incumbent that is still alive, and not a newer process reusing its
    * pid, keeps its record.
@@ -473,7 +473,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   };
 
   const savePane = (ctx: DoriContext): void => {
-    const paneId = process.env.HC_TERMINAL_ID || process.env.HERDR_PANE_ID;
+    const paneId = process.env.HC_TERMINAL_ID || process.env.HERDR_PANE_ID || process.env.TERN_PANE;
     if (!paneId || stateDir === undefined || !session) return;
     // Only an interactive session taking over the pane clears an inactive resume pointer. Print/RPC children
     // inherit pane ids too, but do not own the terminal. A record another live process owns stays untouched.

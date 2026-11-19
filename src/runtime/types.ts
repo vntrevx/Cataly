@@ -1,6 +1,9 @@
-export type TerminalRuntimeKind = "herdr" | "hc";
+export type TerminalRuntimeKind = "herdr" | "hc" | "tern";
 export type RuntimeKind = TerminalRuntimeKind | "headless";
-/** One session as its runtime addresses it. `group`: the herdr workspace id or the hc dori.group label. `container`: the herdr tab id (absent on hc). */
+/**
+ * One session as its runtime addresses it. `group`: the herdr workspace id, the hc dori.group label or the Tern session
+ * id. `container`: the herdr or Tern tab id (absent on hc).
+ */
 export type SessionRef = {
   readonly runtime: RuntimeKind;
   readonly id: string;
@@ -50,7 +53,9 @@ export type SessionRole = "lead" | "duty" | "duty-loop" | "hourly-loop" | "lane"
 /**
  * Where the session is created. herdr: "workspace-root" = `workspace create` (the root pane is the session; the new workspace id
  * becomes the ref's group); "tab" = `tab create` in `group` (no --workspace when group is absent); "split-below" = `pane split`
- * below `near`. hc ignores the container kind: one labelled terminal running the user's shell with `env` set.
+ * below `near`. hc ignores the container kind: one labelled terminal running the user's shell with `env` set. tern:
+ * "workspace-root" = `new session`, "tab" = `new tab` in the `group` session (else the caller's own), "split-below" =
+ * `split <near> down`.
  */
 export type CreateSpec = {
   readonly name: string;
@@ -63,7 +68,7 @@ export type CreateSpec = {
 };
 export type DeliverWhen = "idle" | "working" | "any";
 /** `when`: hc uses --if idle / --if working / no gate for "any"; unknown and shell never receive agent delivery.
- * `force`: hc may type into a blocked agent, but OMP tool approvals always hold delivery. */
+ * `force`: hc may type into a blocked agent, but OMP tool approvals always hold delivery on every runtime. */
 export type DeliverOptions = {
   readonly when?: DeliverWhen;
   readonly force?: boolean;
@@ -87,43 +92,46 @@ export type ReadOptions = { readonly unwrapped?: boolean };
 export type ProbeOptions = { readonly foregroundOnly?: boolean };
 export interface SessionRuntime {
   readonly kind: RuntimeKind;
-  /** The caller's own session from the runtime's env (HERDR_PANE_ID + HERDR_WORKSPACE_ID / HC_TERMINAL_ID), or undefined. */
+  /** The caller's own session from the runtime's env (HERDR_PANE_ID + HERDR_WORKSPACE_ID / HC_TERMINAL_ID / TERN_PANE), or undefined. */
   self(): SessionRef | undefined;
-  /** herdr: `workspace create --label <label> --cwd <cwd> --no-focus` -> the workspace id (its root pane is left as is, as today). hc: returns `label` unchanged, no call. */
+  /** herdr: `workspace create --label <label> --cwd <cwd> --no-focus` -> the workspace id (its root pane is left as is, as today). hc: returns `label` unchanged, no call. tern: the caller's own session id, else `label`; no call that creates anything. */
   createGroup(label: string, cwd: string): Promise<string>;
   /** A session with the user's shell in it and nothing started. */
   create(spec: CreateSpec): Promise<SessionRef>;
-  /** herdr: `pane run <id> <command>`. hc: `send <id> <command>` into the shell (no --if: a shell reports no status). */
+  /** herdr: `pane run <id> <command>`. hc: `send <id> <command>` into the shell (no --if: a shell reports no status). tern: `run <id> -- <command>`. */
   start(ref: SessionRef, command: string): Promise<void>;
   list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef, opts?: ProbeOptions): Promise<Probe>;
-  /** herdr: `pane read --source recent` (`recent-unwrapped` when unwrapped). hc: `read`; unwrapped joins rows as wide as the terminal's `cols`. */
+  /** herdr: `pane read --source recent` (`recent-unwrapped` when unwrapped). hc: `read`; unwrapped joins rows as wide as the terminal's `cols`. tern: `capture --scrollback`, unwrapped as hc. */
   read(ref: SessionRef, lines: number, opts?: ReadOptions): Promise<string>;
   /** Never types into a session whose probe says shellInFront, whatever `status` says. Default `when` = "idle". */
   deliver(ref: SessionRef, text: string, opts?: DeliverOptions): Promise<DeliverOutcome>;
   submitTyped(ref: SessionRef, into: AgentIdentity): Promise<SubmitResult>;
   typeIntoShell(ref: SessionRef, text: string): Promise<boolean>;
   keys(ref: SessionRef, keys: readonly Key[]): Promise<void>;
-  /** herdr: "session" = `pane close <id>`; "container" = `tab close <ref.container>` (pane close when the ref has no container). hc: kill then rm for both. Default "session". */
+  /** herdr: "session" = `pane close <id>`; "container" = `tab close <ref.container>` (pane close when the ref has no container). hc: kill then rm for both. tern: `close <id>` for both. Default "session". */
   close(ref: SessionRef, scope?: CloseScope, expectedSessionId?: string): Promise<void>;
 }
 
 /** Id shape of a bare ref: only a herdr pane `w<ws>:p<pane>` may appear without its prefix. */
 const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
 /**
- * Id shape after each prefix: a herdr pane, or a local hc terminal address. hc numbers terminals in base 36 (`t7`,
- * `t1b`, `t2h`). Another machine's `<machine>/<address>` is not a ref: the id names the session's inbox file.
+ * Id shape after each prefix: a herdr pane, a local hc terminal address, or a Tern block id. hc numbers terminals in
+ * base 36 (`t7`, `t1b`, `t2h`); Tern numbers blocks in decimal. Another machine's `<machine>/<address>` is not a ref:
+ * the id names the session's inbox file.
  */
 const HC_ADDRESS = /^t[0-9a-z]+$/;
 export const HEADLESS_ADDRESS = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+const TERN_BLOCK = /^[0-9]+$/;
 const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = {
   herdr: BARE_HERDR,
   hc: HC_ADDRESS,
+  tern: TERN_BLOCK,
   headless: HEADLESS_ADDRESS,
 };
 const KINDS = Object.keys(ID_SHAPES) as RuntimeKind[];
 
-/** "herdr:w1:p3", "hc:t7", bare "w1:p3" (herdr). A bare "t7" is NOT a ref (it is a legal lane key); undefined otherwise. */
+/** "herdr:w1:p3", "hc:t7", "tern:42", bare "w1:p3" (herdr). A bare "t7" or "42" is NOT a ref (both are legal lane keys); undefined otherwise. */
 export const parseRef: (text: string) => SessionRef | undefined = (text) => {
   for (const runtime of KINDS) {
     if (!text.startsWith(`${runtime}:`)) continue;

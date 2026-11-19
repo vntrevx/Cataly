@@ -1,9 +1,9 @@
 import { Refusal } from "./refusal.ts";
 
-export const USAGE = `dori harness - a proactive multi-session harness on herdr or hc + OMP
+export const USAGE = `dori harness - a proactive multi-session harness on herdr, hc or tern + OMP
 
   dori harness up [--cwd DIR]                         open lead, duty, duty loop and hourly loop sessions
-  dori harness role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
+  dori harness role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7, tern:42) as lead or duty (default: this one)
   dori harness start <key> --brief FILE [--cwd DIR]   open a lane: new tab, OMP session, brief + lane rules
                           [--priority 1-9]            its turn for a lock (1 first, 9 last; default 5)
   dori harness priority <key> <1-9>                   set an open lane's priority
@@ -32,7 +32,7 @@ export const USAGE = `dori harness - a proactive multi-session harness on herdr 
                                                       wait in line for lock <name> (lowest priority number first, then
                                                       first come), run CMD holding it, exit with CMD's code
   dori harness lock <name> --list                     the lock's holder and its queue, one line
-  dori harness migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
+  dori harness migrate [--to hc|herdr|tern] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
                        [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                                       or MIGRATE_ROLLBACK (exit 3) per session
   dori harness owner init | show | snapshot | check   opt-in owner profile ($DORI_HOME/owner.md) at the end of the

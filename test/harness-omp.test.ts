@@ -75,7 +75,7 @@ describe("OMP harness launches", () => {
     expect(call.argv.slice(context.length, context.length + 8)).toEqual([
       "sh",
       "-c",
-      "unset HERDR_PANE_ID HERDR_WORKSPACE_ID HC_TERMINAL_ID DORI_MANAGED_STARTUP DORI_LANE; omp --model 'configured model' --dori-role lane \"$@\"",
+      "unset HERDR_PANE_ID HERDR_WORKSPACE_ID HC_TERMINAL_ID TERN_PANE DORI_MANAGED_STARTUP DORI_LANE; omp --model 'configured model' --dori-role lane \"$@\"",
       "dori-review",
       "-p",
       "--no-session",

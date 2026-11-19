@@ -68,7 +68,8 @@ export const isOmpProcessCommand = (command: string): boolean =>
 export const namesOmpProcess = (command: string): boolean =>
   isOmpProcessCommand(command) || /(?:^|\s)(?:\S*\/)?omp(?:\s|$)|pi-coding-agent\/dist\/cli\.js/.test(command);
 
-const ompProcess = (p: ForegroundProcess): boolean =>
+/** A foreground process that is OMP itself: by its name, its executable or its source entry. */
+export const isOmpProcess = (p: ForegroundProcess): boolean =>
   p.name.split("/").at(-1) === "omp" ||
   p.argv.slice(0, 2).some((arg) => OMP_EXECUTABLE.test(arg)) ||
   sourceOmpArgv(p.argv);
@@ -118,7 +119,7 @@ function under(table: readonly Proc[], pid: number, root: number): boolean {
 export async function withOmpState(exec: Exec, stateDir: string, id: string, probe: Probe): Promise<Probe> {
   if (probe.status === "gone") return probe;
   const state = readState(stateDir, id);
-  const omp = probe.agent === "omp" || probe.foreground?.some(ompProcess) === true;
+  const omp = probe.agent === "omp" || probe.foreground?.some(isOmpProcess) === true;
   const unknown = (): Probe => ({ ...probe, status: "unknown" });
   if (state === undefined) return omp && !probe.shellInFront ? unknown() : probe;
   if (probe.rootPid === undefined || !Number.isSafeInteger(probe.rootPid) || probe.rootPid <= 0) return unknown();

@@ -27,10 +27,12 @@ beforeEach(() => {
   stateDir = useConfig(FAKE_ULW);
   process.env.HERDR_PANE_ID = PANE;
   delete process.env.HC_TERMINAL_ID;
+  delete process.env.TERN_PANE;
 });
 afterEach(() => {
   delete process.env.HERDR_PANE_ID;
   delete process.env.HC_TERMINAL_ID;
+  delete process.env.TERN_PANE;
 });
 
 describe("role", () => {
@@ -589,6 +591,28 @@ describe("pane state", () => {
     expect(readPaneState(stateDir, "t1b")?.goal.status).toBe("paused");
     await pi.emit("session_shutdown");
     expect(readPaneState(stateDir, "t1b")).toMatchObject({ pid: 0, sessionId: "hc-lane" });
+  });
+
+  test("a Tern block reports under TERN_PANE only when no hc or herdr id is set", async () => {
+    process.env.TERN_PANE = "5001";
+    const inherited = await load({ session: session("herdr-lane"), flags: { "dori-role": "lane" } });
+    await inherited.emit("session_start");
+    expect(readPaneState(stateDir, PANE)?.sessionId).toBe("herdr-lane");
+    expect(readPaneState(stateDir, "5001")).toBeNull();
+    await inherited.emit("session_shutdown");
+
+    delete process.env.HERDR_PANE_ID;
+    const pi = await load({ session: session("tern-lane"), flags: { "dori-role": "lane" } });
+    await pi.emit("session_start");
+    expect(readPaneState(stateDir, "5001")).toMatchObject({
+      paneId: "5001",
+      sessionId: "tern-lane",
+      approvalPending: false,
+    });
+    await pi.emit("tool_approval_requested", { type: "tool_approval_requested", toolCallId: "tern-approval" });
+    expect(readPaneState(stateDir, "5001")?.approvalPending).toBe(true);
+    await pi.emit("session_shutdown");
+    expect(readPaneState(stateDir, "5001")).toMatchObject({ pid: 0, sessionId: "tern-lane" });
   });
 
   test("is not written without a runtime session id", async () => {
