@@ -258,11 +258,6 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         intake?: ReturnType<typeof recordedIntake>;
       }
     | undefined;
-  let goal: PaneState["goal"] = { status: "none" };
-  let agentStatus: "idle" | "working" = "idle";
-  let goalToolAdded = false;
-  let paneWritten: string | undefined;
-  const approvals = new Set<string>();
   /** The lane's tool calls by id, from their start until they return or their background job settles. */
   const backgroundCalls = new Map<
     string,
@@ -273,6 +268,11 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
    * cwd runs; the branch does not record it and `/move` changes it. A call ID started again elsewhere is unknown.
    */
   const callDirs = new Map<string, { session: string; agent: string; cwd: string | undefined }>();
+  let goal: PaneState["goal"] = { status: "none" };
+  let agentStatus: "idle" | "working" = "idle";
+  let goalToolAdded = false;
+  let paneWritten: string | undefined;
+  const approvals = new Set<string>();
   let managedRestorePending = process.env.DORI_MANAGED_STARTUP === "1";
   const monitors = new Monitors(
     async (content, delivery) => {
