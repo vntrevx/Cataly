@@ -74,9 +74,9 @@ test("text carrying a $( substitution is refused before any request goes out, on
 test("a Slack upload asks for an upload URL, sends the bytes there, then shares the file into the thread", async () => {
   const { http, seen } = fakeHttp((req) => {
     if (req.url.endsWith("files.getUploadURLExternal"))
-      return ok({ ok: true, upload_url: "https://files.example/up/1", file_id: "F1" });
-    if (req.url.startsWith("https://files.example")) return { status: 200, headers: {}, body: "OK" };
-    return ok({ ok: true });
+      return ok({ ok: true, upload_url: "https://files.slack.com/upload/v1/1", file_id: "F1" });
+    if (req.url.startsWith("https://files.slack.com")) return { status: 200, headers: {}, body: "OK" };
+    return ok({ ok: true, files: [{ id: "F1" }] });
   });
   const id = await new Slack(http, sleeps().clock, { token: "t" }).upload(
     "C1",

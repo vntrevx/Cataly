@@ -219,3 +219,9 @@ The terminal-admission integration group uses a test-local 20-second budget for 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
 
 - Unreleased: Extend the Telegram transport regression matrix for cross-field route spoofing and message/edit identity ordering alongside existing delivery and recovery coverage.
+
+- Messenger mutations stop on ambiguous transport/server failures with an actionable uncertain-delivery outcome and confirmed partial-send IDs, while reads and rejected rate-limited requests retain bounded retry behavior.
+
+- Unreleased (source only): Slack external uploads validate the file ID and HTTPS files.slack.com/upload/v1/ destination before sending bytes, forbid upload redirects, and require completion to identify the requested file. The upload signature, original file-ID return value, title/thread options, and credential-free byte request stay unchanged; unknown completion never triggers an automatic reupload. Adapted validation retains its component MIT notice in NOTICE.
+- Unreleased (source only): The delivery-certainty dependency integration preserves read/preflight cancellation, timer cleanup, single-attempt live metadata, and full 429 waits. Cancellation after an accepted or ambiguous mutation response remains uncertain; definitive 4xx rejections except 408 retain the original abort reason. A fully read 2xx JSON id may be exposed only as candidateReceipt.id, separate from a confirmed receipt and requiring target reconciliation.
+- Unreleased (source only): The existing board caller consumes shared typed delivery uncertainty, retains pending records for ambiguous 408 responses, preserves its sanitized recovery errors, and confirms a Discord edit only from the intended message ID while retaining mention suppression.

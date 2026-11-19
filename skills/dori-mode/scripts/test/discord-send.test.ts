@@ -76,7 +76,7 @@ test("a part that fails stops the rest and names the parts already posted", asyn
     expect([lost.code, lost.out, lost.err]).toEqual([
       1,
       "",
-      `discord POST /channels/${ids.thread}/messages failed (part 2 of 3; already posted: 71)`,
+      `discord POST /channels/${ids.thread}/messages: delivery uncertain; the request may have succeeded; do not resend. Inspect the original remote target and reconcile its IDs before retrying. (part 2 of 3; already posted: 71)`,
     ]);
   });
 }, 60_000);
