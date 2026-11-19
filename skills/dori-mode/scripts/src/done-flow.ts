@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import { artifactClose, artifactKeepsWorktree } from "./artifact-report.ts";
+import { Artifacts } from "./artifacts.ts";
+import { discoverWorktrees } from "./lane-worktrees.ts";
 
 import { type DoriConfig, fill } from "./config.ts";
 import { withDeliveryLock } from "./delivery-lock.ts";
@@ -84,30 +87,6 @@ export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly s
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
 
-export const discoverWorktrees = async (
-  lane: Lane,
-  run: Runner,
-  extraRoots: readonly string[] = [],
-): Promise<string[]> => {
-  const found = new Set<string>(lane.worktrees ?? []);
-  const ours = (name: string) => name === lane.key || name.startsWith(`${lane.key}-`);
-  for (const root of new Set([lane.cwd ?? "", ...extraRoots].filter(Boolean))) {
-    const r = await run(["git", "-C", root, "worktree", "list", "--porcelain"]);
-    if (r.code !== 0) continue;
-    let path = "";
-    for (const line of r.out.split("\n")) {
-      if (line.startsWith("worktree ")) path = line.slice(9);
-      else if (
-        line.startsWith("branch ") &&
-        path !== root &&
-        (ours(line.split("/").pop() ?? "") || ours(path.split("/").pop() ?? ""))
-      )
-        found.add(path);
-    }
-  }
-  return [...found];
-};
-
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
   const exists = deps.exists ?? existsSync;
   const reasons: string[] = [];
@@ -166,19 +145,25 @@ export const closeLane = async (
     lines.push(`COST ${lane.key} not recorded: ${error instanceof Error ? error.message : String(error)}`);
   }
   const cleanup: string[] = [];
+  const artifacts = await artifactClose(new Artifacts(deps.config, deps.registry), lane.key, deps.clock.now());
+  const finalNote = [note, artifacts.note].filter(Boolean).join("\n");
   const hook = deps.config.hooks.threadDone;
   if (hook && lane.thread !== "none") {
-    const r = await deps.run(fill(hook, { thread: lane.thread, text: note, key: lane.key }));
+    const r = await deps.run(fill(hook, { thread: lane.thread, text: finalNote, key: lane.key }));
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   }
   const ref = sessionOf(lane);
   if (ref) cleanup.push(await closeSession(deps, ref));
   const root = lane.cwd ?? deps.config.defaultCwd;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
+    if (artifactKeepsWorktree(artifacts.entries, wt)) {
+      cleanup.push(`worktree ${wt} kept: registered artifacts or unreadable artifact index`);
+      continue;
+    }
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
     cleanup.push(r.code === 0 ? `worktree ${wt} removed` : `worktree ${wt} kept: ${r.err.slice(0, 120)}`);
   }
-  const receipt = { checks, note, cleanup };
+  const receipt = { checks, note: finalNote, cleanup };
   await deps.registry.update(lane.key, (current) => current && { ...current, receipt });
   if (lesson) {
     try {

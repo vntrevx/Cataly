@@ -147,6 +147,7 @@ test("a shared dori watch inside a loop, a condition, a subshell, a cd or an env
 
 test("the dori command vocabulary is every command the CLI dispatches", async () => {
   const tables = [
+    (await import("../src/cli-artifacts.ts")).artifactCommands,
     (await import("../src/cli-journal.ts")).journalCommands,
     (await import("../src/cli-lanes.ts")).laneCommands,
     (await import("../src/cli-ops.ts")).opsCommands,

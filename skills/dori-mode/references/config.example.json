@@ -1,6 +1,7 @@
 {
   "runtime": "herdr",
   "stateDir": "~/.dori/state",
+  "artifactRoots": [],
   "laneWorkspace": "lanes",
   "workspaces": ["lanes"],
   "ignorePanes": [],

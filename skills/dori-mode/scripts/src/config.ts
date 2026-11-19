@@ -8,6 +8,7 @@ import {
   resolveProcessOmpUlwPath,
 } from "../../../../src/release/runtime.ts";
 import type { RuntimeKind } from "../../../../src/runtime/types.ts";
+import { type ArtifactRoot, parseArtifactRoots } from "./artifact-config.ts";
 import type { SupervisionOptions } from "./supervision-observe.ts";
 import type { CommitIdentity } from "./verify-pr-check.ts";
 
@@ -31,6 +32,7 @@ export type DoriConfig = {
   /** Where new sessions open; absent = detected (see run.ts runtimeChoice). */
   readonly runtime?: RuntimeKind;
   readonly stateDir: string;
+  readonly artifactRoots?: readonly ArtifactRoot[];
   readonly laneWorkspace: string;
   readonly workspaces: readonly string[];
   readonly ignorePanes: readonly string[];
@@ -95,17 +97,12 @@ export const configPath = (): string => process.env["DORI_CONFIG"] ?? join(homed
 export const expandHome = (path: string, home = homedir()): string =>
   path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path;
 
-const isIdentity = (value: unknown): value is CommitIdentity => {
-  const v = value as { name?: unknown; email?: unknown } | null;
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof v.name === "string" &&
-    !!v.name.trim() &&
-    typeof v.email === "string" &&
-    !!v.email.trim()
-  );
-};
+const isIdentity = (value: unknown): value is CommitIdentity =>
+  isRecord(value) &&
+  typeof value["name"] === "string" &&
+  !!value["name"].trim() &&
+  typeof value["email"] === "string" &&
+  !!value["email"].trim();
 
 // The file is untrusted JSON: keep only well-formed identities, so a bad entry reads as an unconfigured repo.
 const repoIdentities = (value: unknown): Record<string, CommitIdentity> =>
@@ -236,6 +233,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
         ? resolveConsumerOmpCommand(command, { home })
         : command,
     stateDir: expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home),
+    artifactRoots: parseArtifactRoots(raw.artifactRoots, (root) => expandHome(root, home), ConfigError),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
     ompUlwPath: resolveConsumerOmpUlwPath(resolveProcessOmpUlwPath(expandHome(merged.ompUlwPath, home), home), {

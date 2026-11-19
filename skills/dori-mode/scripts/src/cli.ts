@@ -20,6 +20,9 @@ const USAGE = `dori <command> [options]
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
                                        record a completed step once; a conflicting rewrite is refused
   checkpoints <key>                    read completed steps before resuming remote work
+  artifact add <key> <path> [--title T] [--public] / artifact delivered <key> <id> --sha256 HASH --receipt REF
+  artifacts <key> [--json]             inspect files, immutable versions and operator-reported delivery receipts
+                                       checkpoint --artifact ID binds its evidence to the current registered hash
   verify-pr <owner/repo> <num> [--loop N] [--cwd DIR]
                                        check every commit's author/committer email and PR-level tests; print the UI test loop (not run)
   pr track <owner/repo#N|pull-url> [--lane K] [--thread REF] / pr untrack <ref> / pr list
@@ -114,6 +117,11 @@ const flags = parseArgs({
     cwd: { type: "string" },
     pane: { type: "string" },
     evidence: { type: "string" },
+    artifact: { type: "string", multiple: true },
+    sha256: { type: "string" },
+    receipt: { type: "string" },
+    public: { type: "boolean" },
+    json: { type: "boolean" },
     reason: { type: "string", multiple: true },
     note: { type: "string" },
     write: { type: "boolean" },
@@ -196,6 +204,10 @@ switch (command) {
   case "inbound-lag":
   case "transcribe":
     commands = (await import("./cli-messenger.ts")).messengerCommands;
+    break;
+  case "artifact":
+  case "artifacts":
+    commands = (await import("./cli-artifacts.ts")).artifactCommands;
     break;
   case "decision":
     commands = (await import("./cli-decisions.ts")).decisionCommands;

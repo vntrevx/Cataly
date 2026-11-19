@@ -1,4 +1,7 @@
 /** dori report, lesson, worklog, checkpoint and checkpoints: the durable journals. */
+import { ArtifactError } from "./artifact-files.ts";
+import { artifactNote } from "./artifact-report.ts";
+import { Artifacts } from "./artifacts.ts";
 import { CheckpointError, Checkpoints } from "./checkpoints.ts";
 import { type Cli, type Command, die } from "./cli-context.ts";
 import { autoTrackLinks } from "./cli-pr.ts";
@@ -8,13 +11,15 @@ import { realClock, runtimesOf } from "./run.ts";
 import { Worklog, WorklogError } from "./worklog.ts";
 
 /** Journal errors are the user's input refused: one line, never a stack. */
-export const journalErrors = [CheckpointError, LessonError, ReportError, WorklogError] as const;
+export const journalErrors = [ArtifactError, CheckpointError, LessonError, ReportError, WorklogError] as const;
 
-const report: Command = async ({ key, need, lane, config }) => {
+const report: Command = async ({ key, need, lane, config, deps }) => {
   const target = await lane(key ?? die("report needs a lane key"));
   const kind = need("kind");
   if (isReportKind(kind)) {
-    console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, need("text"), realClock.now())));
+    const artifacts = kind === "done" ? await artifactNote(new Artifacts(config, deps.registry), target.key) : "";
+    const text = [need("text"), artifacts].filter(Boolean).join("\n");
+    console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, text, realClock.now())));
   } else die("--kind must be milestone, blocker, question, halted or done");
 };
 
@@ -129,7 +134,7 @@ const worklog: Command = async ({ key, positionals, values, need, config }) => {
 };
 
 const checkpoint: Command = async (cli) => {
-  const { key, positionals, need, strings, lane, config } = cli;
+  const { key, positionals, need, strings, lane, config, deps } = cli;
   const target = await lane(key ?? die("checkpoint needs a lane key"));
   // parseArgs takes one value per flag; a second bare receipt would otherwise be dropped and its effect repeated later.
   const stray = positionals.slice(1);
@@ -139,7 +144,10 @@ const checkpoint: Command = async (cli) => {
     {
       step: need("step"),
       result: need("result"),
-      evidence: [need("evidence")],
+      evidence: [
+        need("evidence"),
+        ...(await new Artifacts(config, deps.registry).evidence(target.key, strings("artifact"))),
+      ],
       remoteEffects: strings("remote-effect"),
     },
     realClock.now(),

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { artifactCommands } from "../src/cli-artifacts.ts";
 import { decisionCommands } from "../src/cli-decisions.ts";
 import { journalCommands } from "../src/cli-journal.ts";
 import { laneCommands } from "../src/cli-lanes.ts";
@@ -11,6 +12,7 @@ import { type TestState, withState } from "./fakes.ts";
 
 const cli = resolve(import.meta.dir, "../src/cli.ts");
 const groups = {
+  "cli-artifacts.ts": artifactCommands,
   "cli-journal.ts": journalCommands,
   "cli-lanes.ts": laneCommands,
   "cli-ops.ts": opsCommands,
