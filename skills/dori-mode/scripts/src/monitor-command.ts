@@ -99,10 +99,20 @@ const commandWords = (
         quotedSubstitutions(word).map((s) => read(word.slice(s.from, s.to), (i) => baseAt(from + s.from + i)));
       return { word: passed.text, baseAt: at, after, scope, script: () => read(passed.text, at), substitutions };
     });
-  // Monitor ownership needs certainty; evidence refuses a CLI in any possible execution directory.
+  // Monitor ownership needs certainty; evidence's possible reading refuses a CLI in any possible directory (at most 16
+  // known), keeps the one before a `cd`, which may fail, and never guesses `pushd`, `popd` or an expanded word (`$D`,
+  // `~`): a relative `cli.ts` may be the CLI where it lost a known start (an unknown one is the caller's to refuse).
+  const expand = (dirs: Dirs, path: string): Dirs =>
+    possible && /[$`*?[{]|^~/.test(path) ? [undefined] : within(dirs, path);
+  const merge = (a: Dirs, b: Dirs): Dirs => {
+    const all = [...new Set([...a, ...b])];
+    return possible && all.length > 16 ? [undefined] : all;
+  };
   const isDori = (word: string, dirs: Dirs): boolean =>
     DORI_NAMES[basename(word)] === true ||
-    within(dirs, word)[possible ? "some" : "every"]((path) => SKILL_SOURCE.test(path ?? word));
+    expand(dirs, word)[possible ? "some" : "every"]((path) =>
+      (path === undefined && possible && typeof cwd === "string" ? /(^|\/)cli\.ts$/ : SKILL_SOURCE).test(path ?? word),
+    );
   const own = new Set<number>();
   let dori = false;
 
@@ -129,12 +139,12 @@ const commandWords = (
       const name = basename(words[at] ?? "");
       const launcher = LAUNCHERS[name];
       if (isDori(words[at] ?? "", here)) program = at;
-      else if (name === "cd") {
-        const target = words.slice(at + 1).find((word) => !word.startsWith("-"));
-        return target === undefined ? [undefined] : within(dir, target);
+      else if (name === "cd" || (possible && (name === "pushd" || name === "popd"))) {
+        const target = name === "cd" ? words.slice(at + 1).find((word) => !word.startsWith("-")) : undefined;
+        return target === undefined ? [undefined] : expand(dir, target);
       } else if (name === "env") {
         const env = envCommandAt(words, at + 1);
-        if (env?.chdir !== undefined) here = within(here, env.chdir);
+        if (env?.chdir !== undefined) here = expand(here, env.chdir);
         if (env?.split === undefined) next = env?.at;
         else {
           // `-S STRING`: env reads STRING's words, its own options included, then the words after it.
@@ -154,7 +164,7 @@ const commandWords = (
         }
       } else if (name === "bun") {
         const entry = bunEntryAt(words, at + 1);
-        const runs = entry?.cwd === undefined ? here : within(here, entry.cwd);
+        const runs = entry?.cwd === undefined ? here : expand(here, entry.cwd);
         if (entry === undefined || !isDori(words[entry.at] ?? "", runs)) break;
         for (let i = at; i < entry.at; i++) mine(i);
         program = entry.at;
@@ -203,7 +213,7 @@ const commandWords = (
       if (CLOSES_BODY[first] === true) bodies = Math.max(0, bodies - 1);
       const chain = chains.get(key);
       // An `||` is reached when anything before it failed, the `cd` or a command after it: from either directory.
-      const either: Dirs | undefined = chain && [...new Set([...chain.from, ...chain.to])];
+      const either: Dirs | undefined = chain && merge(chain.from, chain.to);
       if (either && after === "||") chains.set(key, { to: either, from: either });
       else if (after !== "&&") chains.delete(key);
       const here = chain && after === "&&" ? chain.to : either && after === "||" ? either : dirOf(scope);
@@ -211,10 +221,11 @@ const commandWords = (
       const to = commandOf(command, here);
       const next = commands[index + 1]?.[0]?.after;
       // An `&&` after this `cd` runs where it moved only if every way to that `&&` ran the `cd`: not after an `||`.
-      if (to !== undefined) chains.set(key, { to: after === "||" ? [...new Set([...here, ...to])] : to, from: here });
+      const from = possible && after === "&&" && either ? either : here;
+      if (to !== undefined) chains.set(key, { to: after === "||" ? merge(here, to) : to, from });
       if (to === undefined || after === "|" || next === "|" || next === "&") return;
-      const sure = OPENS_LIST[after] === true && bodies === 0;
-      scopes.set(key, sure ? to : [...new Set([...dirOf(scope), ...to])]);
+      const sure = OPENS_LIST[after] === true && bodies === 0 && !possible;
+      scopes.set(key, sure ? to : merge(dirOf(scope), to));
     });
   };
   run(

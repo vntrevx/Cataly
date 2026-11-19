@@ -156,7 +156,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
           });
         }
         const resume = failure === undefined && !supervised?.heldHung;
-        supervisedHung = supervised?.hung ?? false;
+        supervisedHung = Boolean(supervised?.hung || supervised?.heldHung);
         progress = reports.observe(lane.key, screen, now, deps.config.nudgeAfterMin * 60_000, resume);
       } catch (error) {
         // One corrupt journal skips its own lane, printed once per error, and never ends the sweep for the others.
@@ -172,7 +172,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
     if (progress?.state === "stalled" && previous?.state !== "stalled" && !supervisedHung) {
       acts.push({ kind: "stalled", lane: lane.key, detail: progress.lastEvent.text });
     }
-    if (progress?.state === "stalled") continue;
+    if (progress?.state === "stalled" && !supervisedHung) continue;
     // A blocker, question, halted or done lane is not nudged, but its report still reaches the thread.
     const running = !progress || progress.state === "running";
     const heard = Math.max(lastHeard(lane), progress?.lastReport ? Date.parse(progress.lastReport.at) : 0);

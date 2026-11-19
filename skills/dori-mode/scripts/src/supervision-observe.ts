@@ -3,8 +3,9 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Checkpoints } from "./checkpoints.ts";
+import { fill } from "./config.ts";
 import { confirmMarks, type FileCoverage, observeFiles } from "./evidence-window.ts";
-import { evidenceClock, novelEvidence, type PathMark } from "./evidence.ts";
+import { type Evidenced, evidenceClock, novelEvidence, type PathMark } from "./evidence.ts";
 import type { Lane } from "./registry.ts";
 import type { Activity, Reports } from "./reports.ts";
 import type { Clock, Runner } from "./run.ts";
@@ -57,6 +58,38 @@ export type BudgetLimits = {
 };
 export type Usage = { readonly tokens: number | null; readonly costUsd: number | null };
 export type UsageSnapshot = Usage & { readonly key: string; readonly at: string; readonly final?: true };
+
+export const readUsage = async (
+  run: Runner,
+  argv: readonly string[] | undefined,
+  lane: SupervisedLane,
+  now: number,
+): Promise<UsageSnapshot> => {
+  let usage: Usage = { tokens: null, costUsd: null };
+  if (argv?.length) {
+    const result = await run(fill(argv, { key: lane.key, session: lane.session ?? "", cwd: lane.cwd ?? "" }), {
+      ...(lane.cwd !== undefined ? { cwd: lane.cwd } : {}),
+      timeoutMs: 10_000,
+    });
+    if (result.code === 0) {
+      try {
+        const value: unknown = JSON.parse(result.out);
+        const metric = (name: "tokens" | "costUsd"): number | null => {
+          const n =
+            typeof value === "object" && value !== null && name in value
+              ? (value as Record<string, unknown>)[name]
+              : null;
+          return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+        };
+        usage = { tokens: metric("tokens"), costUsd: metric("costUsd") };
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        // Malformed external JSON remains unknown, never zero.
+      }
+    }
+  }
+  return { key: lane.key, at: new Date(now).toISOString(), ...usage };
+};
 
 /** Independent of evidence availability: a failed observation must never hide a reached ceiling. */
 export const budgetViolations = (limits: BudgetLimits, usage: Usage, wallMinutes: number): string[] => {
@@ -119,9 +152,18 @@ export type LaneEvidence = {
   readonly evidenceError?: string;
   /**
    * Called only for a new hung verdict: re-stats every known candidate, including this sweep (confirmMarks). False is
-   * unknown, never evidence, and leaves the marks and windows as they are.
+   * unknown, never evidence, and leaves the marks and windows as they are. Discovery and stats are not atomic:
+   * paths created after Git discovery enter the next sweep, not this known-candidate recheck.
    */
   readonly confirmQuiet: () => boolean;
+};
+
+export const selectedEvidence = (records: Iterable<Evidenced>): Pick<LaneEvidence, "signature" | "lastEvidenceAt"> => {
+  const selected = evidenceClock(records);
+  return {
+    signature: createHash("sha256").update(JSON.stringify(selected)).digest("hex"),
+    lastEvidenceAt: selected.lastEvidenceAt,
+  };
 };
 
 /** Before the first completed sweep, only the prepared candidate schedule exists. */
@@ -172,15 +214,13 @@ export const laneEvidence = async (
     reports.append(event);
     records.push(event);
   }
-  const selected = evidenceClock(records);
   return {
-    signature: createHash("sha256").update(JSON.stringify(selected)).digest("hex"),
+    ...selectedEvidence(records),
     files,
     ...(coverage === undefined
       ? {}
       : { coverage: { ...coverage, changed: coverage.changed || evidenceRefs.length > 0 } }),
     lastReportAt: progress?.lastReport?.at ?? null,
-    lastEvidenceAt: selected.lastEvidenceAt,
     ...(evidenceError === undefined ? {} : { evidenceError }),
     confirmQuiet: () => confirmMarks(files).quiet,
   };

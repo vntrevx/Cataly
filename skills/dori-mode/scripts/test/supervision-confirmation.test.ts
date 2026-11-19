@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { fileEvidence, markHolds, pathMark, racyMark } from "../src/evidence.ts";
@@ -64,31 +64,41 @@ test("production freshness never reports a stall for a first-window change made 
   expect(stalls).toEqual([15]);
 });
 
-test("a new verdict rechecks its current window after the awaited usage command", async () => {
+test("a new verdict rechecks its current window after evidence collection", async () => {
   const f = coverageFixture(state);
   const current = f.paths[768];
   if (!current) throw new Error("fixture needs its final-window candidate");
   let turn = 0;
-  const run: Runner = async (argv, options) => {
-    if (argv[0] !== "usage") return git(argv, options);
-    if (turn === 7) fs.writeFileSync(current, "changed after the current window read");
-    return { code: 0, out: '{"tokens":0,"costUsd":0}', err: "" };
-  };
+  let changed = false;
+  const read = f.reports.read.bind(f.reports);
+  const collected = spyOn(f.reports, "read").mockImplementation((key) => {
+    const progress = read(key);
+    // laneEvidence reads the journal after observeFiles has finished the current window.
+    if (turn === 7 && !changed) {
+      fs.writeFileSync(current, "changed after the current window read");
+      changed = true;
+    }
+    return progress;
+  });
   const supervisor = new Supervision(
-    { stateDir: state.dir, clock: f.clock, run },
-    { hungAfterMinutes: 0, staleAfterMinutes: 0, usageArgv: ["usage"] },
+    { stateDir: state.dir, clock: f.clock, run: git, reports: f.reports },
+    { hungAfterMinutes: 0, staleAfterMinutes: 0 },
   );
-  for (; turn < 8; turn++) {
-    f.clock.at = start + turn * 60_000;
-    const result = await f.settle(() => supervisor.sweep(f.lane, `Working ${21 + turn}m`));
-    expect(result.hung).toBe(false);
-    expect(result.heldHung).toBe(false);
-    expect(result.state).toBe("running");
+  try {
+    for (; turn < 8; turn++) {
+      f.clock.at = start + turn * 60_000;
+      const result = await f.settle(() => supervisor.sweep(f.lane, `Working ${21 + turn}m`));
+      expect(result.hung).toBe(false);
+      expect(result.heldHung).toBe(false);
+      expect(result.state).toBe("running");
+    }
+    // Confirmation withholds the verdict; only the next scheduled content read may credit the changed bytes.
+    expect(f.refs().findLast((ref) => ref.ref === current)?.fingerprint).not.toBe(
+      fileEvidence(current, f.repo).fingerprint,
+    );
+  } finally {
+    collected.mockRestore();
   }
-  // Confirmation withholds the verdict; only the next scheduled content read may credit the changed bytes.
-  expect(f.refs().findLast((ref) => ref.ref === current)?.fingerprint).not.toBe(
-    fileEvidence(current, f.repo).fingerprint,
-  );
 });
 
 test("a touch in an earlier window withholds one verdict and never becomes evidence", async () => {

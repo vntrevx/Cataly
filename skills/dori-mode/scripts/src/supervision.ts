@@ -9,11 +9,12 @@ import {
   laneEvidence,
   type Observation,
   type ObservationState,
+  readUsage,
+  selectedEvidence,
   type SupervisedLane,
   type SupervisionDeps,
   type SupervisionOptions,
   type SupervisionResult,
-  type Usage,
   type UsageSnapshot,
   workingTimer,
   writeObservation,
@@ -32,40 +33,6 @@ export class Supervision {
 
   private enabled(lane: SupervisedLane): boolean {
     return lane.reportProtocol === "jsonl-v1" || existsSync(this.reports.path(lane.key));
-  }
-
-  private async usage(
-    lane: SupervisedLane,
-    now: number,
-    persist = Boolean(this.options.usageArgv?.length),
-  ): Promise<UsageSnapshot> {
-    let usage: Usage = { tokens: null, costUsd: null };
-    if (this.options.usageArgv?.length) {
-      const result = await this.deps.run(
-        fill(this.options.usageArgv, { key: lane.key, session: lane.session ?? "", cwd: lane.cwd ?? "" }),
-        { ...(lane.cwd !== undefined ? { cwd: lane.cwd } : {}), timeoutMs: 10_000 },
-      );
-      if (result.code === 0) {
-        try {
-          const value: unknown = JSON.parse(result.out);
-          const metric = (name: "tokens" | "costUsd"): number | null => {
-            const n =
-              typeof value === "object" && value !== null && name in value
-                ? (value as Record<string, unknown>)[name]
-                : null;
-            return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
-          };
-          usage = { tokens: metric("tokens"), costUsd: metric("costUsd") };
-        } catch (error) {
-          if (!(error instanceof SyntaxError)) throw error;
-          // Malformed external JSON remains unknown, never zero.
-        }
-      }
-    }
-    const snapshot = { key: lane.key, at: new Date(now).toISOString(), ...usage };
-    // Without a usage hook every sweep would append the same unknown reading; close still records its final one.
-    if (persist) this.record(snapshot);
-    return snapshot;
   }
 
   private costPath(key: string): string {
@@ -95,6 +62,10 @@ export class Supervision {
     const path = join(dirname(this.reports.path(lane.key)), "supervision.json");
     const stored = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as ObservationState) : null;
     const previous = stored && "at" in stored ? stored : null;
+    // Finish external usage before discovering files, so its await cannot hide new candidates from this sweep.
+    const usage = await readUsage(this.deps.run, this.options.usageArgv, lane, now);
+    // Without a hook, only close records the final unknown reading.
+    if (this.options.usageArgv?.length) this.record(usage);
     const evidence = await laneEvidence(
       this.deps,
       this.options,
@@ -105,11 +76,10 @@ export class Supervision {
       (coverage) => writeObservation(path, { ...previous, coverage }),
     );
     const timer = workingTimer(screen);
-    const advanced = previous?.files !== undefined && evidence.signature !== previous.activity;
+    let advanced = previous?.files !== undefined && evidence.signature !== previous.activity;
     const coverage = evidence.coverage && { ...evidence.coverage, changed: evidence.coverage.changed || advanced };
     const complete = !(coverage?.pending.length || coverage?.deferred.length) && evidence.evidenceError === undefined;
-    const activeAt = !previous || advanced ? now : previous.activeAt;
-    const usage = await this.usage(lane, now);
+    let activeAt = !previous || advanced ? this.deps.clock.now() : previous.activeAt;
     const limits = {
       wallMinutes: null,
       tokens: null,
@@ -134,9 +104,9 @@ export class Supervision {
       timer.seconds >= (this.options.hungAfterMinutes ?? 20) * 60 &&
       now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000 &&
       (previous.hung === true || evidence.confirmQuiet());
-    const progress = this.reports.read(lane.key);
-    const terminal = progress?.state === "done" || progress?.state === "halted";
-    const hung = provedHung || (!advanced && previous?.hung === true && !terminal && progress?.state !== "blocked");
+    let progress = this.reports.read(lane.key);
+    let terminal = progress?.state === "done" || progress?.state === "halted";
+    let hung = !terminal && progress?.state !== "blocked" && (provedHung || (!advanced && previous?.hung === true));
     const unavailable = (["tokens", "costUsd"] as const)
       .filter((name) => typeof limits[name] === "number" && usage[name] === null)
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
@@ -144,28 +114,33 @@ export class Supervision {
       "Working/Running timer exceeded threshold without fresh evidence (selected or changed file bytes)";
     const alerts = terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
     const freshAlerts = alerts.filter((message) => !previous?.alerts.includes(message));
-    // A question also reads as blocked; only this same ceiling blocker as the latest report makes a new one a repeat.
-    const blocker = violations.join("; ");
-    const reported = progress?.lastReport?.kind === "blocker" && progress.lastReport.text === blocker;
-    if (!terminal && violations.length && !reported) {
-      this.reports.report(lane.key, "blocker", blocker, now);
-    } else if (!terminal && hung && (!progress || progress.state === "running")) {
-      this.reports.append({
-        type: "activity",
-        key: lane.key,
-        at: new Date(now).toISOString(),
-        state: "stalled",
-        text: hungMessage,
-      });
-    } else if (!violations.length && progress?.state === "stalled" && advanced) {
-      this.reports.append({
-        type: "activity",
-        key: lane.key,
-        at: new Date(now).toISOString(),
-        state: "running",
-        text: "Fresh evidence observed (selected or changed file bytes)",
-      });
-    }
+    const reconcile = () => {
+      // A question also reads as blocked; only this same ceiling blocker as the latest report makes a repeat.
+      const blocker = violations.join("; ");
+      const reported = progress?.lastReport?.kind === "blocker" && progress.lastReport.text === blocker;
+      const at = this.deps.clock.now();
+      if (!terminal && violations.length && !reported) {
+        this.reports.report(lane.key, "blocker", blocker, at);
+      } else if (!terminal && hung && (!progress || progress.state === "running")) {
+        this.reports.append({
+          type: "activity",
+          key: lane.key,
+          at: new Date(at).toISOString(),
+          state: "stalled",
+          text: hungMessage,
+        });
+      } else if (!violations.length && progress?.state === "stalled" && advanced) {
+        this.reports.append({
+          type: "activity",
+          key: lane.key,
+          at: new Date(at).toISOString(),
+          state: "running",
+          text: "Fresh evidence observed (selected or changed file bytes)",
+        });
+      } else return;
+      progress = this.reports.read(lane.key);
+    };
+    reconcile();
     // Deliver before saving, so only alerts that reached the callback count as sent; a failed one is sent again next sweep.
     const undelivered = new Map<string, string>();
     for (const message of freshAlerts) {
@@ -175,20 +150,31 @@ export class Supervision {
         undelivered.set(message, error instanceof Error ? error.message : String(error));
       }
     }
-    const current = this.reports.read(lane.key);
-    const lastReportAt = current?.lastReport?.at ?? null;
+    progress = this.reports.read(lane.key);
+    const currentEvidence = freshAlerts.length
+      ? selectedEvidence([...(progress?.evidenced ?? []), ...this.checkpoints.read(lane.key)])
+      : evidence;
+    if (currentEvidence.signature !== evidence.signature) {
+      advanced = true;
+      activeAt = this.deps.clock.now();
+      hung = false;
+    }
+    terminal = progress?.state === "done" || progress?.state === "halted";
+    hung &&= !terminal && progress?.state !== "blocked";
+    reconcile();
+    const lastReportAt = progress?.lastReport?.at ?? null;
     const uncertainty = evidence.evidenceError === undefined ? {} : { evidenceError: evidence.evidenceError };
     const observation: Observation = {
       at: now,
       timer: timer?.seconds ?? null,
       timerKind: timer?.kind ?? null,
-      hung: current?.state === "stalled" && hung,
-      activity: evidence.signature,
+      hung: progress?.state === "stalled" && hung,
+      activity: currentEvidence.signature,
       files: evidence.files,
-      ...(coverage === undefined ? {} : { coverage }),
+      ...(coverage === undefined ? {} : { coverage: { ...coverage, changed: coverage.changed || advanced } }),
       activeAt,
       lastReportAt,
-      lastEvidenceAt: evidence.lastEvidenceAt,
+      lastEvidenceAt: currentEvidence.lastEvidenceAt,
       ...uncertainty,
       alerts: alerts.filter((message) => !undelivered.has(message)),
     };
@@ -199,14 +185,14 @@ export class Supervision {
       );
     return {
       enabled: true,
-      state: current?.state ?? "running",
+      state: progress?.state ?? "running",
       alerts: freshAlerts,
       usage,
-      hung: provedHung,
+      hung: provedHung && observation.hung === true,
       heldHung: observation.hung === true,
       coverageComplete: complete,
       lastReportAt,
-      lastEvidenceAt: evidence.lastEvidenceAt,
+      lastEvidenceAt: currentEvidence.lastEvidenceAt,
       ...uncertainty,
     };
   }
@@ -224,7 +210,7 @@ export class Supervision {
           .findLast((entry) => entry.final === true)
       : undefined;
     if (recorded) return recorded;
-    const snapshot = await this.usage(lane, this.deps.clock.now(), false);
+    const snapshot = await readUsage(this.deps.run, this.options.usageArgv, lane, this.deps.clock.now());
     if (this.options.recordCostArgv?.length && (snapshot.tokens !== null || snapshot.costUsd !== null)) {
       const result = await this.deps.run(
         fill(this.options.recordCostArgv, {
