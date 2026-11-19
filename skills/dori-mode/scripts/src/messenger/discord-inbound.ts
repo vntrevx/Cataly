@@ -1,5 +1,5 @@
 import type { Discord } from "./discord.ts";
-import type { InboundContext } from "./discord-channels.ts";
+import type { InboundContext } from "./discord-inbound-context.ts";
 import {
   type DiscordInbound,
   discoverChannels,

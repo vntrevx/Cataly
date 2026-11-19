@@ -69,10 +69,12 @@ export const USAGE = `dori <command> [options]
                                        --message opens the thread on that message of a text channel
   thread discord set <thread> [--title T] [--tag NAME]... [--archive|--unarchive]
                                        open a forum post or text-channel thread; rename, replace tags, archive or reopen
+                                       --source "discord CHANNEL MESSAGE" --lane KEY opts into verified source/lane receipts
   react discord --to CHANNEL [--thread ID] --message ID [--emoji E] [--remove]
                                        add or remove the bot's own reaction (eyes by default); --thread needs no --to
   voice discord                       opt-in owner-only voice assistant (voice.enabled in config; paid provider usage)
   channel discord set <channel> --purpose T | clear <channel> | list
+                                       --source "discord CHANNEL MESSAGE" binds an invocation to its original conversation
                                        the operator's purpose note per channel or thread, shown by inbound --context
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file|url>           run hooks.transcribe and print the text; HTTP(S) downloads are private and temporary

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { processStart } from "../../../../../src/release/process-cwd.ts";
-import { discordApiBase } from "./discord.ts";
+import { discordApiBase } from "./discord-api-base.ts";
 import { readPrivateAskFile } from "./discord-ask-mailbox.ts";
 import { isDiscordSnowflake } from "./discord-inbound-state.ts";
 

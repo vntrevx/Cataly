@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import { DiscordChannels, inboundContext } from "../src/messenger/discord-channels.ts";
+import { DiscordChannels } from "../src/messenger/discord-channels.ts";
+import { inboundContext } from "../src/messenger/discord-inbound-context.ts";
 import { type DiscordInbound, formatDiscordInbound, formatInboundContext } from "../src/messenger/discord-inbound.ts";
 import { MessengerError } from "../src/messenger/http.ts";
 import { ownerMessage } from "./discord-inbound-fakes.ts";

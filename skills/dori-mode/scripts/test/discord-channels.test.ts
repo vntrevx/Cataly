@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { type DcChannel, Discord } from "../src/messenger/discord.ts";
-import { ChannelPurposeError, DiscordChannels, inboundContext } from "../src/messenger/discord-channels.ts";
+import { ChannelPurposeError, DiscordChannels } from "../src/messenger/discord-channels.ts";
+import { inboundContext } from "../src/messenger/discord-inbound-context.ts";
 import { MessengerError } from "../src/messenger/http.ts";
 import { ids, withDiscordCli } from "./discord-fakes.ts";
 import { fakeClock, withState } from "./fakes.ts";

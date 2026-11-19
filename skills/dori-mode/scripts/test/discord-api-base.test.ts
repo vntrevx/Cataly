@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { Discord, discordApiBase } from "../src/messenger/discord.ts";
+import { discordApiBase } from "../src/messenger/discord-api-base.ts";
+import { Discord } from "../src/messenger/discord.ts";
 import { fetchHttp, type HttpRequest, MessengerError } from "../src/messenger/http.ts";
 import { fakeClock } from "./fakes.ts";
 

@@ -1,8 +1,8 @@
+import { isThreadType } from "./discord.ts";
 import { inboundProtocolError, type Request, unavailable } from "./discord-inbound-api.ts";
 import { isDiscordSnowflake } from "./discord-inbound-state.ts";
 
 export type ChannelInfo = { guild?: string; type?: number; parent?: string };
-const THREAD_CHANNELS = new Set([10, 11, 12]);
 
 /** Only Discord thread types make parent_id a thread parent, rather than a category. */
 export const channelInfo = async (
@@ -23,7 +23,7 @@ export const channelInfo = async (
     throw inboundProtocolError("Discord inbound channel response is invalid");
   }
   const { guild_id, parent_id, type } = value as Record<string, unknown>;
-  const thread = typeof type === "number" && THREAD_CHANNELS.has(type);
+  const thread = isThreadType(type);
   return {
     ...(isDiscordSnowflake(guild_id) ? { guild: guild_id } : {}),
     ...(typeof type === "number" ? { type } : {}),

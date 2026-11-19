@@ -2,7 +2,8 @@
 import { existsSync } from "node:fs";
 
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
-import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
+import { reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
+import { channelDiscord } from "./cli-discord-purpose.ts";
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
 import { ChannelPurposeError } from "./messenger/discord-channels.ts";
 import { discordPresence } from "./messenger/discord-presence.ts";

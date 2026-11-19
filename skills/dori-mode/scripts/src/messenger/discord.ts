@@ -1,5 +1,6 @@
 import type { Clock } from "../run.ts";
-import { DEFAULT_RETRY, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { discordApiBase } from "./discord-api-base.ts";
+import { DEFAULT_RETRY, DeliveryUncertainError, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 import { DISCORD_LIMIT, splitForDiscord } from "./split.ts";
 
 const retryAfter = (body: string): number | undefined => {
@@ -27,37 +28,24 @@ export type DcChannel = {
   readonly topic?: string | null;
   readonly parent_id?: string | null;
   readonly available_tags?: readonly { readonly id: string; readonly name: string }[];
+  readonly flags?: number;
+  readonly owner_id?: string;
+  readonly message?: { readonly id: string };
 };
+
+export type ThreadCreated = (thread: DcChannel) => Promise<void>;
 
 /** Forum and media channels contain posts, each represented by a thread. */
 export const isForumType = (type: number): boolean => type === 15 || type === 16;
 
-/**
- * An environment-supplied REST API prefix may target only loopback HTTP.
- * Credentials and query/fragment components are not usable API prefixes.
- */
-export function discordApiBase(value: string | undefined): string {
-  const fallback = "https://discord.com/api/v10";
-  if (value === undefined || value === "") return fallback;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new MessengerError("DORI_DISCORD_API_BASE is not a URL", 0);
-  }
-  if (
-    url.protocol !== "http:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
-    url.href !== url.origin + url.pathname
-  )
-    throw new MessengerError(
-      "DORI_DISCORD_API_BASE must use a loopback http origin without credentials, query or fragment",
-      0,
-    );
-  return url.href.replace(/\/+$/, "");
-}
+const responseId = (body: { readonly id?: unknown } | null, operation: string): string => {
+  if (typeof body?.id !== "string" || !body.id)
+    throw new DeliveryUncertainError(`${operation}: missing remote ID`, 200);
+  return body.id;
+};
+
+/** Only these channel types give parent_id the meaning of a thread parent. */
+export const isThreadType = (type: unknown): boolean => type === 10 || type === 11 || type === 12;
 
 export class Discord {
   constructor(
@@ -78,6 +66,7 @@ export class Discord {
       this.clock,
       {
         method,
+        operation: `discord ${method} ${path}`,
         url: `${this.base}${path}`,
         headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
@@ -93,7 +82,12 @@ export class Discord {
         res.status,
         discordErrorCode(res.body),
       );
-    return (res.body ? JSON.parse(res.body) : {}) as T;
+    try {
+      return (res.body ? JSON.parse(res.body) : {}) as T;
+    } catch (error) {
+      if (method !== "GET") throw new DeliveryUncertainError(`discord ${method} ${path}`, res.status);
+      throw error;
+    }
   }
 
   /**
@@ -125,7 +119,7 @@ export class Discord {
           allowed_mentions: { parse: [] },
           ...reference,
         });
-        ids.push(sent.id);
+        ids.push(responseId(sent, `discord POST /channels/${channelId}/messages`));
       } catch (e) {
         if (ids.length === 0) throw e;
         // Any failure after a posted part, a transport error or an unreadable answer included, names what stays.
@@ -134,6 +128,7 @@ export class Discord {
           `${why} (part ${ids.length + 1} of ${total}; already posted: ${ids.join(" ")})`,
           e instanceof MessengerError ? e.status : 0,
           e instanceof MessengerError ? e.code : undefined,
+          e instanceof MessengerError ? e.outcome : "uncertain",
         );
       }
     }
@@ -148,62 +143,68 @@ export class Discord {
         `discord edit: text exceeds ${DISCORD_LIMIT} UTF-16 code units; shorten the text or send without --edit`,
         400,
       );
-    await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guarded });
+    responseId(
+      await this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, { content: guarded }),
+      `discord PATCH /channels/${channelId}/messages/${messageId}`,
+    );
   }
 
   async typing(channelId: string): Promise<void> {
     await this.call("POST", `/channels/${channelId}/typing`);
   }
 
-  async startThread(channelId: string, messageId: string, name: string): Promise<string> {
-    return (
-      await this.call<{ id: string }>("POST", `/channels/${channelId}/messages/${messageId}/threads`, {
-        name: guardText(name).slice(0, 100),
-      })
-    ).id;
+  async startThread(channelId: string, messageId: string, name: string, created?: ThreadCreated): Promise<string> {
+    const thread = await this.call<DcChannel>("POST", `/channels/${channelId}/messages/${messageId}/threads`, {
+      name: guardText(name).slice(0, 100),
+    });
+    const id = responseId(thread, `discord POST /channels/${channelId}/messages/${messageId}/threads`);
+    if (created) await created(thread);
+    return id;
   }
 
   async setThread(
     threadId: string,
     patch: { readonly name?: string; readonly archived?: boolean; readonly appliedTags?: readonly string[] },
   ): Promise<string> {
-    return (
-      await this.call<{ id: string }>("PATCH", `/channels/${threadId}`, {
+    return responseId(
+      await this.call("PATCH", `/channels/${threadId}`, {
         ...(patch.name ? { name: guardText(patch.name).slice(0, 100) } : {}),
         ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
         ...(patch.appliedTags !== undefined ? { applied_tags: patch.appliedTags } : {}),
-      })
-    ).id;
+      }),
+      `discord PATCH /channels/${threadId}`,
+    );
   }
 
   /** Forum posts include a starter message; text-channel threads optionally receive one after creation. */
   async createThread(
     channel: DcChannel,
     name: string,
-    opts: { readonly text?: string; readonly appliedTags?: readonly string[] } = {},
+    opts: { readonly text?: string; readonly appliedTags?: readonly string[]; readonly created?: ThreadCreated } = {},
   ): Promise<{ readonly id: string; readonly messageId?: string }> {
     const title = guardText(name).slice(0, 100);
     const text = opts.text === undefined ? undefined : guardText(opts.text);
     if (isForumType(channel.type)) {
       // The starter message holds the first part; longer text continues as messages in the new post.
       const [starter = "", ...more] = splitForDiscord(text ?? name);
-      const thread = await this.call<{ id: string; message?: { id: string } }>(
-        "POST",
-        `/channels/${channel.id}/threads`,
-        {
-          name: title,
-          message: { content: starter, allowed_mentions: { parse: [] } },
-          ...(opts.appliedTags !== undefined ? { applied_tags: opts.appliedTags } : {}),
-        },
-      );
+      const thread = await this.call<DcChannel>("POST", `/channels/${channel.id}/threads`, {
+        name: title,
+        message: { content: starter, allowed_mentions: { parse: [] } },
+        ...(opts.appliedTags !== undefined ? { applied_tags: opts.appliedTags } : {}),
+      });
+      responseId(thread, `discord POST /channels/${channel.id}/threads`);
+      if (opts.created) await opts.created(thread);
+      if (thread.message !== undefined) responseId(thread.message, `discord forum starter ${thread.id}`);
       if (more.length > 0)
         await this.post(thread.id, more, undefined, thread.message === undefined ? [] : [thread.message.id]);
       return { id: thread.id, ...(thread.message === undefined ? {} : { messageId: thread.message.id }) };
     }
-    const thread = await this.call<{ id: string }>("POST", `/channels/${channel.id}/threads`, {
+    const thread = await this.call<DcChannel>("POST", `/channels/${channel.id}/threads`, {
       name: title,
       type: 11,
     });
+    responseId(thread, `discord POST /channels/${channel.id}/threads`);
+    if (opts.created) await opts.created(thread);
     return text === undefined ? { id: thread.id } : { id: thread.id, ...(await this.firstOf(thread.id, text)) };
   }
 
@@ -213,9 +214,10 @@ export class Discord {
     messageId: string,
     name: string,
     text?: string,
+    created?: ThreadCreated,
   ): Promise<{ readonly id: string; readonly messageId?: string }> {
     const guarded = text === undefined ? undefined : guardText(text);
-    const id = await this.startThread(channelId, messageId, name);
+    const id = await this.startThread(channelId, messageId, name, created);
     return guarded === undefined ? { id } : { id, ...(await this.firstOf(id, guarded)) };
   }
 

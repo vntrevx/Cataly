@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { DiscordChannels, inboundContext } from "../src/messenger/discord-channels.ts";
+import { DiscordChannels } from "../src/messenger/discord-channels.ts";
+import { inboundContext } from "../src/messenger/discord-inbound-context.ts";
 import { discordInbound, formatDiscordInbound, formatInboundContext } from "../src/messenger/discord-inbound.ts";
 import { fileDiscordInboundStore } from "../src/messenger/discord-inbound-state.ts";
 import { discordRestWorld, memoryDiscordCursor, ownerMessage } from "./discord-inbound-fakes.ts";
