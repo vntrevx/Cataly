@@ -8,6 +8,7 @@ import { ThreadLedger } from "../src/messenger/thread-ledger.ts";
 import { fakeClock, withState } from "./fakes.ts";
 
 const SELF = "U_DORI";
+const SCOPE = { teamId: "T_TEST", userId: SELF };
 const state = withState();
 afterEach(() => {});
 
@@ -35,6 +36,7 @@ const slackFake = (w: Workspace) => {
       headers: {},
       body: JSON.stringify({ ok: true, ...(b as object) }),
     });
+    if (method === "auth.test") return body({ team_id: "T_TEST", user_id: SELF });
     if (method === "chat.postMessage") {
       const ts = `${w.nextTs++}.000100`;
       const root = typeof p["thread_ts"] === "string" ? p["thread_ts"] : ts;
@@ -63,7 +65,7 @@ const setup = (name: string) => {
   // The receiver's view: what one poll emitted, in order.
   const poll = async (emit?: (i: Inbound) => void): Promise<Inbound[]> => {
     const got: Inbound[] = [];
-    await pollSlackInbound(slack, ledger, { selfUserId: SELF }, (i) => {
+    await pollSlackInbound(slack, ledger, {}, (i) => {
       emit?.(i);
       got.push(i);
     });
@@ -81,6 +83,7 @@ test("a guest's untagged reply in a thread the Dori started through a raw API ca
   const got = await poll();
   expect(got).toEqual([
     {
+      scope: SCOPE,
       source: "own-thread",
       channel: "C1",
       ts: "2000.000100",
@@ -135,7 +138,7 @@ test("the thread ledger survives a restart: a new process still watches threads 
   const a = setup("restart");
   const root = (await a.slack.post("C4", "starting the migration")).ts;
   const fresh = new ThreadLedger(join(state.dir, "restart.json"));
-  expect((await fresh.list()).map((t) => `${t.channel}:${t.rootTs}`)).toEqual([`C4:${root}`]);
+  expect((await fresh.list(SCOPE)).map((t) => `${t.channel}:${t.rootTs}`)).toEqual([`C4:${root}`]);
 });
 
 test("a poll that fails after reading an own-thread reply moves no cursor, so the next poll still delivers it", async () => {
@@ -203,21 +206,21 @@ test("every emit finishes before any own-thread cursor advances, including an as
   const second = (await slack.post("C9", "second thread")).ts;
   w.replies[`C8:${first}`]?.push({ ts: "3000.000100", user: "U_OWNER", text: "first reply" });
   w.replies[`C9:${second}`]?.push({ ts: "3001.000100", user: "U_OWNER", text: "second reply" });
-  const before = await ledger.list();
+  const before = await ledger.list(SCOPE);
   const emitted: string[] = [];
   await expect(
-    pollSlackInbound(slack, ledger, { selfUserId: SELF }, async (message) => {
-      expect(await ledger.list()).toEqual(before);
+    pollSlackInbound(slack, ledger, {}, async (message) => {
+      expect(await ledger.list(SCOPE)).toEqual(before);
       emitted.push(message.ts);
       if (emitted.length === 2) throw new Error("later consumer failed");
     }),
   ).rejects.toThrow("later consumer failed");
-  expect(await ledger.list()).toEqual(before);
+  expect(await ledger.list(SCOPE)).toEqual(before);
   const retried: string[] = [];
-  await pollSlackInbound(slack, ledger, { selfUserId: SELF }, async (message) => {
-    expect(await ledger.list()).toEqual(before);
+  await pollSlackInbound(slack, ledger, {}, async (message) => {
+    expect(await ledger.list(SCOPE)).toEqual(before);
     retried.push(message.ts);
   });
   expect(retried).toEqual(emitted);
-  expect((await ledger.list()).map((thread) => thread.seenTs)).toEqual(["3000.000100", "3001.000100"]);
+  expect((await ledger.list(SCOPE)).map((thread) => thread.seenTs)).toEqual(["3000.000100", "3001.000100"]);
 });
