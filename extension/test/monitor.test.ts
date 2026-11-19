@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { Monitors } from "../monitor";
+import { type MonitorExit, Monitors } from "../monitor";
 import { type FakePi, load, until, useConfig } from "./fake-pi";
 
 const alive = (pid: number): boolean => {
@@ -80,7 +80,8 @@ describe("Monitors", () => {
 
   test("rejects a duplicate name and stops without an exit report", async () => {
     const { messages, monitors } = collect();
-    const { pid } = monitors.start("dup", ["sleep", "30"], ".", "/", "s1");
+    const exits: MonitorExit[] = [];
+    const { pid } = monitors.start("dup", ["sleep", "30"], ".", "/", "s1", { onExit: (exit) => exits.push(exit) });
     expect(() => monitors.start("dup", ["sleep", "30"], ".", "/", "s1")).toThrow('monitor "dup" is already running');
     expect(monitors.list().map((m) => m.name)).toEqual(["dup"]);
     expect(monitors.stop("dup")).toBe(true);
@@ -88,7 +89,27 @@ describe("Monitors", () => {
     // asserting that no exit report arrives: wait past the 100ms batch window of the real child process
     await Bun.sleep(150);
     expect(messages).toEqual([]);
+    expect(exits).toEqual([]);
     expect(monitors.stop("dup")).toBe(false);
+  });
+
+  test("a journal write failure is reported separately from output failure", async () => {
+    const { messages, monitors } = collect();
+    const exits: MonitorExit[] = [];
+    monitors.start("journal", ["sh", "-c", "exit 0"], ".", "/", "s1", {
+      mode: "once",
+      recordId: "one",
+      onExit(exit) {
+        exits.push(exit);
+        throw new Error("journal is read-only");
+      },
+    });
+    await until(() => messages.join("\n").includes("monitor exited"));
+    expect(exits).toEqual([{ code: 0, signal: null, at: expect.any(String) }]);
+    expect(messages.join("\n")).toContain("exit state was not recorded");
+    expect(messages.join("\n")).toContain("journal is read-only");
+    expect(messages.join("\n")).not.toContain("output failed");
+    expect(monitors.list()).toEqual([]);
   });
 
   test("rejects an invalid filter before spawning", () => {
@@ -119,7 +140,9 @@ describe("monitor tool", () => {
 
     await dori.emit("session_shutdown");
     await until(() => !alive(pid));
-    expect((await run(dori, { op: "list" }))?.content[0]?.text).toBe("no monitors running");
+    const stopped = (await run(dori, { op: "list" }))?.content[0]?.text;
+    expect(stopped).toContain("inbox [mode=persistent status=recorded]");
+    expect(stopped).not.toContain("pid ");
   });
 
   test("monitors stop when the Dori session switches away", async () => {

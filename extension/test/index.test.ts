@@ -282,7 +282,7 @@ describe("monitor restore", () => {
       expect(snapshot).toEqual([]);
       expect(fresh.entries).toEqual([
         roleEntry("dori"),
-        { type: "custom", customType: "omp-dori:monitor", data: { ...tick, cwd: tmpdir() } },
+        { type: "custom", customType: "omp-dori:monitor", data: { ...tick, cwd: tmpdir(), id: expect.any(String) } },
       ]);
       expect(pi.active).toContain("monitor");
       expect(await pi.emit("before_agent_start", agentStart)).toContainEqual({
@@ -309,7 +309,9 @@ describe("monitor restore", () => {
       expect(readPaneState(stateDir, PANE)).toMatchObject({ role: "dori", sessionId: fresh.id });
       await pi.emit("session_shutdown");
       await until(() => pids.every((pid) => !alive(pid)));
-      expect(await monitorCall(pi, { op: "list" })).toBe("no monitors running");
+      const stopped = await monitorCall(pi, { op: "list" });
+      expect(stopped).toContain("tick [mode=persistent status=recorded]");
+      expect(stopped).not.toContain("pid ");
 
       // A later process needs only the destination records, not the original role flag or monitor process.
       resumed = await load({ session: fresh });
@@ -341,7 +343,7 @@ describe("monitor restore", () => {
     const resumed = await load({ session: s });
     await resumed.emit("session_start");
     expect(resumed.messages).toEqual([]);
-    expect(await monitorCall(resumed, { op: "list" })).toBe("no monitors running");
+    expect(await monitorCall(resumed, { op: "list" })).toBe("no monitors running or recorded");
   });
 
   test("only Dori sessions restore monitors", async () => {

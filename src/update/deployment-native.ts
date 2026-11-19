@@ -5,6 +5,7 @@ import { readPaneState } from "../../skills/dori-mode/scripts/src/lane-state.ts"
 import type { Exec } from "../runtime/exec.ts";
 import type { LegacyRollbackForeground } from "./deployment-legacy-monitors.ts";
 import { attestMonitorForeground } from "./deployment-monitor-receipts.ts";
+import { assertMonitorStopSafe } from "./deployment-monitors.ts";
 import { assertNativeUiIdle, requestNativeUiExit } from "./deployment-native-ui.ts";
 import {
   actorEnv,
@@ -189,6 +190,7 @@ export async function stopRuntime(
     if (record.oldSourceHash && sourceManifest(realpathSync(config.liveSource)).hash !== record.oldSourceHash)
       throw new DeploymentHeld("previous source changed after its handoff journal");
     if (ui) await assertNativeUiIdle(config, cli, record, expected);
+    assertMonitorStopSafe(config, record);
     assertRetryDeadline(record);
     record.stopRequestedAt ??= new Date().toISOString();
     persist(record);

@@ -30,6 +30,9 @@ import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./boo
 import { RuntimeHealthWriter } from "./deployment-health.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
 import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
+import { MONITOR_ENTRY, recordedMonitors, recordedMonitorStates, type RecordedMonitor } from "./monitor-state.ts";
+import type { MonitorSpec } from "../src/update/deployment-types.ts";
+import { sameMonitorSpecs } from "../src/update/deployment-monitors.ts";
 import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from "../skills/dori-mode/scripts/src/owes";
 
 interface SessionEntry {
@@ -44,7 +47,12 @@ export interface DoriContext {
   abort(): void;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
-  sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
+  sessionManager: {
+    getSessionId(): string;
+    getSessionFile(): string | undefined;
+    getBranch(): SessionEntry[];
+    ensureOnDisk(): Promise<void>;
+  };
   ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
 }
 interface Goal {
@@ -111,7 +119,6 @@ export interface DoriApi {
 
 const ROLE_FLAG = "dori-role";
 const ROLE_ENTRY = "omp-dori:role";
-const MONITOR_ENTRY = "omp-dori:monitor";
 const ONLY_IN_ROLE = "works only in Dori sessions (omp --dori-role dori|lane)";
 // budget-limited halts the goal until a person raises the budget; unknown statuses must never read as "none",
 // which `dori pause` treats as nothing-to-pause.
@@ -159,43 +166,6 @@ const recordedGoal = (branch: readonly SessionEntry[]): PaneState["goal"] => {
     goal = (entry.mode === "goal" || entry.mode === "goal_paused") && isGoal(data) ? goalOf(data) : { status: "none" };
   }
   return goal;
-};
-
-type MonitorSpec = {
-  readonly name: string;
-  readonly argv: readonly string[];
-  readonly filter: string;
-  readonly cwd: string;
-};
-
-/**
- * Monitors the Dori session wants running, replayed from its `omp-dori:monitor` entries (start / stop). Monitor
- * processes die with omp; the record is what brings the Telegram poller back after herdr or `omp --resume`
- * restores the session, which otherwise resumes idle with nothing left to wake it.
- */
-const recordedMonitors = (branch: readonly SessionEntry[]): Map<string, MonitorSpec> => {
-  const specs = new Map<string, MonitorSpec>();
-  for (const entry of branch) {
-    if (
-      entry.type !== "custom" ||
-      entry.customType !== MONITOR_ENTRY ||
-      typeof entry.data !== "object" ||
-      entry.data === null
-    )
-      continue;
-    const data = entry.data as { op?: unknown; name?: unknown; argv?: unknown; filter?: unknown; cwd?: unknown };
-    if (typeof data.name !== "string") continue;
-    if (data.op === "stop") specs.delete(data.name);
-    else if (
-      data.op === "start" &&
-      Array.isArray(data.argv) &&
-      typeof data.filter === "string" &&
-      typeof data.cwd === "string"
-    ) {
-      specs.set(data.name, { name: data.name, argv: data.argv.map(String), filter: data.filter, cwd: data.cwd });
-    }
-  }
-  return specs;
 };
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -367,7 +337,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       tmp,
       JSON.stringify(
         {
-          version: 1,
+          version: session.monitorSpecs.some((spec) => spec.mode === "once") ? 2 : 1,
           sessionId: session.id,
           monitors: session.monitorSpecs,
           intake: session.intake,
@@ -380,6 +350,40 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       },
     );
     renameSync(tmp, path);
+  };
+
+  const startMonitor = (record: RecordedMonitor, ctx: DoriContext) => {
+    const owner = ctx.sessionManager.getSessionId();
+    const { spec, id } = record;
+    return monitors.start(spec.name, spec.argv, spec.filter, spec.cwd, owner, {
+      ...(spec.mode ? { mode: spec.mode } : {}),
+      ...(id ? { recordId: id } : {}),
+      async onExit(exit) {
+        if (role !== "dori" || session?.id !== owner || ctx.sessionManager.getSessionId() !== owner) return;
+        const current = recordedMonitorStates(ctx.sessionManager.getBranch()).get(spec.name);
+        if (!current || current.id !== id || current.completed || !sameMonitorSpecs([current.spec], [spec])) return;
+        const completed = spec.mode === "once" && exit.code === 0 && exit.signal === null && exit.error === undefined;
+        pi.appendEntry(MONITOR_ENTRY, {
+          op: completed ? "stop" : "exit",
+          name: spec.name,
+          ...(id ? { id } : {}),
+          exit,
+        });
+        await ctx.sessionManager.ensureOnDisk();
+        if (role !== "dori" || session?.id !== owner || ctx.sessionManager.getSessionId() !== owner) return;
+        const branch = ctx.sessionManager.getBranch();
+        const persisted = recordedMonitorStates(branch).get(spec.name);
+        if (
+          !persisted ||
+          persisted.id !== id ||
+          persisted.exit?.at !== exit.at ||
+          !sameMonitorSpecs([persisted.spec], [spec])
+        )
+          return;
+        saveMonitorSpecs(recordedMonitors(branch), branch);
+        savePane(ctx);
+      },
+    });
   };
 
   const syncTools = async (): Promise<void> => {
@@ -463,24 +467,21 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   // tree move or branch took back. Restored monitors are announced without starting a turn.
   const restoreMonitors = (ctx: DoriContext, branch: readonly SessionEntry[], managedStartup = false): void => {
     if (!session) return;
+    const records = recordedMonitorStates(branch);
     const wanted = recordedMonitors(branch);
-    for (const running of monitors.list()) {
+    for (const running of monitors.list(true)) {
       const spec = wanted.get(running.name);
-      if (
-        !spec ||
-        JSON.stringify(spec.argv) !== JSON.stringify(running.argv) ||
-        new RegExp(spec.filter).source !== running.filter ||
-        spec.cwd !== running.cwd
-      )
+      if (!spec || records.get(running.name)?.id !== running.recordId || !sameMonitorSpecs([spec], [running]))
         monitors.stop(running.name);
     }
-    const running = new Set(monitors.list().map((m) => m.name));
+    const running = new Set(monitors.list(true).map((m) => m.name));
     const restored: string[] = [];
     const failed: string[] = [];
-    for (const spec of wanted.values()) {
-      if (running.has(spec.name)) continue;
+    for (const record of records.values()) {
+      const { spec } = record;
+      if (record.completed || running.has(spec.name)) continue;
       try {
-        monitors.start(spec.name, spec.argv, spec.filter, spec.cwd, session.id);
+        startMonitor(record, ctx);
         restored.push(spec.name);
       } catch (error) {
         failed.push(`${spec.name} (${errorText(error)})`);
@@ -533,10 +534,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
           for (const spec of session?.monitorSpecs ?? [])
             pi.appendEntry(MONITOR_ENTRY, {
               op: "start",
-              name: spec.name,
-              argv: spec.argv,
-              filter: spec.filter,
-              cwd: spec.cwd,
+              ...spec,
+              id: crypto.randomUUID(),
             });
           if (session?.intake) pi.appendEntry("omp-dori:intake", session.intake);
         }
@@ -607,14 +606,26 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   });
 
   const z = pi.zod;
-  pi.registerTool<{ op: "start" | "stop" | "list"; name?: string; argv?: string[]; filter?: string }>({
+  pi.registerTool<{
+    op: "start" | "stop" | "list";
+    name?: string;
+    argv?: string[];
+    filter?: string;
+    mode?: "persistent" | "once";
+  }>({
     name: "monitor",
     label: "Monitor",
     description: MONITOR_DESCRIPTION,
     defaultInactive: true,
     loadMode: "essential",
     parameters: z.object({
-      op: z.enum(["start", "stop", "list"]).describe("start a monitor, stop one, or list running monitors"),
+      op: z
+        .enum(["start", "stop", "list"])
+        .describe("start a monitor, stop and forget one, or list running and recorded monitors"),
+      mode: z
+        .enum(["persistent", "once"])
+        .optional()
+        .describe("persistent (default), or once: successful exit removes restore intent (start)"),
       name: z.string().optional().describe("monitor name (start, stop)"),
       argv: z.array(z.string()).optional().describe("command and arguments, run without a shell (start)"),
       filter: z.string().optional().describe("regular expression; matching output lines wake the session (start)"),
@@ -626,14 +637,19 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       if (params.op === "start") {
         if (!params.name || !params.argv || params.filter === undefined)
           throw new Error("start needs name, argv and filter");
-        const started = monitors.start(params.name, params.argv, params.filter, ctx.cwd, session.id);
-        pi.appendEntry(MONITOR_ENTRY, {
-          op: "start",
-          name: started.name,
-          argv: started.argv,
-          filter: started.filter,
-          cwd: ctx.cwd,
-        });
+        const record: RecordedMonitor = {
+          spec: {
+            name: params.name,
+            argv: params.argv,
+            filter: params.filter,
+            cwd: ctx.cwd,
+            ...(params.mode === "once" ? { mode: "once" } : {}),
+          },
+          id: crypto.randomUUID(),
+          completed: false,
+        };
+        const started = startMonitor(record, ctx);
+        pi.appendEntry(MONITOR_ENTRY, { op: "start", ...record.spec, id: record.id });
         saveMonitorSpecs(recordedMonitors(ctx.sessionManager.getBranch()), ctx.sessionManager.getBranch());
         savePane(ctx);
         text = `started monitor "${started.name}" (pid ${started.pid}): ${started.argv.join(" ")}`;
@@ -641,18 +657,28 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         if (!params.name) throw new Error("stop needs name");
         const wasRunning = monitors.stop(params.name);
         // A monitor that exited on its own is still recorded; stopping it by name drops it from future restores.
-        const recorded = recordedMonitors(ctx.sessionManager.getBranch()).has(params.name);
+        const recorded = recordedMonitorStates(ctx.sessionManager.getBranch()).has(params.name);
         if (!wasRunning && !recorded) throw new Error(`no monitor "${params.name}"`);
         if (recorded) pi.appendEntry(MONITOR_ENTRY, { op: "stop", name: params.name });
         saveMonitorSpecs(recordedMonitors(ctx.sessionManager.getBranch()), ctx.sessionManager.getBranch());
         savePane(ctx);
         text = `stopped monitor "${params.name}"`;
       } else {
-        const running = monitors.list();
+        const running = new Map(monitors.list().map((monitor) => [monitor.name, monitor]));
+        const records = recordedMonitorStates(ctx.sessionManager.getBranch());
+        for (const monitor of running.values())
+          if (!records.has(monitor.name)) records.set(monitor.name, { spec: monitor, completed: false });
         text =
-          running.length === 0
-            ? "no monitors running"
-            : running.map((m) => `${m.name} (pid ${m.pid}) /${m.filter}/: ${m.argv.join(" ")}`).join("\n");
+          [...records]
+            .map(([name, { spec, exit }]) => {
+              const active = running.get(name);
+              const status = active ? "running" : exit ? (exit.error === undefined ? "exited" : "failed") : "recorded";
+              const outcome = exit
+                ? ` ${active ? "lastExit " : ""}code=${exit.code} signal=${exit.signal ?? "none"} at=${exit.at}${exit.error === undefined ? "" : ` error=${JSON.stringify(exit.error)}`}`
+                : "";
+              return `${name}${active ? ` (pid ${active.pid})` : ""} [mode=${spec.mode ?? "persistent"} status=${status}${outcome}] /${spec.filter}/: ${spec.argv.join(" ")}`;
+            })
+            .join("\n") || "no monitors running or recorded";
       }
       return { content: [{ type: "text", text }] };
     },

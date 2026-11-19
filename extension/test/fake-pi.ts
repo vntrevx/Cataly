@@ -63,6 +63,7 @@ export const fakePi = (options: FakeOptions): FakePi => {
         getSessionId: () => fake.session.id,
         getSessionFile: () => fake.session.file,
         getBranch: () => [...fake.session.entries],
+        ensureOnDisk: async () => {},
       },
       ui: { notify: (message: string) => void fake.notes.push(message) },
     }),
