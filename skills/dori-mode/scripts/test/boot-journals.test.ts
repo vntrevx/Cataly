@@ -54,7 +54,7 @@ test("a corrupt journal is reported for its lane and does not stop the check", a
   const world = newWorld();
   const deps = bootDeps(world);
   await deps.registry.write(launched("broken"));
-  deps.reports.report("broken", "milestone", "started", T0);
+  await deps.reports.report("broken", "milestone", "started", T0);
   writeFileSync(deps.reports.path("broken"), `${readFileSync(deps.reports.path("broken"), "utf8")}{partial\n`);
   // When boot runs; then the lane is named with the error kind and no local path, the rest still runs, and the exit is incomplete.
   const result = await bootCheck(deps);
@@ -69,7 +69,7 @@ test("the launch's activity record is not a report: a lane that never reported r
   const world = newWorld();
   const deps = bootDeps(world);
   await deps.registry.write(launched("quiet"));
-  deps.reports.append({
+  await deps.reports.append({
     type: "activity",
     key: "quiet",
     at: new Date(T0).toISOString(),
@@ -102,7 +102,7 @@ test("an adopted lane's journal is not read, so a done record there cannot offer
   world.panes = [{ pane_id: "w1:adopted", workspace_id: "w1" }];
   const deps = bootDeps(world);
   await deps.registry.write(lane("adopted"));
-  deps.reports.report("adopted", "done", "finished", T0);
+  await deps.reports.report("adopted", "done", "finished", T0);
   const terminal = join(deps.sessionsDir, "lead", "extensions", "terminal");
   mkdirSync(terminal, { recursive: true });
   writeFileSync(
@@ -125,7 +125,7 @@ test("an unreadable journal of any kind is that lane's error; the other lanes ar
   await deps.registry.write(launched("a-broken"));
   await deps.registry.write(launched("b-healthy"));
   mkdirSync(deps.reports.path("a-broken"), { recursive: true });
-  deps.reports.report("b-healthy", "blocker", "needs the owner", T0);
+  await deps.reports.report("b-healthy", "blocker", "needs the owner", T0);
   // When boot runs; then both lanes are listed and the run finishes incomplete.
   const result = await bootCheck(deps);
   expect(result.lines).toContain("JOURNAL-ERROR a-broken kind=EISDIR");

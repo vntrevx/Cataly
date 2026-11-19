@@ -44,17 +44,19 @@ describe("checkpoints", () => {
     const state = withState();
     // Write before the holder starts: a write racing the holder's lock attempt can make the holder lose it and exit.
     const journal = new Checkpoints(state.dir);
-    journal.write("demo-lane", input, Date.now());
+    await journal.write("demo-lane", input, Date.now());
     const { proc, locked } = holder(state.dir);
     try {
       await locked;
       const before = readFileSync(journal.path("demo-lane"), "utf8");
-      expect(() => journal.write("demo-lane", next, Date.now())).toThrow(`writer locked: demo-lane (pid ${proc.pid}`);
+      await expect(journal.write("demo-lane", next, Date.now())).rejects.toThrow(
+        `writer locked: demo-lane (pid ${proc.pid}`,
+      );
       expect(readFileSync(journal.path("demo-lane"), "utf8")).toBe(before);
       proc.stdin.write("release\n");
       await proc.stdin.end();
       expect(await proc.exited).toBe(0);
-      journal.write("demo-lane", next, Date.now());
+      await journal.write("demo-lane", next, Date.now());
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
       expect(existsSync(`${journal.path("demo-lane")}.lock`)).toBe(false);
     } finally {
@@ -72,7 +74,7 @@ describe("checkpoints", () => {
       proc.kill("SIGKILL");
       await proc.exited;
       expect(existsSync(`${journal.path("demo-lane")}.lock`)).toBe(true);
-      journal.write("demo-lane", input, Date.now());
+      await journal.write("demo-lane", input, Date.now());
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
       expect(existsSync(`${journal.path("demo-lane")}.lock`)).toBe(false);
     } finally {
@@ -80,25 +82,25 @@ describe("checkpoints", () => {
     }
   });
 
-  test("a lock older than the bound is taken over even when its pid is alive; a younger one is refused", () => {
+  test("a lock older than the bound is taken over even when its pid is alive; a younger one is refused", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
       journal.lock("demo-lane", 1000); // never released: this process stays alive
-      expect(() => journal.write("demo-lane", input, 1000 + LOCK_STALE_MS - 1)).toThrow("writer locked");
-      journal.write("demo-lane", input, 1000 + LOCK_STALE_MS);
+      await expect(journal.write("demo-lane", input, 1000 + LOCK_STALE_MS - 1)).rejects.toThrow("writer locked");
+      await journal.write("demo-lane", input, 1000 + LOCK_STALE_MS);
       expect(journal.read("demo-lane")).toHaveLength(1);
       // The lock directory an earlier build left behind has no owner record; its age decides.
       mkdirSync(`${journal.path("demo-lane")}.lock`);
-      expect(() => journal.write("demo-lane", next, Date.now())).toThrow("writer locked");
-      journal.write("demo-lane", next, Date.now() + LOCK_STALE_MS + 1000);
+      await expect(journal.write("demo-lane", next, Date.now())).rejects.toThrow("writer locked");
+      await journal.write("demo-lane", next, Date.now() + LOCK_STALE_MS + 1000);
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy", "next"]);
     } finally {
       state.done();
     }
   });
 
-  test("a lock whose owner time cannot be read is aged by its mtime, not taken over at once", () => {
+  test("a lock whose owner time cannot be read is aged by its mtime, not taken over at once", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
@@ -107,11 +109,11 @@ describe("checkpoints", () => {
       // A live writer on this host whose record holds an unreadable time.
       writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), at: "not a time", nonce: "n" }));
       const changed = statSync(lock).mtimeMs;
-      expect(() => journal.write("demo-lane", input, changed + LOCK_STALE_MS - 1000)).toThrow(
+      await expect(journal.write("demo-lane", input, changed + LOCK_STALE_MS - 1000)).rejects.toThrow(
         `writer locked: demo-lane (pid ${process.pid}`,
       );
       expect(journal.read("demo-lane")).toEqual([]);
-      journal.write("demo-lane", input, changed + LOCK_STALE_MS);
+      await journal.write("demo-lane", input, changed + LOCK_STALE_MS);
       expect(journal.read("demo-lane").map((c) => c.step)).toEqual(["deploy"]);
     } finally {
       state.done();

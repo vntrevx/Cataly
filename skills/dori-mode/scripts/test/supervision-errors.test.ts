@@ -21,7 +21,7 @@ const production = async (supervision: SupervisionOptions = {}) => {
   const deps = depsFor(world, f.clock, state.dir, { supervision: { hungAfterMinutes: 1_000, ...supervision } });
   const lane = { ...f.lane, pane: "w:p7" };
   await deps.registry.write(lane);
-  f.reports.report(lane.key, "milestone", "started", start);
+  await f.reports.report(lane.key, "milestone", "started", start);
   const run: Runner = (argv, options) => (argv[0] === "git" ? git(argv, options) : deps.run(argv, options));
   const tick = async (turn: number) => {
     f.clock.at = start + turn * 60_000;

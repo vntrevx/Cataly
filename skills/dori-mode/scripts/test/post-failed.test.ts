@@ -36,7 +36,7 @@ test("a thread hook that keeps failing is tried every tick but reported once per
     hooks: { threadReply: ["notify", "{thread}", "{text}"] },
   });
   await base.registry.write(lane);
-  new Reports(state.dir).report(lane.key, "blocker", "needs owner decision", T0);
+  await new Reports(state.dir).report(lane.key, "blocker", "needs owner decision", T0);
   const outcomes = [1, 1, 2, 0];
   let hookCalls = 0;
   const deps: FlowDeps = {

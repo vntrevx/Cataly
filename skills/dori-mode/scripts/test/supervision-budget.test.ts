@@ -90,7 +90,7 @@ describe("supervision", () => {
     const f = fixture({ defaults: { wallMinutes: 1 } });
     try {
       const reports = new Reports(f.dir);
-      reports.report(lane.key, "question", "which branch?", f.clock.now());
+      await reports.report(lane.key, "question", "which branch?", f.clock.now());
       f.clock.at += 60_000;
       expect((await f.supervisor.sweep(lane, "")).alerts).toEqual(["wallMinutes ceiling reached (1)"]);
       expect(reports.read(lane.key)?.lastReport).toMatchObject({
@@ -191,7 +191,7 @@ describe("supervision", () => {
   test("terminal progress is not overwritten by budget or hung reports", async () => {
     const f = fixture({ defaults: { wallMinutes: 0 } });
     try {
-      new Reports(f.dir).report(lane.key, "done", "finished", f.clock.now());
+      await new Reports(f.dir).report(lane.key, "done", "finished", f.clock.now());
       expect((await f.supervisor.sweep(lane, "Working 30m")).state).toBe("done");
       expect(f.alerts).toEqual([]);
     } finally {

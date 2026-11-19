@@ -1,8 +1,9 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { type EvidenceRef, isEvidenceRefs } from "./evidence.ts";
-import { LANE_KEY } from "./registry.ts";
+import { nextEvidenceSequence } from "./evidence-sequence.ts";
+import { type EvidenceRef, isEvidenceRefs, isEvidenceSequence } from "./evidence.ts";
+import { LANE_KEY, Registry } from "./registry.ts";
 
 export type ReportKind = "milestone" | "blocker" | "question" | "halted" | "done";
 export type ProgressState = "running" | "blocked" | "halted" | "done" | "stalled";
@@ -14,6 +15,7 @@ export type Report = {
   readonly text: string;
   /** The evidence the lane selected for this report (evidence.ts); its text and time are never evidence. */
   readonly evidenceRefs?: readonly EvidenceRef[];
+  readonly evidenceSequence?: number;
 };
 export type Activity = {
   readonly type: "activity";
@@ -23,6 +25,7 @@ export type Activity = {
   readonly text: string;
   /** Stable filesystem observations share the report/checkpoint clock without moving the report clock. */
   readonly evidenceRefs?: readonly EvidenceRef[];
+  readonly evidenceSequence?: number;
 };
 export type LaneEvent = Report | Activity;
 export type Progress = {
@@ -82,7 +85,16 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
   const evidenceRefs = "evidenceRefs" in value ? value.evidenceRefs : undefined;
   if (evidenceRefs !== undefined && !isEvidenceRefs(evidenceRefs))
     throw new ReportError(`invalid report evidenceRefs for ${key}`);
-  const common = { key, at: value.at, text: value.text, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) };
+  const evidenceSequence = "evidenceSequence" in value ? value.evidenceSequence : undefined;
+  if (evidenceSequence !== undefined && !isEvidenceSequence(evidenceSequence))
+    throw new ReportError(`invalid report evidenceSequence for ${key}`);
+  const common = {
+    key,
+    at: value.at,
+    text: value.text,
+    ...(evidenceRefs !== undefined ? { evidenceRefs } : {}),
+    ...(evidenceSequence !== undefined ? { evidenceSequence } : {}),
+  };
   if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
     return { ...common, type: "report", kind: value.kind };
   }
@@ -129,17 +141,34 @@ export class Reports {
     return progress;
   }
 
-  append(event: LaneEvent): void {
+  append(event: Report): Promise<Report>;
+  append(event: Activity): Promise<Activity>;
+  append(event: LaneEvent): Promise<LaneEvent>;
+  async append(event: LaneEvent): Promise<LaneEvent> {
     const path = this.path(event.key);
     parseEvent(JSON.stringify(event), event.key);
     const dir = join(this.stateDir, "lanes", event.key);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     // mkdir's mode applies only on creation; a directory made earlier with wider permissions is narrowed here.
     chmodSync(dir, 0o700);
-    appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+    const commit = (): LaneEvent => {
+      const recorded = event.evidenceRefs?.length
+        ? { ...event, evidenceSequence: nextEvidenceSequence(this.stateDir, event.key) }
+        : event;
+      appendFileSync(path, `${JSON.stringify(recorded)}\n`, { encoding: "utf8", mode: 0o600 });
+      return recorded;
+    };
+    // Only evidence participates in the cross-journal order; ordinary reports keep their uncontended append path.
+    return event.evidenceRefs?.length ? new Registry(this.stateDir).locked(event.key, commit) : commit();
   }
 
-  report(key: string, kind: ReportKind, text: string, now: number, evidenceRefs: readonly EvidenceRef[] = []): Report {
+  async report(
+    key: string,
+    kind: ReportKind,
+    text: string,
+    now: number,
+    evidenceRefs: readonly EvidenceRef[] = [],
+  ): Promise<Report> {
     const report: Report = {
       type: "report",
       key,
@@ -148,11 +177,16 @@ export class Reports {
       at: new Date(now).toISOString(),
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
     };
-    this.append(report);
-    return report;
+    return this.append(report);
   }
 
-  observe(key: string, screen: string, now: number, staleAfterMs: number, resumeOnWorking = true): Progress | null {
+  async observe(
+    key: string,
+    screen: string,
+    now: number,
+    staleAfterMs: number,
+    resumeOnWorking = true,
+  ): Promise<Progress | null> {
     const progress = this.read(key);
     if (!progress || (progress.state !== "running" && progress.state !== "stalled")) return progress;
     const visible = Bun.stripANSI(screen);
@@ -184,7 +218,7 @@ export class Reports {
           ? "idle prompt without Working or a fresh report"
           : "Working activity resumed",
     };
-    this.append(event);
+    await this.append(event);
     return this.read(key);
   }
 }

@@ -23,7 +23,7 @@ for (const idle of [false, true]) {
     });
     const lane = { ...f.lane, pane: "w:p7", thread: "test-thread" };
     await deps.registry.write(lane);
-    f.reports.report(lane.key, "milestone", "started", start);
+    await f.reports.report(lane.key, "milestone", "started", start);
     const run: Runner = (argv, options) => (argv[0] === "git" ? git(argv, options) : deps.run(argv, options));
     const tick = async (turn: number) => {
       f.clock.at = start + turn * 60_000;
@@ -35,7 +35,7 @@ for (const idle of [false, true]) {
     expect(f.observation().hung).toBe(true);
     const evidenceAt = f.observation().lastEvidenceAt;
     for (let turn = 8; turn < 10; turn++) {
-      f.reports.report(lane.key, "milestone", `report-only ${turn}`, start + turn * 60_000);
+      await f.reports.report(lane.key, "milestone", `report-only ${turn}`, start + turn * 60_000);
       const acts = await tick(turn);
       expect(acts.some((act) => act.kind === "stalled" || act.kind === "nudged")).toBe(false);
       expect(acts.filter((act) => act.kind === "posted").map((act) => act.detail)).toEqual([

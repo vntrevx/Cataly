@@ -31,7 +31,7 @@ test("freshness keeps a hung timer stalled without duplicate transitions or aler
     const deps = depsFor(world, clock, state.dir, { nudgeAfterMin: 999, supervision: { gitActivity: false } });
     await deps.registry.write(lane);
     const reports = new Reports(state.dir);
-    reports.report(lane.key, "milestone", "started", T0);
+    await reports.report(lane.key, "milestone", "started", T0);
     world.screen = "Working (21m 0s)\n❯ ";
     expect(await freshnessTick(deps, "/home/test")).toEqual([]);
     // When the same timer grows beyond the no-activity threshold.
@@ -60,7 +60,7 @@ test("freshness persists a wall ceiling blocker without sending or terminating",
       supervision: { defaults: { wallMinutes: 1 }, gitActivity: false },
     });
     await deps.registry.write(lane);
-    new Reports(state.dir).report(lane.key, "milestone", "started", T0);
+    await new Reports(state.dir).report(lane.key, "milestone", "started", T0);
     // When the regular freshness command runs its supervision step.
     const result = await freshnessTick(deps, "/home/test");
     // Then state and alert agree, and only a pane read was needed.
@@ -99,7 +99,7 @@ test("a usage warning does not hide the idle-prompt stall of the same lane", asy
       supervision: { defaults: { tokens: 1000 }, gitActivity: false },
     });
     await deps.registry.write(lane);
-    new Reports(state.dir).report(lane.key, "milestone", "started", T0);
+    await new Reports(state.dir).report(lane.key, "milestone", "started", T0);
     world.screen = "all done here\n❯ ";
     const acts = await freshnessTick(deps, "/home/test");
     expect(acts.map((a) => a.kind)).toEqual(["warning", "stalled"]);

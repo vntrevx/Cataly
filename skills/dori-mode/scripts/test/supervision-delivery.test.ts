@@ -35,14 +35,14 @@ for (const failedDelivery of [false, true]) {
               : [fileEvidence(source, f.repo)];
         if (update === "repeat") expect(refs).toHaveLength(1);
         if (update === "checkpoint") {
-          new Checkpoints(state.dir).write(
+          await new Checkpoints(state.dir).write(
             f.lane.key,
             { step: "during-alert", result: "file changed", evidence: [source], remoteEffects: [], evidenceRefs: refs },
             f.clock.at,
           );
         } else {
           const kind = update === "question" || update === "halted" || update === "done" ? update : "milestone";
-          f.reports.report(f.lane.key, kind, "reported during delivery", f.clock.at, refs);
+          await f.reports.report(f.lane.key, kind, "reported during delivery", f.clock.at, refs);
         }
         if (failedDelivery && attempts === 1) throw new Error("delivery unavailable");
       });
@@ -79,7 +79,7 @@ test("a reached ceiling still blocks when an awaited alert reports fresh work", 
       alert: async () => {
         await Promise.resolve();
         ++f.clock.at;
-        f.reports.report(f.lane.key, "milestone", "new work", f.clock.at, [fileEvidence(source, f.repo)]);
+        await f.reports.report(f.lane.key, "milestone", "new work", f.clock.at, [fileEvidence(source, f.repo)]);
       },
     },
     { gitActivity: false, usageArgv: ["usage"], defaults: { tokens: 1 } },
@@ -107,7 +107,7 @@ test("fresh evidence during delivery cannot suppress the next independently prov
         await Promise.resolve();
         ++f.clock.at;
         writeFileSync(selected, "real evidence during the first alert");
-        f.reports.report(f.lane.key, "milestone", "new work", f.clock.at, [fileEvidence(selected, f.repo)]);
+        await f.reports.report(f.lane.key, "milestone", "new work", f.clock.at, [fileEvidence(selected, f.repo)]);
       },
     },
     { gitActivity: false, activityPaths: [watched], hungAfterMinutes: 1, staleAfterMinutes: 1 },

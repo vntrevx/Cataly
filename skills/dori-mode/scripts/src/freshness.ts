@@ -157,7 +157,7 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
         }
         const resume = failure === undefined && !supervised?.heldHung;
         supervisedHung = Boolean(supervised?.hung || supervised?.heldHung);
-        progress = reports.observe(lane.key, screen, now, deps.config.nudgeAfterMin * 60_000, resume);
+        progress = await reports.observe(lane.key, screen, now, deps.config.nudgeAfterMin * 60_000, resume);
       } catch (error) {
         // One corrupt journal skips its own lane, printed once per error, and never ends the sweep for the others.
         if (!(error instanceof ReportError)) throw error;

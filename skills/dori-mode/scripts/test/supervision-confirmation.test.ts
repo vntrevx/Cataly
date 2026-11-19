@@ -51,7 +51,7 @@ test("production freshness never reports a stall for a first-window change made 
   const deps = depsFor(world, f.clock, state.dir, { supervision: { hungAfterMinutes: 0, staleAfterMinutes: 0 } });
   const lane = { ...f.lane, pane: "w:p7" };
   await deps.registry.write(lane);
-  f.reports.report(lane.key, "milestone", "started", f.clock.at);
+  await f.reports.report(lane.key, "milestone", "started", f.clock.at);
   const run: Runner = (argv, options) => (argv[0] === "git" ? git(argv, options) : deps.run(argv, options));
   const stalls: number[] = [];
   for (let turn = 0; turn < 16; turn++) {

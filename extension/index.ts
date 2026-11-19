@@ -802,7 +802,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         [...(reports.read(lane.key)?.evidenced ?? []), ...new Checkpoints(stateDir).read(lane.key)],
         evidence,
       );
-      const line = reportLine(reports.report(lane.key, params.kind, params.text, Date.now(), evidence));
+      const line = reportLine(await reports.report(lane.key, params.kind, params.text, Date.now(), evidence));
       const clock =
         evidence.length === 0
           ? "no evidence attached; the evidence clock did not move"

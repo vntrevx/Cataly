@@ -206,7 +206,7 @@ test("a failed thread hook leaves the report unposted and the next tick sends it
   });
   const reporting: Lane = { ...lane, thread: "telegram:1/2", reportProtocol: "jsonl-v1" };
   await base.registry.write(reporting);
-  new Reports(state.dir).report(reporting.key, "blocker", "needs owner decision", T0);
+  await new Reports(state.dir).report(reporting.key, "blocker", "needs owner decision", T0);
   const outcomes = [{ code: 1, out: "", err: "token=synthetic-private /home/test/secret w1:p9" }];
   const hookCalls: string[][] = [];
   const deps: FlowDeps = {

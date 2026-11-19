@@ -124,7 +124,7 @@ export class Registry {
    * Runs `fn` under the lane's writer lock. `fn` is synchronous, so the lock is held for one read and one write and
    * never across pane, git or network I/O. Another writer's lock is waited out; a dead or stale one is taken over.
    */
-  private async locked<T>(key: string, fn: () => T): Promise<T> {
+  async locked<T>(key: string, fn: () => T): Promise<T> {
     mkdirSync(this.dir, { recursive: true });
     const lock = `${this.path(key)}.lock`;
     const fail = (m: string) => new Error(`lane registry lock of ${key} ${m}`);

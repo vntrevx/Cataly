@@ -15,16 +15,16 @@ const input: CheckpointInput = {
 const next: CheckpointInput = { ...input, step: "next", remoteEffects: ["release:456"] };
 
 describe("checkpoints", () => {
-  test("persists completion and returns identical replay unchanged after restart", () => {
+  test("persists completion and returns identical replay unchanged after restart", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      const written = journal.write("demo-lane", input, 1000);
+      const written = await journal.write("demo-lane", input, 1000);
       expect(written.unchanged).toBe(false);
       const before = readFileSync(journal.path("demo-lane"), "utf8");
       const restarted = new Checkpoints(state.dir);
       expect(
-        restarted.write(
+        await restarted.write(
           "demo-lane",
           { remoteEffects: input.remoteEffects, evidence: input.evidence, result: input.result, step: input.step },
           2000,
@@ -37,15 +37,15 @@ describe("checkpoints", () => {
     }
   });
 
-  test("conflicting replay fails without overwriting or appending", () => {
+  test("conflicting replay fails without overwriting or appending", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      const first = journal.write("demo-lane", input, 1000);
+      const first = await journal.write("demo-lane", input, 1000);
       const before = readFileSync(journal.path("demo-lane"), "utf8");
-      expect(() =>
+      await expect(
         new Checkpoints(state.dir).write("demo-lane", { ...input, remoteEffects: ["release:other"] }, 2000),
-      ).toThrow("conflicting checkpoint step");
+      ).rejects.toThrow("conflicting checkpoint step");
       expect(journal.read("demo-lane")).toEqual([first.checkpoint]);
       expect(readFileSync(journal.path("demo-lane"), "utf8")).toBe(before);
       expect(existsSync(`${journal.path("demo-lane")}.lock`)).toBe(false);
@@ -54,12 +54,12 @@ describe("checkpoints", () => {
     }
   });
 
-  test("a remote-effect receipt already recorded under one step is refused under another", () => {
+  test("a remote-effect receipt already recorded under one step is refused under another", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      const first = journal.write("demo-lane", input, 1000);
-      expect(() => journal.write("demo-lane", { ...input, step: "deploy-again" }, 2000)).toThrow(
+      const first = await journal.write("demo-lane", input, 1000);
+      await expect(journal.write("demo-lane", { ...input, step: "deploy-again" }, 2000)).rejects.toThrow(
         "remote effect release:123 already recorded by step deploy",
       );
       expect(journal.read("demo-lane")).toEqual([first.checkpoint]);
@@ -68,11 +68,11 @@ describe("checkpoints", () => {
     }
   });
 
-  test("a corrupt record after a blank line is reported at its physical line", () => {
+  test("a corrupt record after a blank line is reported at its physical line", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      journal.write("demo-lane", input, 1000);
+      await journal.write("demo-lane", input, 1000);
       appendFileSync(journal.path("demo-lane"), "\n{not json\n");
       expect(() => journal.read("demo-lane")).toThrow(`${journal.path("demo-lane")}:3:`);
     } finally {
@@ -80,11 +80,11 @@ describe("checkpoints", () => {
     }
   });
 
-  test("a stored record whose timestamp is not a string is refused", () => {
+  test("a stored record whose timestamp is not a string is refused", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
-      const { checkpoint } = journal.write("demo-lane", input, 1000);
+      const { checkpoint } = await journal.write("demo-lane", input, 1000);
       writeFileSync(journal.path("demo-lane"), `${JSON.stringify({ ...checkpoint, at: 1000 })}\n`);
       expect(() => journal.read("demo-lane")).toThrow("invalid key, timestamp, or duplicate step");
     } finally {
@@ -136,17 +136,17 @@ describe("checkpoints", () => {
     }
   });
 
-  test("rejects malformed input, invalid keys, corrupt journals and duplicate stored steps", () => {
+  test("rejects malformed input, invalid keys, corrupt journals and duplicate stored steps", async () => {
     const state = withState();
     try {
       const journal = new Checkpoints(state.dir);
       expect(journal.read("demo-lane")).toEqual([]);
       expect(() => journal.path("../escape")).toThrow(CheckpointError);
-      expect(() => journal.write("demo-lane", { ...input, step: "" }, 1000)).toThrow(CheckpointError);
-      const { checkpoint } = journal.write("demo-lane", input, 1000);
+      await expect(journal.write("demo-lane", { ...input, step: "" }, 1000)).rejects.toThrow(CheckpointError);
+      const { checkpoint } = await journal.write("demo-lane", input, 1000);
       appendFileSync(journal.path("demo-lane"), `${JSON.stringify(checkpoint)}\n`);
       expect(() => journal.read("demo-lane")).toThrow("duplicate step");
-      expect(() => journal.write("demo-lane", next, 1000)).toThrow(CheckpointError);
+      await expect(journal.write("demo-lane", next, 1000)).rejects.toThrow(CheckpointError);
     } finally {
       state.done();
     }

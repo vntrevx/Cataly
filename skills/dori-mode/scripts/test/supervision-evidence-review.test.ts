@@ -54,7 +54,7 @@ for (const selectedBy of ["report", "checkpoint"] as const) {
     const reports = new Reports(state.dir);
     const active = { ...lane(), cwd: repo };
     const supervision = new Supervision({ stateDir: state.dir, clock, run: git });
-    reports.report(active.key, "milestone", "started", clock.at);
+    await reports.report(active.key, "milestone", "started", clock.at);
     await supervision.sweep(active, "Working 21m");
     clock.at += 5 * 60_000;
     writeFileSync(source, "B");
@@ -62,9 +62,9 @@ for (const selectedBy of ["report", "checkpoint"] as const) {
     const fingerprint = fileEvidence(source, repo);
     expect(novelEvidence(reports.read(active.key)?.evidenced ?? [], [fingerprint])).toEqual([]);
     clock.at += 5 * 60_000;
-    if (selectedBy === "report") reports.report(active.key, "milestone", "B is ready", clock.at, [fingerprint]);
+    if (selectedBy === "report") await reports.report(active.key, "milestone", "B is ready", clock.at, [fingerprint]);
     else
-      new Checkpoints(state.dir).write(
+      await new Checkpoints(state.dir).write(
         active.key,
         { step: "B", result: "ready", evidence: [source], remoteEffects: [], evidenceRefs: [fingerprint] },
         clock.at,
@@ -136,7 +136,7 @@ for (const reached of [false, true]) {
     });
     const active = { ...lane(), pane: "w:p7" };
     await deps.registry.write(active);
-    new Reports(state.dir).report(active.key, "milestone", "started", start);
+    await new Reports(state.dir).report(active.key, "milestone", "started", start);
     const original = deps.run;
     const run: Runner = async (argv, options) =>
       argv[0] === "git" && argv.includes("status")

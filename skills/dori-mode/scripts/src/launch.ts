@@ -158,7 +158,7 @@ const startLane = async (
   const pane = ref.id;
   // The launch is an activity record, not a report: it starts the journal (so the screen is watched for a stall) but is
   // never posted to the thread as if the agent had reported.
-  new Reports(deps.config.stateDir).append({
+  await new Reports(deps.config.stateDir).append({
     type: "activity",
     key: lane.key,
     at: iso(deps.clock),

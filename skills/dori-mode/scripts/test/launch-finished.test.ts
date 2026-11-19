@@ -23,7 +23,7 @@ for (const check of [1, 2]) {
               const lane = await base.registry.read("fast");
               if (!lane) throw new Error("lane not registered");
               if (done === "verified") await base.registry.write({ ...lane, status: "verified-done" });
-              else new Reports(state.dir).report("fast", "done", "finished", clock.now());
+              else await new Reports(state.dir).report("fast", "done", "finished", clock.now());
             },
           };
           const base = depsFor(world, clock, state.dir, {

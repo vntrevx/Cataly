@@ -115,15 +115,15 @@ export class Supervision {
     const alerts = () =>
       terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
     const freshAlerts = alerts().filter((message) => !previous?.alerts.includes(message));
-    const reconcile = () => {
+    const reconcile = async () => {
       // A question also reads as blocked; only this same ceiling blocker as the latest report makes a repeat.
       const blocker = violations.join("; ");
       const reported = progress?.lastReport?.kind === "blocker" && progress.lastReport.text === blocker;
       const at = this.deps.clock.now();
       if (!terminal && violations.length && !reported) {
-        this.reports.report(lane.key, "blocker", blocker, at);
+        await this.reports.report(lane.key, "blocker", blocker, at);
       } else if (!terminal && hung && (!progress || progress.state === "running")) {
-        this.reports.append({
+        await this.reports.append({
           type: "activity",
           key: lane.key,
           at: new Date(at).toISOString(),
@@ -131,7 +131,7 @@ export class Supervision {
           text: hungMessage,
         });
       } else if (!violations.length && progress?.state === "stalled" && advanced) {
-        this.reports.append({
+        await this.reports.append({
           type: "activity",
           key: lane.key,
           at: new Date(at).toISOString(),
@@ -141,7 +141,7 @@ export class Supervision {
       } else return;
       progress = this.reports.read(lane.key);
     };
-    reconcile();
+    await reconcile();
     // Deliver before saving, so only alerts that reached the callback count as sent; a failed one is sent again next sweep.
     const undelivered = new Map<string, string>();
     for (const message of freshAlerts) {
@@ -162,7 +162,7 @@ export class Supervision {
     }
     terminal = progress?.state === "done" || progress?.state === "halted";
     hung &&= !terminal && progress?.state !== "blocked";
-    reconcile();
+    await reconcile();
     const lastReportAt = progress?.lastReport?.at ?? null;
     const uncertainty = evidence.evidenceError === undefined ? {} : { evidenceError: evidence.evidenceError };
     const observation: Observation = {

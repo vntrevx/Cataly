@@ -184,10 +184,10 @@ describe("evidence clock", () => {
     expect(evidenceClock([checkpoint, report]).lastEvidenceAt).toBe(at(1));
   });
 
-  test("journals keep valid refs and refuse malformed ones", () => {
+  test("journals keep valid refs and refuse malformed ones", async () => {
     const reports = new Reports(state.dir);
-    reports.report("demo-lane", "milestone", "first", Date.parse(at(1)), [file("/r", A)]);
-    reports.report("demo-lane", "milestone", "no evidence", Date.parse(at(2)));
+    await reports.report("demo-lane", "milestone", "first", Date.parse(at(1)), [file("/r", A)]);
+    await reports.report("demo-lane", "milestone", "no evidence", Date.parse(at(2)));
     const progress = reports.read("demo-lane");
     expect(progress?.evidenced.map((report) => report.text)).toEqual(["first"]);
     expect(progress?.lastReport?.evidenceRefs).toBeUndefined();
@@ -195,20 +195,20 @@ describe("evidence clock", () => {
     expect(() => parseEvent(JSON.stringify({ ...line, evidenceRefs: [file("/r", "short")] }), "demo-lane")).toThrow(
       ReportError,
     );
-    expect(() =>
+    await expect(
       new Checkpoints(state.dir).write(
         "demo-lane",
         { step: "s", result: "r", evidence: [], remoteEffects: [], evidenceRefs: [{ kind: "url" } as never] },
         1,
       ),
-    ).toThrow(CheckpointError);
+    ).rejects.toThrow(CheckpointError);
   });
 
-  test("a retried checkpoint keeps the fingerprints of its first write", () => {
+  test("a retried checkpoint keeps the fingerprints of its first write", async () => {
     const journal = new Checkpoints(state.dir);
     const step = { step: "build", result: "ok", evidence: ["out.txt"], remoteEffects: [] };
-    const first = journal.write("demo-lane", { ...step, evidenceRefs: [file("/out", A)] }, 1);
-    const retried = journal.write("demo-lane", { ...step, evidenceRefs: [file("/out", B)] }, 2);
+    const first = await journal.write("demo-lane", { ...step, evidenceRefs: [file("/out", A)] }, 1);
+    const retried = await journal.write("demo-lane", { ...step, evidenceRefs: [file("/out", B)] }, 2);
     expect(retried).toEqual({ checkpoint: first.checkpoint, unchanged: true });
     expect(journal.read("demo-lane")[0]?.evidenceRefs).toEqual([file("/out", A)]);
   });

@@ -120,7 +120,7 @@ test("production freshness keeps a proven stall through partial windows until ac
   });
   const lane = { ...f.lane, pane: "w:p7" };
   await deps.registry.write(lane);
-  f.reports.report(lane.key, "milestone", "started", f.clock.at);
+  await f.reports.report(lane.key, "milestone", "started", f.clock.at);
   const run: Runner = (argv, options) => (argv[0] === "git" ? git(argv, options) : deps.run(argv, options));
   const tick = async (turn: number) => {
     f.clock.at = start + turn * 60_000;

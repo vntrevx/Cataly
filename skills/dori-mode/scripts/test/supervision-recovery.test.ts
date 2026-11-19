@@ -49,7 +49,7 @@ for (const failedDelivery of [false, true]) {
     if (!source) throw new Error("fixture needs its first candidate");
     for (const refs of [[], [fileEvidence(source, f.repo)]]) {
       const reportedAt = f.clock.at + 1;
-      f.reports.report(f.lane.key, "milestone", "still working", reportedAt, refs);
+      await f.reports.report(f.lane.key, "milestone", "still working", reportedAt, refs);
       const result = (await f.sweep()).result;
       expect(result.state).toBe("stalled");
       expect(result.heldHung).toBe(true);
@@ -94,7 +94,7 @@ for (const screen of [">", "compaction failed\n>"]) {
     const deps = depsFor(world, f.clock, state.dir, { supervision: { gitActivity: false } });
     const lane = { ...f.lane, pane: "w:p7" };
     await deps.registry.write(lane);
-    f.reports.report(lane.key, "milestone", "started", start);
+    await f.reports.report(lane.key, "milestone", "started", start);
     f.clock.at = start + 20 * 60_000;
     world.screen = screen;
     expect((await freshnessTick(deps, state.dir)).some((act) => act.kind === "stalled")).toBe(true);
@@ -139,7 +139,7 @@ test("normal partial coverage is not a recurring supervision error", async () =>
   const deps = depsFor(world, f.clock, state.dir, { supervision: { hungAfterMinutes: 1_000 } });
   const lane = { ...f.lane, pane: "w:p7" };
   await deps.registry.write(lane);
-  f.reports.report(lane.key, "milestone", "started", start);
+  await f.reports.report(lane.key, "milestone", "started", start);
   const run: Runner = (argv, options) => (argv[0] === "git" ? git(argv, options) : deps.run(argv, options));
   for (let turn = 0; turn < 8; turn++) {
     f.clock.at = start + turn * 60_000;

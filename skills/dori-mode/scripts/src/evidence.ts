@@ -25,7 +25,11 @@ export type EvidenceRef =
   | { readonly kind: "tool"; readonly ref: string; readonly fingerprint: string };
 // File refs use canonical paths; null records an observed absence. Tool call ids locate results but do not identify them.
 /** A journal record that may carry evidence: a report, observer activity or checkpoint. */
-export type Evidenced = { readonly at: string; readonly evidenceRefs?: readonly EvidenceRef[] | undefined };
+export type Evidenced = {
+  readonly at: string;
+  readonly evidenceRefs?: readonly EvidenceRef[] | undefined;
+  readonly evidenceSequence?: number;
+};
 export type EvidenceClock = { readonly lastEvidenceAt: string | null; readonly lastEvidence: EvidenceRef | null };
 /** A watched path's lstat identity and content fingerprint; the stat decides whether its bytes are read again. */
 export type PathMark = readonly [stat: string, fingerprint: string | null, canonical?: string];
@@ -36,6 +40,9 @@ export class UnstableEvidenceError extends EvidenceError {}
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+export const isEvidenceSequence = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 export const isEvidenceRefs = (value: unknown): value is readonly EvidenceRef[] =>
   Array.isArray(value) &&
@@ -60,10 +67,11 @@ const identity = (ref: EvidenceRef): string => (ref.kind === "file" ? `file\0${r
 const fold = (records: Iterable<Evidenced>): { seen: Map<string, string | null>; clock: EvidenceClock } => {
   const seen = new Map<string, string | null>();
   let clock: EvidenceClock = { lastEvidenceAt: null, lastEvidence: null };
-  // Reports and checkpoints are two journals: merge them by time (a stable sort keeps each journal's own order).
+  // New evidence is sequenced under one writer lock, so equal-ms journals replay acceptance order, not source order.
+  // Old records remain readable; missing sequences sort before new ones and otherwise retain their input order.
   const ordered = [...records]
     .filter((record) => record.evidenceRefs?.length)
-    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.evidenceSequence ?? 0) - (b.evidenceSequence ?? 0));
   for (const record of ordered) {
     for (const ref of record.evidenceRefs ?? []) {
       const key = identity(ref);

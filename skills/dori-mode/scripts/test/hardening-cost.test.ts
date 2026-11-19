@@ -35,8 +35,8 @@ test("a lane whose supervision state is corrupt is reported once and the sweep g
     await deps.registry.write(bad);
     await deps.registry.write(good);
     const reports = new Reports(state.dir);
-    reports.report(bad.key, "milestone", "started", T0);
-    reports.report(good.key, "milestone", "started", T0);
+    await reports.report(bad.key, "milestone", "started", T0);
+    await reports.report(good.key, "milestone", "started", T0);
     writeFileSync(join(state.dir, "lanes", bad.key, "supervision.json"), "{not json");
     const first = await freshnessTick(deps, "/home/test");
     expect(first.map((a) => [a.kind, a.lane]).sort()).toEqual([
@@ -57,7 +57,7 @@ test("a sweep with no usage hook writes no cost readings", async () => {
       clock = fakeClock(T0);
     const deps = depsFor(world, clock, state.dir, { nudgeAfterMin: 999, supervision: { gitActivity: false } });
     await deps.registry.write(lane);
-    new Reports(state.dir).report(lane.key, "milestone", "started", T0);
+    await new Reports(state.dir).report(lane.key, "milestone", "started", T0);
     await freshnessTick(deps, "/home/test");
     clock.at += MIN;
     await freshnessTick(deps, "/home/test");

@@ -21,7 +21,7 @@ const report: Command = async ({ key, need, strings, lane, config }) => {
   if (!isReportKind(kind)) return die("--kind must be milestone, blocker, question, halted or done");
   const text = need("text");
   const evidence = evidenceFiles(strings);
-  console.log(reportLine(new Reports(config.stateDir).report(target.key, kind, text, realClock.now(), evidence)));
+  console.log(reportLine(await new Reports(config.stateDir).report(target.key, kind, text, realClock.now(), evidence)));
 };
 
 const lessonAdd = async (
@@ -140,7 +140,7 @@ const checkpoint: Command = async (cli) => {
   // parseArgs takes one value per flag; a second bare receipt would otherwise be dropped and its effect repeated later.
   const stray = positionals.slice(1);
   if (stray.length) die(`checkpoint: unexpected argument ${stray[0]}; give each receipt its own --remote-effect`);
-  const result = new Checkpoints(config.stateDir).write(
+  const result = await new Checkpoints(config.stateDir).write(
     target.key,
     {
       step: need("step"),

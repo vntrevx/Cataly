@@ -126,11 +126,11 @@ describe("supervision", () => {
     const f = fixture();
     try {
       const reports = new Reports(f.dir);
-      reports.report(lane.key, "milestone", "starting", f.clock.now());
+      await reports.report(lane.key, "milestone", "starting", f.clock.now());
       await f.supervisor.sweep(lane, "Working 21m");
       f.clock.at += 20 * 60_000;
-      reports.report(lane.key, "milestone", "progress, in other words", f.clock.now());
-      new Checkpoints(f.dir).write(
+      await reports.report(lane.key, "milestone", "progress, in other words", f.clock.now());
+      await new Checkpoints(f.dir).write(
         lane.key,
         { step: "build", result: "ok", evidence: [], remoteEffects: [] },
         f.clock.now(),
@@ -150,19 +150,19 @@ describe("supervision", () => {
       const reports = new Reports(f.dir);
       const result = join(f.dir, "result.txt");
       writeFileSync(result, "first");
-      reports.report(lane.key, "milestone", "starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "starting", f.clock.now(), [fileEvidence(result, f.dir)]);
       await f.supervisor.sweep(lane, "Working 21m");
       f.clock.at += 20 * 60_000;
       // The same bytes reported again, after a touch and under new words, are the report clock only.
       utimesSync(result, new Date(f.clock.at), new Date(f.clock.at));
-      reports.report(lane.key, "milestone", "still starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "still starting", f.clock.now(), [fileEvidence(result, f.dir)]);
       const repeated = await f.supervisor.sweep(lane, "Working 41m");
       expect(repeated.state).toBe("stalled");
       expect(repeated.lastReportAt).toBe(new Date(f.clock.now()).toISOString());
       expect(repeated.lastEvidenceAt).toBe(new Date(start).toISOString());
       f.clock.at += 60_000;
       writeFileSync(result, "second");
-      reports.report(lane.key, "milestone", "second result", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "second result", f.clock.now(), [fileEvidence(result, f.dir)]);
       const fresh = await f.supervisor.sweep(lane, "Working 42m");
       expect(fresh).toMatchObject({
         state: "running",
@@ -172,7 +172,11 @@ describe("supervision", () => {
       // A checkpoint of bytes already reported is not new evidence either.
       f.clock.at += 20 * 60_000;
       const step = { step: "s", result: "r", evidence: ["result.txt"], remoteEffects: [] };
-      new Checkpoints(f.dir).write(lane.key, { ...step, evidenceRefs: [fileEvidence(result, f.dir)] }, f.clock.now());
+      await new Checkpoints(f.dir).write(
+        lane.key,
+        { ...step, evidenceRefs: [fileEvidence(result, f.dir)] },
+        f.clock.now(),
+      );
       expect((await f.supervisor.sweep(lane, "Working 62m")).state).toBe("stalled");
     } finally {
       f.done();
@@ -210,7 +214,7 @@ describe("supervision", () => {
   test("a supervision record from before evidence fingerprints is not itself evidence", async () => {
     const f = fixture();
     try {
-      new Reports(f.dir).report(lane.key, "milestone", "starting", start);
+      await new Reports(f.dir).report(lane.key, "milestone", "starting", start);
       const legacy = { at: start, timer: 21 * 60, timerKind: "working", activity: "{}", activeAt: start, alerts: [] };
       writeFileSync(join(f.dir, "lanes", lane.key, "supervision.json"), JSON.stringify(legacy));
       f.clock.at += 20 * 60_000;

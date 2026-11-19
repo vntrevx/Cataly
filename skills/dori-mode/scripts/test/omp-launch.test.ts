@@ -84,7 +84,7 @@ const start = async (
         if (options.finish && !finished && clock.at >= T0 + options.finish.after) {
           const current = await base.registry.read(key);
           if (!current) throw new Error("lane not registered before startup check");
-          if (options.finish.kind === "journal") new Reports(state.dir).report(key, "done", "finished", clock.at);
+          if (options.finish.kind === "journal") await new Reports(state.dir).report(key, "done", "finished", clock.at);
           else await base.registry.write({ ...current, status: options.finish.kind });
           world.panes = [];
           finished = true;

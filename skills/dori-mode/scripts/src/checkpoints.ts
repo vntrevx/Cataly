@@ -2,8 +2,9 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, wr
 import { dirname, join } from "node:path";
 
 import { takeLock } from "./checkpoint-lock.ts";
-import { type EvidenceRef, isEvidenceRefs } from "./evidence.ts";
-import { LANE_KEY } from "./registry.ts";
+import { nextEvidenceSequence } from "./evidence-sequence.ts";
+import { type EvidenceRef, isEvidenceRefs, isEvidenceSequence } from "./evidence.ts";
+import { LANE_KEY, Registry } from "./registry.ts";
 
 export type CheckpointInput = {
   readonly step: string;
@@ -16,7 +17,11 @@ export type CheckpointInput = {
    */
   readonly evidenceRefs?: readonly EvidenceRef[];
 };
-export type Checkpoint = CheckpointInput & { readonly key: string; readonly at: string };
+export type Checkpoint = CheckpointInput & {
+  readonly key: string;
+  readonly at: string;
+  readonly evidenceSequence?: number;
+};
 export class CheckpointError extends Error {}
 
 const validate = (input: CheckpointInput): void => {
@@ -67,6 +72,7 @@ export class Checkpoints {
             value.key !== key ||
             typeof value.at !== "string" ||
             !Number.isFinite(Date.parse(value.at)) ||
+            (value.evidenceSequence !== undefined && !isEvidenceSequence(value.evidenceSequence)) ||
             steps.has(value.step)
           ) {
             throw new CheckpointError("invalid key, timestamp, or duplicate step");
@@ -88,12 +94,12 @@ export class Checkpoints {
     return held;
   }
 
-  write(
+  async write(
     key: string,
     input: CheckpointInput,
     now: number,
     capture?: () => readonly EvidenceRef[],
-  ): { checkpoint: Checkpoint; unchanged: boolean } {
+  ): Promise<{ checkpoint: Checkpoint; unchanged: boolean }> {
     validate(input);
     const path = this.path(key);
     const at = new Date(now).toISOString();
@@ -116,30 +122,37 @@ export class Checkpoints {
       // Only a new step reads external evidence; retries and conflicts are resolved from the durable receipt first.
       const captured = capture ? { ...input, evidenceRefs: capture() } : input;
       if (capture) validate(captured);
-      const checkpoint: Checkpoint = {
-        key,
-        at,
-        ...JSON.parse(payload(input)),
-        ...(captured.evidenceRefs?.length ? { evidenceRefs: captured.evidenceRefs } : {}),
-      };
-      const created = !existsSync(path);
-      const fd = openSync(path, "a", 0o600);
-      try {
-        writeSync(fd, `${JSON.stringify(checkpoint)}\n`);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      // A new journal's directory entry must be durable too, or a crash could lose the first checkpoint after it was acknowledged.
-      if (created) {
-        const dir = openSync(dirname(path), "r");
+      const commit = (): { checkpoint: Checkpoint; unchanged: boolean } => {
+        const checkpoint: Checkpoint = {
+          key,
+          at,
+          ...JSON.parse(payload(input)),
+          ...(captured.evidenceRefs?.length
+            ? { evidenceRefs: captured.evidenceRefs, evidenceSequence: nextEvidenceSequence(this.stateDir, key) }
+            : {}),
+        };
+        const created = !existsSync(path);
+        const fd = openSync(path, "a", 0o600);
         try {
-          fsyncSync(dir);
+          writeSync(fd, `${JSON.stringify(checkpoint)}\n`);
+          fsyncSync(fd);
         } finally {
-          closeSync(dir);
+          closeSync(fd);
         }
-      }
-      return { checkpoint, unchanged: false };
+        // A new journal's directory entry must be durable too, or a crash could lose the first checkpoint after it was acknowledged.
+        if (created) {
+          const dir = openSync(dirname(path), "r");
+          try {
+            fsyncSync(dir);
+          } finally {
+            closeSync(dir);
+          }
+        }
+        return { checkpoint, unchanged: false };
+      };
+      // Own lock is acquired first (and still refuses immediately); only evidence waits on the unchanged registry lock.
+      // No path takes these locks in reverse: report sequencing reads checkpoints without acquiring their writer lock.
+      return captured.evidenceRefs?.length ? await new Registry(this.stateDir).locked(key, commit) : commit();
     } finally {
       release();
     }

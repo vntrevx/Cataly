@@ -72,7 +72,7 @@ test("boot reports vanished panes, journals and stale watches, and writes nothin
     lane("closed", "closed"),
   ])
     await deps.registry.write(l);
-  deps.reports.report("api-release", "halted", "work pushed, waiting for the owner", T0);
+  await deps.reports.report("api-release", "halted", "work pushed, waiting for the owner", T0);
   const terminal = join(deps.sessionsDir, "lead", "extensions", "terminal");
   mkdirSync(terminal, { recursive: true });
   writeFileSync(
@@ -183,7 +183,7 @@ test("a journal-done lane whose pane is gone is finished in both checks: not VAN
   world.panes = [{ pane_id: "w2:p1", workspace_id: "w2" }];
   const deps = bootDeps(world);
   await deps.registry.write(launched("reported", "working", "w1:p9"));
-  deps.reports.report("reported", "done", "finished", T0);
+  await deps.reports.report("reported", "done", "finished", T0);
   const terminal = join(deps.sessionsDir, "lead", "extensions", "terminal");
   mkdirSync(terminal, { recursive: true });
   writeFileSync(

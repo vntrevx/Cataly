@@ -199,8 +199,8 @@ export const laneEvidence = async (
     previous,
     persist,
   );
-  const progress = reports.read(lane.key);
-  const records = [...(progress?.evidenced ?? []), ...checkpoints.read(lane.key)];
+  let progress = reports.read(lane.key);
+  let records = [...(progress?.evidenced ?? []), ...checkpoints.read(lane.key)];
   const evidenceRefs = novelEvidence(records, observed);
   if (evidenceRefs.length) {
     const event: Activity = {
@@ -211,8 +211,10 @@ export const laneEvidence = async (
       text: "Observed filesystem evidence",
       evidenceRefs,
     };
-    reports.append(event);
-    records.push(event);
+    await reports.append(event);
+    // A writer may have accepted the same evidence while append waited for its sequence; fold that record too.
+    progress = reports.read(lane.key);
+    records = [...(progress?.evidenced ?? []), ...checkpoints.read(lane.key)];
   }
   return {
     ...selectedEvidence(records),
