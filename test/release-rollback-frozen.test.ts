@@ -15,6 +15,9 @@ import { archive, type ConsumerFixture, fixture, withArchive } from "./release-c
 import { boundRelease } from "./release-native-recovery-setup.ts";
 import { nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 
+// POSIX-only: these fixtures require private mode bits, executable shebangs and /bin/sh Git admission.
+const posix = test.skipIf(process.platform === "win32");
+
 // Exact automatic.ts, state.ts, manifest.ts and consumer/omp bytes from e6b60c9f5efd45925645672e1841a8a9e20e5592.
 // Text fixtures keep the exact bytes reviewable and independent of Git history or a sibling baseline checkout.
 // Only these admission modules are historical; their other dependencies are the real current source, not stubs.
@@ -53,7 +56,7 @@ function nativeRelease(f: ConsumerFixture, selected: string, version: string): V
   return repack(release.bundle, release.source, version);
 }
 
-test.each([
+posix.each([
   ["18.20.0", "19.0.0"],
   ["18.20.0", "19.1.2"],
   ["18.18.8", "19.0.0"],
@@ -121,7 +124,7 @@ test.each([
   await expect(rollbackRelease(f.paths, rolled)).rejects.toThrow("No retained previous release");
 });
 
-test("same-generation OMP 19 rollback retains its displaced release for redo", async () => {
+posix("same-generation OMP 19 rollback retains its displaced release for redo", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, nativeRelease(f, "one", "19.0.0"), undefined);
   const two = await installBundle(f.paths, nativeRelease(f, "two", "19.1.2"), one);

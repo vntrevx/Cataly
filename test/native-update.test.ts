@@ -10,6 +10,9 @@ import { checkoutSourceBundle } from "../src/release/source-checkout.ts";
 import { fixtureGit } from "./source-bundle-setup.ts";
 import { fixtureDependencyFiles, nativeUpdateFixture } from "./native-update-fixture.test.ts";
 
+// POSIX-only: these fixtures require private mode bits, executable shebangs and /bin/sh Git admission.
+const posix = test.skipIf(process.platform === "win32");
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -32,7 +35,7 @@ test("stable tags are numerically ordered, prereleases ignored and annotated tag
   expect(() => latestNativeTag(`${sha}\trefs/tags/v19.0.0\n${sha}\trefs/tags/19.0.0`)).toThrow("Ambiguous");
 });
 
-test("unchanged release prepares nothing without touching the source or upstream overlay", async () => {
+posix("unchanged release prepares nothing without touching the source or upstream overlay", async () => {
   const f = nativeUpdateFixture(roots);
   const before = fixtureGit(f.remote, "write-tree");
   expect(await prepareNativeUpdate(f.source, f.output, f.remote, fixtureDependencyFiles)).toBeUndefined();
@@ -41,30 +44,33 @@ test("unchanged release prepares nothing without touching the source or upstream
   expect(fixtureGit(f.source, "status", "--porcelain")).toBe("");
 });
 
-test("clean native apply carries exact overlay, source identity and all required pins into a draft artifact", async () => {
-  const f = nativeUpdateFixture(roots);
-  const original = NATIVE_UPDATE_FILES.map((path) => readFileSync(join(f.source, path)));
-  const commit = f.advance();
-  const candidate = await prepareNativeUpdate(f.source, f.output, f.remote, fixtureDependencyFiles);
-  expect(candidate).toMatchObject({
-    status: "candidate",
-    commit,
-    nativeVersion: "19.0.1",
-    sourceCommit: f.sourceCommit,
-  });
-  expect(readNativeArtifact(f.source, f.output)).toEqual(candidate!);
-  const selected = join(f.root, "verified-checkout");
-  await checkoutSourceBundle(selected, readSourceBundle(f.output, true), f.root, f.remote);
-  expect(readFileSync(join(selected, "index.ts"), "utf8")).toContain('selected = "reviewed-overlay"');
-  expect(readFileSync(join(selected, "new-upstream.ts"), "utf8")).toContain("incoming = true");
-  expect(NATIVE_UPDATE_FILES.map((path) => readFileSync(join(f.source, path)))).toEqual(original);
-  expect(readdirSync(f.root).filter((name) => name.startsWith(".native-update-"))).toEqual([]);
-  await expect(prepareNativeUpdate(f.source, f.output, f.remote, fixtureDependencyFiles)).rejects.toThrow(
-    "already exists",
-  );
-});
+posix(
+  "clean native apply carries exact overlay, source identity and all required pins into a draft artifact",
+  async () => {
+    const f = nativeUpdateFixture(roots);
+    const original = NATIVE_UPDATE_FILES.map((path) => readFileSync(join(f.source, path)));
+    const commit = f.advance();
+    const candidate = await prepareNativeUpdate(f.source, f.output, f.remote, fixtureDependencyFiles);
+    expect(candidate).toMatchObject({
+      status: "candidate",
+      commit,
+      nativeVersion: "19.0.1",
+      sourceCommit: f.sourceCommit,
+    });
+    expect(readNativeArtifact(f.source, f.output)).toEqual(candidate!);
+    const selected = join(f.root, "verified-checkout");
+    await checkoutSourceBundle(selected, readSourceBundle(f.output, true), f.root, f.remote);
+    expect(readFileSync(join(selected, "index.ts"), "utf8")).toContain('selected = "reviewed-overlay"');
+    expect(readFileSync(join(selected, "new-upstream.ts"), "utf8")).toContain("incoming = true");
+    expect(NATIVE_UPDATE_FILES.map((path) => readFileSync(join(f.source, path)))).toEqual(original);
+    expect(readdirSync(f.root).filter((name) => name.startsWith(".native-update-"))).toEqual([]);
+    await expect(prepareNativeUpdate(f.source, f.output, f.remote, fixtureDependencyFiles)).rejects.toThrow(
+      "already exists",
+    );
+  },
+);
 
-test("three-way conflicts retain exact unresolved hunks in an artifact and do not refresh dependencies", async () => {
+posix("three-way conflicts retain exact unresolved hunks in an artifact and do not refresh dependencies", async () => {
   const f = nativeUpdateFixture(roots);
   f.advance("19.0.1", true);
   let resolved = false;
@@ -83,7 +89,7 @@ test("three-way conflicts retain exact unresolved hunks in an artifact and do no
   expect(fixtureGit(f.source, "status", "--porcelain")).toBe("");
 });
 
-test("unsupported runtime major and failed frozen-lock refresh hold instead of metadata-only proposals", async () => {
+posix("unsupported runtime major and failed frozen-lock refresh hold instead of metadata-only proposals", async () => {
   const major = nativeUpdateFixture(roots);
   major.advance("20.0.0");
   const held = await prepareNativeUpdate(major.source, major.output, major.remote, fixtureDependencyFiles);
@@ -99,7 +105,7 @@ test("unsupported runtime major and failed frozen-lock refresh hold instead of m
   expect(readNativeArtifact(dependency.source, dependency.output).status).toBe("held");
 });
 
-test("dirty source, invalid identity, mismatched version and rewritten tags are rejected", async () => {
+posix("dirty source, invalid identity, mismatched version and rewritten tags are rejected", async () => {
   const dirty = nativeUpdateFixture(roots);
   dirty.advance();
   writeFileSync(join(dirty.source, "untracked.ts"), "preserve me");
@@ -129,7 +135,7 @@ test("dirty source, invalid identity, mismatched version and rewritten tags are 
   ).rejects.toThrow("package version differ");
 });
 
-test("maintainer capture requires the exact staged checkout and package version", async () => {
+posix("maintainer capture requires the exact staged checkout and package version", async () => {
   const f = nativeUpdateFixture(roots);
   const commit = f.advance();
   writeFileSync(join(f.remote, "index.ts"), 'export const selected = "reviewed-overlay";\n');
@@ -143,7 +149,7 @@ test("maintainer capture requires the exact staged checkout and package version"
   expect(readSourceBundle(f.source, true).lock.nativeVersion).toBe("19.0.1");
 });
 
-test("source movement during preparation is preserved and prevents emitting a candidate", async () => {
+posix("source movement during preparation is preserved and prevents emitting a candidate", async () => {
   const f = nativeUpdateFixture(roots);
   f.advance();
   await expect(
@@ -156,7 +162,7 @@ test("source movement during preparation is preserved and prevents emitting a ca
   expect(existsSync(f.output)).toBe(false);
 });
 
-test("a same-major release removing the required launcher is held before refreshing pins", async () => {
+posix("a same-major release removing the required launcher is held before refreshing pins", async () => {
   const f = nativeUpdateFixture(roots);
   f.advance();
   fixtureGit(f.remote, "rm", "--", "packages/coding-agent/scripts/omp");

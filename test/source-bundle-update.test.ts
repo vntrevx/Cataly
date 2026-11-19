@@ -124,7 +124,7 @@ test("rewritten or unreachable upstream is held rather than treated as an automa
   expect(ULW_UPDATE_FILES.map((file) => readFileSync(join(f.source, file)))).toEqual(f.original);
 });
 
-test("shared metadata capture binds full blob identities and the reviewed staged tree", async () => {
+posix("shared metadata capture binds full blob identities and the reviewed staged tree", async () => {
   const f = fixture();
   const path = join(f.root, "captured.patch");
   const lock = await generateSourceBundle(f.remote, path, f.old.lock.repository, f.root);
@@ -135,7 +135,7 @@ test("shared metadata capture binds full blob identities and the reviewed staged
   expect(readFileSync(path, "utf8")).toMatch(/^index [a-f0-9]{40}\.\.[a-f0-9]{40}/m);
 });
 
-test("shared metadata capture holds empty overlays instead of inventing a no-overlay identity", async () => {
+posix("shared metadata capture holds empty overlays instead of inventing a no-overlay identity", async () => {
   const f = fixture();
   fixtureGit(f.remote, "reset", "--hard", f.old.commit);
   await expect(

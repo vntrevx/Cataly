@@ -8,6 +8,9 @@ import { prepareNativeUpdate } from "../src/release/native-update.ts";
 import { fixtureDependencyFiles, nativeUpdateFixture } from "./native-update-fixture.test.ts";
 import { NativeGithubFixture } from "./native-update-publisher-fixture.test.ts";
 
+// POSIX-only: these fixtures require private mode bits, executable shebangs and /bin/sh Git admission.
+const posix = test.skipIf(process.platform === "win32");
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -20,7 +23,7 @@ async function candidate(conflict = false) {
   return f;
 }
 
-test("unexpected files, directories, symlinks and oversized receipts never reach the write API", async () => {
+posix("unexpected files, directories, symlinks and oversized receipts never reach the write API", async () => {
   const f = await candidate();
   const github = new NativeGithubFixture(f.source, f.sourceCommit);
   const unexpected = join(f.output, "execute.ts");
@@ -38,7 +41,7 @@ test("unexpected files, directories, symlinks and oversized receipts never reach
   expect(github.writes).toHaveLength(0);
 });
 
-test("manifest scripts cannot change, even when the selected version is otherwise correct", async () => {
+posix("manifest scripts cannot change, even when the selected version is otherwise correct", async () => {
   const f = await candidate();
   const path = join(f.output, "extension/package.json");
   const manifest = JSON.parse(readFileSync(path, "utf8"));
@@ -47,7 +50,7 @@ test("manifest scripts cannot change, even when the selected version is otherwis
   expect(() => readNativeArtifact(f.source, f.output)).toThrow("more than");
 });
 
-test("frozen locks reject wrong version, file dependencies and forged workspace pins", async () => {
+posix("frozen locks reject wrong version, file dependencies and forged workspace pins", async () => {
   const f = await candidate();
   const path = join(f.output, "native-addon/bun.lock");
   const original = readFileSync(path, "utf8");
@@ -63,7 +66,7 @@ test("frozen locks reject wrong version, file dependencies and forged workspace 
   expect(() => readNativeArtifact(f.source, f.output)).toThrow("workspace");
 });
 
-test("Bun trailing commas are data; quoted strings are never rewritten by lock parsing", async () => {
+posix("Bun trailing commas are data; quoted strings are never rewritten by lock parsing", async () => {
   const f = await candidate();
   for (const directory of ["native-addon", "extension", "test/fixtures/omp-native-host"]) {
     const path = join(f.output, directory, "bun.lock");
@@ -78,7 +81,7 @@ test("Bun trailing commas are data; quoted strings are never rewritten by lock p
   expect(() => validateNativeDependencies(f.source, f.output, "18.20.0", "19.0.1")).not.toThrow();
 });
 
-test("receipt injection, wrong previous identity, altered patch and forged conflict bytes are rejected", async () => {
+posix("receipt injection, wrong previous identity, altered patch and forged conflict bytes are rejected", async () => {
   const f = await candidate();
   const path = join(f.output, "candidate.json");
   const receipt = JSON.parse(readFileSync(path, "utf8"));

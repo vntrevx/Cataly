@@ -6,6 +6,9 @@ import { prepareNativeUpdate } from "../src/release/native-update.ts";
 import { fixtureDependencyFiles, nativeUpdateFixture } from "./native-update-fixture.test.ts";
 import { NativeGithubFixture } from "./native-update-publisher-fixture.test.ts";
 
+// POSIX-only: these fixtures require private mode bits, executable shebangs and /bin/sh Git admission.
+const posix = test.skipIf(process.platform === "win32");
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -18,7 +21,7 @@ async function candidate(conflict = false) {
   return { ...f, github: new NativeGithubFixture(f.source, f.sourceCommit) };
 }
 
-test("trusted native publisher creates a fixed-file draft and exact-head CI once; repeat is idempotent", async () => {
+posix("trusted native publisher creates a fixed-file draft and exact-head CI once; repeat is idempotent", async () => {
   const f = await candidate();
   const url = await publishNativeUpdate(f.source, f.output, "1234", f.github.api);
   expect(url).toMatch(/\/pull\/7$/);
@@ -31,7 +34,7 @@ test("trusted native publisher creates a fixed-file draft and exact-head CI once
   expect(f.github.writes.some((call) => /merge|reviews|releases|tags/.test(call.path))).toBe(false);
 });
 
-test("stale main and dirty or invalid source identity refuse all publication writes", async () => {
+posix("stale main and dirty or invalid source identity refuse all publication writes", async () => {
   const f = await candidate();
   f.github.current = "f".repeat(40);
   await expect(publishNativeUpdate(f.source, f.output, "1234", f.github.api)).rejects.toThrow("Main advanced");
@@ -48,19 +51,22 @@ test("stale main and dirty or invalid source identity refuse all publication wri
   expect(f.github.writes).toHaveLength(0);
 });
 
-test("conflict issue preserves exact artifact identity and repeated runs neither duplicate nor resolve it", async () => {
-  const f = await candidate(true);
-  const url = await publishNativeUpdate(f.source, f.output, "1234", f.github.api);
-  expect(url).toMatch(/\/issues\/8$/);
-  expect(f.github.writes).toHaveLength(1);
-  expect(f.github.issues[0]?.["body"]).toContain("/actions/runs/1234/artifacts");
-  expect(f.github.issues[0]?.["body"]).toContain("SHA-256");
-  expect(await publishNativeUpdate(f.source, f.output, "5678", f.github.api)).toBe(url);
-  expect(f.github.writes).toHaveLength(1);
-  expect(f.github.branch).toBeUndefined();
-});
+posix(
+  "conflict issue preserves exact artifact identity and repeated runs neither duplicate nor resolve it",
+  async () => {
+    const f = await candidate(true);
+    const url = await publishNativeUpdate(f.source, f.output, "1234", f.github.api);
+    expect(url).toMatch(/\/issues\/8$/);
+    expect(f.github.writes).toHaveLength(1);
+    expect(f.github.issues[0]?.["body"]).toContain("/actions/runs/1234/artifacts");
+    expect(f.github.issues[0]?.["body"]).toContain("SHA-256");
+    expect(await publishNativeUpdate(f.source, f.output, "5678", f.github.api)).toBe(url);
+    expect(f.github.writes).toHaveLength(1);
+    expect(f.github.branch).toBeUndefined();
+  },
+);
 
-test("edited existing branch or foreign pull request is not reused or overwritten", async () => {
+posix("edited existing branch or foreign pull request is not reused or overwritten", async () => {
   const f = await candidate();
   await publishNativeUpdate(f.source, f.output, "1234", f.github.api);
   const writes = f.github.writes.length;
@@ -75,7 +81,7 @@ test("edited existing branch or foreign pull request is not reused or overwritte
   );
 });
 
-test("a closed exact proposal is not reopened or redispatched", async () => {
+posix("a closed exact proposal is not reopened or redispatched", async () => {
   const f = await candidate();
   const url = await publishNativeUpdate(f.source, f.output, "1234", f.github.api);
   f.github.pull!["state"] = "closed";
@@ -86,7 +92,7 @@ test("a closed exact proposal is not reopened or redispatched", async () => {
   expect(f.github.dispatched).toBe(false);
 });
 
-test("publication resumes an exact branch after an interrupted PR creation without duplicating commits", async () => {
+posix("publication resumes an exact branch after an interrupted PR creation without duplicating commits", async () => {
   const f = await candidate();
   await expect(
     publishNativeUpdate(f.source, f.output, "1234", async (path, method, body) => {
@@ -101,7 +107,7 @@ test("publication resumes an exact branch after an interrupted PR creation witho
   expect(f.github.writes.filter((call) => call.path.endsWith("/git/refs"))).toHaveLength(1);
 });
 
-test("main advancing after object preparation never creates a branch or PR on stale source", async () => {
+posix("main advancing after object preparation never creates a branch or PR on stale source", async () => {
   const f = await candidate();
   let reads = 0;
   await expect(
@@ -114,7 +120,7 @@ test("main advancing after object preparation never creates a branch or PR on st
   expect(f.github.pull).toBeUndefined();
 });
 
-test("branch movement before dispatch never runs CI on a substituted head", async () => {
+posix("branch movement before dispatch never runs CI on a substituted head", async () => {
   const f = await candidate();
   await expect(
     publishNativeUpdate(f.source, f.output, "1234", async (path, method, body) => {
