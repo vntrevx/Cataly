@@ -11,6 +11,15 @@ const retryAfter = (body: string): number | undefined => {
   }
 };
 
+const discordErrorCode = (body: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown } | null;
+    return typeof parsed?.code === "number" ? String(parsed.code) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export type DcChannel = {
   readonly id: string;
   readonly type: number;
@@ -79,7 +88,11 @@ export class Discord {
       retryAfter,
     );
     if (res.status >= 300)
-      throw new MessengerError(`discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`, res.status);
+      throw new MessengerError(
+        `discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`,
+        res.status,
+        discordErrorCode(res.body),
+      );
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 

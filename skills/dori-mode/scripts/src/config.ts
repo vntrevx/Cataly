@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-
 import {
   resolveConsumerOmpCommand,
   resolveConsumerOmpUlwPath,
@@ -10,6 +9,7 @@ import {
 import type { RuntimeKind } from "../../../../src/runtime/types.ts";
 import { repoIdentities } from "./config-identities.ts";
 import { type DoctorOptions, validDoctorOptions } from "./doctor-config.ts";
+import { type LaunchConfig, launchConfig } from "./launch-selection.ts";
 import type { SupervisionOptions } from "./supervision-observe.ts";
 import type { CommitIdentity } from "./verify-pr-check.ts";
 import type { VoiceSettings } from "./voice/settings.ts";
@@ -30,7 +30,7 @@ export type GuardThresholds = {
   readonly panesMax: number;
 };
 
-export type DoriConfig = {
+export type DoriConfig = LaunchConfig & {
   /** Where new sessions open; absent = detected (see run.ts runtimeChoice). */
   readonly runtime?: RuntimeKind;
   readonly stateDir: string;
@@ -41,7 +41,6 @@ export type DoriConfig = {
   readonly defaultCwd: string;
   readonly agentCommand: ArgvTemplate;
   readonly defaultModel: string;
-  readonly launchKeywords: string;
   readonly goalMarker: string;
   /** How long `launch` waits for the agent's ready status and goal after it starts; a slow host is a host property. */
   readonly startupWaitSeconds: number;
@@ -74,7 +73,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   defaultCwd: home,
   agentCommand: ["omp", "--dori-role", "lane", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic/claude-opus-5-5",
-  launchKeywords: "ulw set goal and work",
+  ...launchConfig(),
   goalMarker: "Pursuing goal",
   startupWaitSeconds: 180,
   sessionsDir: join(home, ".omp", "agent", "sessions"),
@@ -179,6 +178,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const merged: DoriConfig = {
     ...base,
     ...raw,
+    ...launchConfig(raw.launchKeywords, raw.launchKeywords === undefined ? undefined : path),
     guard: { ...base.guard, ...raw.guard },
     hooks: { ...base.hooks, ...raw.hooks },
     repoIdentities: repoIdentities(raw.repoIdentities),

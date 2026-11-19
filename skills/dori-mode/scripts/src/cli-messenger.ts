@@ -144,18 +144,20 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   );
 };
 
-const inbound: Command = async ({ key, loopMinutes, config, values }) => {
+const inbound: Command = async ({ key, loopMinutes, config, deps, values }) => {
   const minutes = loopMinutes();
   const context = values["context"] === true;
   if (context && key !== "discord") die("--context is supported for discord only");
+  const wake = values["wake-lanes"] === true;
+  if (wake && key !== "discord") die("--wake-lanes is supported for discord only");
   if (key === "telegram") return await telegramInbound(config.stateDir, minutes);
   if (key === "discord")
-    return await discordInboundCommand(
-      config.stateDir,
-      values["gateway"] === true,
-      values["loop"] === undefined ? 3 / 60 : minutes,
+    return await discordInboundCommand(deps, {
+      gateway: values["gateway"] === true,
+      pollMinutes: values["loop"] === undefined ? 3 / 60 : minutes,
       context,
-    );
+      wake,
+    });
   if (key !== "slack") die("inbound supports slack, telegram or discord");
   const auth = slackAuth(envSlackToken() ?? die(NO_SLACK_TOKEN));
   const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);

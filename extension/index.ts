@@ -45,6 +45,7 @@ import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
 import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from "../skills/dori-mode/scripts/src/owes";
 
 interface SessionEntry {
+  id?: string;
   type: string;
   customType?: string;
   data?: unknown;
@@ -58,6 +59,7 @@ export interface DoriContext {
   mode: string;
   abort(): void;
   isIdle?(): boolean;
+  hasPendingMessages?(): boolean;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
   sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
@@ -113,7 +115,10 @@ export interface DoriApi {
   getFlag(name: string): boolean | string | undefined;
   registerCommand(name: string, options: CommandOptions): void;
   registerTool<Params>(tool: ToolDefinition<Params>): void;
-  on(event: "goal_updated", handler: (event: { goal: Goal | null }, ctx: DoriContext) => unknown): void;
+  on(
+    event: "goal_updated",
+    handler: (event: { goal: Goal | null; state?: { enabled?: boolean } }, ctx: DoriContext) => unknown,
+  ): void;
   on(
     event: "tool_approval_requested" | "tool_approval_resolved",
     handler: (event: { toolCallId: string }, ctx: DoriContext) => unknown,
@@ -121,9 +126,10 @@ export interface DoriApi {
   on(event: string, handler: Handler): void;
   appendEntry(customType: string, data?: unknown): void;
   sendMessage(
-    message: { customType: string; content: string; display: boolean },
+    message: { customType: string; content: string; display: boolean; details?: unknown },
     options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
   ): void;
+  sendUserMessage(content: string, options?: { deliverAs?: "aside" }): Promise<void>;
   getActiveTools(): string[];
   setActiveTools(toolNames: string[]): Promise<void>;
 }
@@ -169,15 +175,18 @@ const isGoal = (value: unknown): value is Goal =>
   typeof value.objective === "string";
 
 /** omp persists goals in `mode_change.data.goal` ("goal" / "goal_paused" carry the goal; any other mode ends it). */
-const recordedGoal = (branch: readonly SessionEntry[]): PaneState["goal"] => {
-  let goal: PaneState["goal"] = { status: "none" };
-  for (const entry of branch) {
-    if (entry.type !== "mode_change") continue;
-    const data =
-      typeof entry.data === "object" && entry.data !== null && "goal" in entry.data ? entry.data.goal : undefined;
-    goal = (entry.mode === "goal" || entry.mode === "goal_paused") && isGoal(data) ? goalOf(data) : { status: "none" };
-  }
-  return goal;
+const modeGoal = (entry: SessionEntry | undefined): PaneState["goal"] => {
+  if (entry?.mode !== "goal" && entry?.mode !== "goal_paused") return { status: "none" };
+  const data =
+    typeof entry.data === "object" && entry.data !== null && "goal" in entry.data ? entry.data.goal : undefined;
+  return isGoal(data) ? goalOf(data) : { status: "none" };
+};
+
+type StartupGoalPause = {
+  readonly session: string;
+  readonly activeEntry: string | undefined;
+  readonly pausedEntry?: string;
+  used?: boolean;
 };
 
 /**
@@ -278,6 +287,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
    */
   const callDirs = new Map<string, { session: string; agent: string; cwd: string | undefined }>();
   let goal: PaneState["goal"] = { status: "none" };
+  let startupPause: StartupGoalPause | undefined;
   let agentStatus: "idle" | "working" = "idle";
   let goalToolAdded = false;
   let paneWritten: string | undefined;
@@ -554,6 +564,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
 
   const syncMain = async (ctx: DoriContext, branch: readonly SessionEntry[], bootstrap = false): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
+    const initialStart = bootstrap && session === undefined;
+    startupPause = undefined;
     // Monitors belong to the Dori session that started them; their lines must not wake whatever session comes next.
     discordLane.stop();
     if (session?.id !== sessionId || !role) discordAsk.clear();
@@ -581,7 +593,21 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         throw error;
       }
     }
-    goal = recordedGoal(branch);
+    const mode = branch.findLast((entry) => entry.type === "mode_change");
+    goal = modeGoal(mode);
+    if (
+      initialStart &&
+      role === "lane" &&
+      ctx.mode === "tui" &&
+      process.env.DORI_DISCORD_WAKE_SESSION === sessionId &&
+      goal.status === "active"
+    ) {
+      // A cold TUI emits session_start before it reconciles the goal and appends its own PAUSE.
+      startupPause = {
+        session: sessionId,
+        activeEntry: process.env.DORI_DISCORD_WAKE_GOAL === "active" ? mode?.id : undefined,
+      };
+    }
     if (role && loadError && !warned) {
       warned = true;
       ctx.ui.notify(
@@ -592,14 +618,20 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     await syncTools();
     savePane(ctx);
     if (role === "lane" && stateDir && !requiredLoadError)
-      discordLane.start(
-        pi,
-        stateDir,
-        ctx,
-        askLane,
-        ownsDiscordReceiver,
-        () => agentStatus === "idle" && approvals.size === 0 && goal.status !== "blocked" && goal.status !== "paused",
-      );
+      discordLane.start(pi, stateDir, ctx, askLane, ownsDiscordReceiver, {
+        idle: () => agentStatus === "idle" && approvals.size === 0,
+        goalAllows: (optedIn, claimed) => {
+          if (startupPause && startupPause.pausedEntry === undefined) return false;
+          if (goal.status === "blocked") return false;
+          if (goal.status !== "paused") return true;
+          if (!optedIn || !startupPause || (startupPause.used && !claimed)) return false;
+          const mode = ctx.sessionManager.getBranch().findLast((entry) => entry.type === "mode_change");
+          return mode?.id === startupPause.pausedEntry;
+        },
+        consumePause: () => {
+          if (startupPause) startupPause.used = true;
+        },
+      });
     if (role === "dori") {
       restoreMonitors(ctx, branch, managedRestorePending);
       managedRestorePending = false;
@@ -719,6 +751,17 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       if (role) agentRoles.set(ctx.agent.id, role);
       else agentRoles.delete(ctx.agent.id);
       try {
+        // Opening an OMP transcript is read-only. This appends before publishing the pane so the resumed
+        // foreground must actually take the native session lease; a conflicting writer will force a sibling.
+        if (
+          eventName === "session_start" &&
+          ctx.agent.kind === "main" &&
+          ctx.mode === "tui" &&
+          role === "lane" &&
+          !requiredLoadError &&
+          process.env["DORI_DISCORD_WAKE_SESSION"] === ctx.sessionManager.getSessionId()
+        )
+          pi.appendEntry(ROLE_ENTRY, role);
         if (ctx.agent.kind === "main")
           await syncMain(ctx, ctx.sessionManager.getBranch(), eventName === "session_start");
       } finally {
@@ -731,19 +774,48 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
 
   pi.on("goal_updated", (event, ctx) => {
     if (ctx.agent.kind !== "main" || !role) return;
-    goal = goalOf(event.goal);
+    const next = goalOf(event.goal);
+    const startup = startupPause;
+    startupPause = undefined;
+    if (
+      startup?.activeEntry !== undefined &&
+      startup.pausedEntry === undefined &&
+      startup.session === ctx.sessionManager.getSessionId() &&
+      goal.status === "active" &&
+      next.status === "paused" &&
+      event.state?.enabled === false &&
+      next.objective === goal.objective
+    ) {
+      const modes = ctx.sessionManager.getBranch().filter((entry) => entry.type === "mode_change");
+      const pause = modes.at(-1);
+      if (
+        pause?.id !== undefined &&
+        pause.mode === "goal_paused" &&
+        modeGoal(pause).status === "paused" &&
+        modeGoal(pause).objective === goal.objective &&
+        modes.at(-2)?.id === startup.activeEntry
+      ) {
+        startupPause = { ...startup, pausedEntry: pause.id };
+      }
+    }
+    goal = next;
     savePane(ctx);
   });
 
   pi.on("agent_start", (_event, ctx) => {
     if (ctx.agent.kind !== "main" || !role) return;
+    if (role === "lane") {
+      if (startupPause && !startupPause.used) startupPause = undefined;
+      discordLane.agentStart?.(ctx.sessionManager.getSessionId());
+    }
     agentStatus = "working";
     savePane(ctx);
   });
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_end", (event, ctx) => {
     if (ctx.agent.kind !== "main" || !role) return;
     agentStatus = "idle";
     savePane(ctx);
+    if (role === "lane") discordLane.agentEnd?.(ctx.sessionManager.getSessionId(), event);
   });
 
   /**
@@ -764,12 +836,13 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   });
 
   // OMP chains prompt replacements in extension/handler order; append to the prompt this handler receives.
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     if (role && requiredLoadError) {
       ctx.abort();
       throw requiredLoadError;
     }
     if (role !== "lane" || ctx.agent.kind !== "main" || typeof event !== "object" || event === null) return;
+    await discordLane.beforeAgentStart?.(event, ctx);
     const systemPrompt = "systemPrompt" in event ? withLaneBookkeeping(event.systemPrompt, ctx.model) : undefined;
     return systemPrompt && { systemPrompt };
   });
@@ -779,6 +852,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       ctx.abort();
       throw requiredLoadError;
     }
+    if (role === "lane" && ctx.agent.kind === "main") discordLane.beforeProviderRequest?.(ctx);
   });
 
   const z = pi.zod;

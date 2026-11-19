@@ -7,6 +7,7 @@ import type { CommandOptions as Command, DoriApi, DoriContext, ToolDefinition as
 export const calls: string[] = [];
 
 export type Entry = {
+  id?: string;
   type: string;
   customType?: string;
   data?: unknown;
@@ -110,6 +111,7 @@ export const fakePi = (options: FakeOptions): FakePi => {
       appendEntry: (customType, data) => void fake.session.entries.push({ type: "custom", customType, data }),
       sendMessage: (message, sendOptions) =>
         void fake.messages.push({ content: message.content, options: sendOptions }),
+      sendUserMessage: async (text) => void fake.userMessages.push(text),
       getActiveTools: () => [...fake.active],
       setActiveTools: async (names) => {
         fake.active = [...names];
@@ -119,7 +121,6 @@ export const fakePi = (options: FakeOptions): FakePi => {
   // omp-ulw talks to these too; they are outside omp-dori's own API surface.
   Object.assign(fake.api, {
     recordTestCall: (event: string) => void calls.push(event),
-    sendUserMessage: (text: string) => void fake.userMessages.push(text),
     getAllTools: () => fake.active.map((name) => ({ name })),
   });
   return fake;

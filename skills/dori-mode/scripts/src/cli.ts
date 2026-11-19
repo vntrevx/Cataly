@@ -47,6 +47,7 @@ const flags = parseArgs({
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
+    "wake-lanes": { type: "boolean" },
     purpose: { type: "string" },
     to: { type: "string" },
     text: { type: "string" },

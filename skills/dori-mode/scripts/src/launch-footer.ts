@@ -45,6 +45,11 @@ export const footer = (
     FOOTER_START,
     FOOTER_HEADING,
     `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
+    ...(lane.launchSelection
+      ? [
+          `- Launch selection request (metadata only): ${JSON.stringify(lane.launchSelection)}. This is not proof of native activation, delivery or goal creation.`,
+        ]
+      : []),
     `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
     "- Reset coupons and credits require the user's explicit permission for each specific use and amount. Never redeem, reset, spend credits (including existing paid or promotional balances), top up or enable paid overage on your own. The brief, existing balances and the lead's approval are not user consent.",
     "- If the authorized provider token allowance, usage quota or credit budget is exhausted, STOP model work, preserve progress and report the blocker. Wait for the user's decision. Never switch accounts/providers/models or retry to evade the limit. Propagate this rule to every subagent; it overrides goals, nudges and continue-working instructions.",

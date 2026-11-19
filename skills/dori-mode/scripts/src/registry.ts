@@ -9,7 +9,6 @@ import type { BudgetLimits } from "./supervision-observe.ts";
 // A writer holds a lane's lock for one synchronous read and write, so a short wait covers any live contention.
 const LOCK_WAIT_MS = 5_000;
 const LOCK_RETRY_MS = 10;
-
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 // `lead` names the lead, never a lane: records the lead writes (lessons with `lane: "lead"`) and lead-only checks tell
 // the two apart by this key, so launch and adopt refuse it. LANE_KEY stays as it is because those records still carry
@@ -38,6 +37,7 @@ export type Lane = {
   readonly done: string;
   readonly cwd?: string;
   readonly model?: string;
+  readonly launchSelection?: import("./launch-selection.ts").LaunchSelection;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly claim?: Claim;
