@@ -76,12 +76,12 @@ async function installReferences(
 ): Promise<SetupSnapshot> {
   // Preflight the entire set before the first link/config creation. Existing custom files stay untouched.
   preflightInstallation(paths);
-  if (manifest.requirements.omp === "18.20.0") await provisionNativeSource(source, paths.home);
+  if (manifest.requirements.omp !== "18.18.8") await provisionNativeSource(source, paths.home);
   const gate = await waitLaunchGate(paths);
   try {
     assertNoConsumerLaunches(paths, launchOwner);
     preflightInstallation(paths);
-    const plan = consumerConfigPlan(paths, config, source, dependency, manifest.requirements.omp === "18.20.0");
+    const plan = consumerConfigPlan(paths, config, source, dependency, manifest.requirements.omp !== "18.18.8");
     console.error(`SETUP_PREVIEW ${JSON.stringify(setupPreview(config, plan.text, plan.keys))}`);
     const published = publishSetupFile(config, plan.text);
     if (paths.dori !== join(paths.home, ".dori")) {
@@ -194,7 +194,14 @@ export async function rollbackRelease(
   const source = verifyRelease(paths, before.previous);
   const dependency = await provisionDependency(paths, before.previous, source);
   const published = await installReferences(paths, source, dependency, before.previous, config);
-  const after: InstalledState = { version: 1, current: before.previous, previous: before.current };
+  // Pre-19 controllers validate both manifests before checking whether automatic updates are disabled.
+  const retainPrevious =
+    before.previous.requirements.omp.startsWith("19.") || !before.current.requirements.omp.startsWith("19.");
+  const after: InstalledState = {
+    version: 1,
+    current: before.previous,
+    ...(retainPrevious ? { previous: before.current } : {}),
+  };
   activateRelease(paths, before, after, undefined, {
     snapshot: published,
     // A requested rollback remains selected until the owner explicitly resumes automatic updates.
