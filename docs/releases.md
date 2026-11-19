@@ -191,6 +191,73 @@ The cursor is committed under `<stateDir>/discord-inbound/<channelId>.json` in a
 
 Only a remote history-read 403/404 removes an unavailable discovered channel; explicitly configured targets still fail on those responses. Content conversion, delivery and local cursor failures are not permission loss. In Gateway mode they stop intake before later queued messages can advance past the failed message. If an already watched channel's cursor disappears, intake reports the missing-state error rather than silently dropping live messages or recreating a baseline. First-seen scope-all channels still seed their new cursors as described above.
 
+An owner message to an exact Discord channel or thread registered to one
+native OMP lane goes to that lane as a Dori Monitor message, with no terminal
+keystrokes and no new setting. The receiver commits the lane inbox before
+advancing its cursor; pending messages survive a resume of the same session.
+Unbound or ambiguous channels keep the lead's existing intake behavior.
+An exact reply to an open ASK takes precedence over ordinary chat.
+
+To take over an independently configured receiver, stop the old reader before
+starting that exact lane once with `--dori-lane-receiver`. This uses its
+existing explicit receiver state and credentials, requires a separate mailbox
+and cursor root, and remembers the takeover on that session only. The normal
+shared receiver requires no flag. Restart the shared receiver when upgrading
+so it uses the new routing logic.
+
+#### Answering native OMP ASK from Discord
+
+On a supported Discord connection, ASK is enabled automatically once
+`dori inbound discord` is running and has verified the bot, owner and
+channels. It uses that installation's private `$DORI_HOME/discord-token`
+and its existing state directory. No settings file is created or edited.
+Restart the receiver when updating so it reports its current routes.
+
+- A Dori lead uses the single explicitly configured Discord destination.
+  If more than one destination is configured or only discovery is enabled,
+  ASK stays in the terminal rather than guessing.
+- A lane uses only its own registered `discord:<channel-or-thread-id>`
+  destination while the same receiver watches it. New `dori launch` lanes
+  are bound at launch; older lanes need an exact native session identity in
+  the registry (`dori sync --write` can record it).
+- Stopped receivers, unmatched bot credentials and unresolved lanes do not
+  enable automatic delivery. A custom token file or receiver can still use
+  the existing explicit route below.
+
+An explicit route in `<stateDir>/discord-ask.json` takes precedence. Use an
+absolute token file path, keep both files owned and mode `0600`, and make
+sure the bot can post in the selected room. Set a session's entry to `false`
+to keep ASK local for that session. No manual file is needed for the
+standard connection above.
+
+```json
+{
+  "sessions": {
+    "<OMP-session-id>": {
+      "channel": "<Discord-channel-or-thread-id>",
+      "owner": "<Discord-owner-id>",
+      "tokenFile": "/absolute/path/to/discord-token"
+    }
+  }
+}
+```
+
+The bot first posts a short preparation message, then fills it in once it can
+receive replies. Use Discord's **Reply** on the completed ASK. For a single
+field, plain text can be enough; for multiple fields, submit a JSON object
+using the field names in the question. When a choice lists **Other**, you
+can include one custom text value. An invalid reply explains the error
+without submitting the form; reply to the original ASK again. A different
+room, a new message, or a reply to another question does not answer the open
+form.
+
+Local input still works and the first valid submission wins. Forms that
+cannot be represented faithfully, including password and file inputs, stay
+local. ASK answers do not approve tools or get queued as ordinary lane input.
+An OMP session switch, cancellation, or restart ends the open question. This
+feature posts question text to the configured room; do not select a public
+room for a session that asks about private work.
+
 #### Real-time Gateway mode
 
 Add `--gateway` to receive owner messages live instead of on the next poll. The receiver keeps one Gateway connection that subscribes only to `GUILD_MESSAGES`, `DIRECT_MESSAGES` and `MESSAGE_CONTENT`; it sends no presence update. **`MESSAGE_CONTENT` is a privileged intent: enable Message Content Intent for the bot in the Developer Portal**, otherwise Discord closes the connection with code 4014 and intake stops with an error naming it. **`--gateway` ignores `--loop`, including `--loop 0`; it runs until stopped.**

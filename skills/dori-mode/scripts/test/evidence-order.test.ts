@@ -20,7 +20,7 @@ test.each(["checkpoint", "report"] as const)(
       const reports = new Reports(state.dir);
       const checkpoints = new Checkpoints(state.dir);
       const accept = async (journal: "checkpoint" | "report", text: string, ref: EvidenceRef) => {
-        if (journal === "report") await reports.report(key, "milestone", text, clock.at, [ref]);
+        if (journal === "report") await reports.report(key, "milestone", text, clock.at, undefined, [ref]);
         else
           await checkpoints.write(
             key,
@@ -33,7 +33,7 @@ test.each(["checkpoint", "report"] as const)(
       writeFileSync(source, "B");
       const b = fileEvidence(source, state.dir);
       await accept(first === "checkpoint" ? "report" : "checkpoint", "B", b);
-      // This is the source-grouped merge used by production laneEvidence, not acceptance order.
+      // This is the source-grouped merge used by the production verdict, not acceptance order.
       const records = [...(reports.read(key)?.evidenced ?? []), ...checkpoints.read(key)];
       expect(records.map((record) => record.at)).toEqual([at, at]);
       clock.at += 60_000;
@@ -77,7 +77,7 @@ test.each([
       const checkpoints = new Checkpoints(state.dir);
       const accept = async (journal: "checkpoint" | "report", text: string) => {
         const ref = fileEvidence(source, state.dir);
-        if (journal === "report") await reports.report(key, "milestone", text, clock.at, [ref]);
+        if (journal === "report") await reports.report(key, "milestone", text, clock.at, undefined, [ref]);
         else
           await checkpoints.write(
             key,

@@ -3,22 +3,34 @@ import { dirname, join } from "node:path";
 
 import { Checkpoints } from "./checkpoints.ts";
 import { fill } from "./config.ts";
+import { withDeliveryLock } from "./delivery-lock.ts";
+import { discoverFiles } from "./evidence-window.ts";
+import { sameLaneGeneration } from "./registry.ts";
 import { Reports } from "./reports.ts";
 import {
-  budgetViolations,
-  laneEvidence,
-  type Observation,
-  type ObservationState,
+  observationText,
+  prepareWindow,
   readUsage,
-  selectedEvidence,
   type SupervisedLane,
   type SupervisionDeps,
   type SupervisionOptions,
   type SupervisionResult,
   type UsageSnapshot,
   workingTimer,
-  writeObservation,
 } from "./supervision-observe.ts";
+import { judgeSweep, recheckQuiet } from "./supervision-verdict.ts";
+
+const NOT_OBSERVED: SupervisionResult = {
+  enabled: false,
+  state: null,
+  alerts: [],
+  usage: null,
+  hung: false,
+  heldHung: false,
+  coverageComplete: false,
+  lastReportAt: null,
+  lastEvidenceAt: null,
+};
 
 export class Supervision {
   readonly reports: Reports;
@@ -39,176 +51,97 @@ export class Supervision {
     return join(dirname(this.reports.path(key)), "cost.jsonl");
   }
 
+  private statePath(key: string): string {
+    return join(dirname(this.reports.path(key)), "supervision.json");
+  }
+
   private record(snapshot: UsageSnapshot): void {
     const path = this.costPath(snapshot.key);
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
   }
 
+  /**
+   * Runs `fn` under the lane's delivery lock while the registry still holds this generation of the lane and, given a
+   * basis, the stored state is still the text this sweep prepared over; else null, and the sweep's candidate is
+   * dropped whole for the next sweep to redo. Without a registry there is no lock and no generation to check.
+   */
+  private async locked<T>(
+    lane: SupervisedLane,
+    basis: string | null | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T | null> {
+    const guarded = () => (basis === undefined || observationText(this.statePath(lane.key)) === basis ? fn() : null);
+    const deps = this.deps;
+    if (deps.registry === undefined) return guarded();
+    const held = await withDeliveryLock(deps, lane.key, async () => {
+      const current = await deps.registry.read(lane.key);
+      return current && !current.nativeCloseIntent && sameLaneGeneration(lane, current) ? guarded() : null;
+    });
+    return held.ok ? held.value : null;
+  }
+
+  /**
+   * Prepare, observe, commit. Observation commands and watched-file stats and hashes never run under the delivery lock;
+   * the plan and every record are written under it, each in the generation the sweep began with. A sweep whose
+   * generation or prepared state changed before its commit records nothing, usage included.
+   */
   async sweep(lane: SupervisedLane, screen: string): Promise<SupervisionResult> {
-    if (!this.enabled(lane))
-      return {
-        enabled: false,
-        state: null,
-        alerts: [],
-        usage: null,
-        hung: false,
-        heldHung: false,
-        coverageComplete: false,
-        lastReportAt: null,
-        lastEvidenceAt: null,
-      };
+    if (!this.enabled(lane)) return NOT_OBSERVED;
     const now = this.deps.clock.now();
-    const path = join(dirname(this.reports.path(lane.key)), "supervision.json");
-    const stored = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as ObservationState) : null;
-    const previous = stored && "at" in stored ? stored : null;
+    const path = this.statePath(lane.key);
     // Finish external usage before discovering files, so its await cannot hide new candidates from this sweep.
     const usage = await readUsage(this.deps.run, this.options.usageArgv, lane, now);
-    // Without a hook, only close records the final unknown reading.
-    if (this.options.usageArgv?.length) this.record(usage);
-    const evidence = await laneEvidence(
-      this.deps,
-      this.options,
-      this.reports,
-      this.checkpoints,
-      lane,
-      stored,
-      (coverage) => writeObservation(path, { ...previous, coverage }),
-    );
-    const timer = workingTimer(screen);
-    let advanced = previous?.files !== undefined && evidence.signature !== previous.activity;
-    const coverage = evidence.coverage && { ...evidence.coverage, changed: evidence.coverage.changed || advanced };
-    const complete = !(coverage?.pending.length || coverage?.deferred.length) && evidence.evidenceError === undefined;
-    let activeAt = !previous || advanced ? this.deps.clock.now() : previous.activeAt;
-    const limits = {
-      wallMinutes: null,
-      tokens: null,
-      costUsd: null,
-      ...this.options.defaults,
-      ...this.options.lanes?.[lane.key],
-      ...lane.budget,
+    const discovery = await discoverFiles(this.deps.run, this.options, this.reports.stateDir, lane);
+    const prepared = await this.locked(lane, undefined, async () => prepareWindow(path, lane, discovery));
+    if (!prepared) return NOT_OBSERVED;
+    const read = { lane, now, timer: workingTimer(screen), usage, previous: prepared.previous, ...prepared.observe() };
+    const judging = {
+      reports: this.reports,
+      checkpoints: this.checkpoints,
+      options: this.options,
+      clock: this.deps.clock,
     };
-    const violations = budgetViolations(limits, usage, (now - Date.parse(lane.openedAt)) / 60_000);
-    const provedHung =
-      coverage?.changed === false &&
-      complete &&
-      previous !== null &&
-      previous.evidenceError === undefined &&
-      timer !== null &&
-      previous.timer !== null &&
-      timer.kind === previous.timerKind &&
-      timer.seconds > previous.timer &&
-      // A changed timer origin means a new call, even if its duration is larger. Rounding to the shown unit moves the
-      // computed origin by up to one unit, plus sweep jitter.
-      Math.abs(now - timer.seconds * 1000 - (previous.at - previous.timer * 1000)) <= timer.step * 1000 + 2000 &&
-      timer.seconds >= (this.options.hungAfterMinutes ?? 20) * 60 &&
-      now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000 &&
-      (previous.hung === true || evidence.confirmQuiet());
-    let progress = this.reports.read(lane.key);
-    let terminal = progress?.state === "done" || progress?.state === "halted";
-    let hung = !terminal && progress?.state !== "blocked" && (provedHung || (!advanced && previous?.hung === true));
-    const unavailable = (["tokens", "costUsd"] as const)
-      .filter((name) => typeof limits[name] === "number" && usage[name] === null)
-      .map((name) => `${name} ceiling cannot be checked: usage unavailable`);
-    const hungMessage =
-      "Working/Running timer exceeded threshold without fresh evidence (selected or changed file bytes)";
-    const alerts = () =>
-      terminal ? [] : [...(violations.length ? violations : hung ? [hungMessage] : []), ...unavailable];
-    const freshAlerts = alerts().filter((message) => !previous?.alerts.includes(message));
-    const reconcile = async () => {
-      // A question also reads as blocked; only this same ceiling blocker as the latest report makes a repeat.
-      const blocker = violations.join("; ");
-      const reported = progress?.lastReport?.kind === "blocker" && progress.lastReport.text === blocker;
-      const at = this.deps.clock.now();
-      if (!terminal && violations.length && !reported) {
-        await this.reports.report(lane.key, "blocker", blocker, at);
-      } else if (!terminal && hung && (!progress || progress.state === "running")) {
-        await this.reports.append({
-          type: "activity",
-          key: lane.key,
-          at: new Date(at).toISOString(),
-          state: "stalled",
-          text: hungMessage,
-        });
-      } else if (!violations.length && progress?.state === "stalled" && advanced) {
-        await this.reports.append({
-          type: "activity",
-          key: lane.key,
-          at: new Date(at).toISOString(),
-          state: "running",
-          text: "Fresh evidence observed (selected or changed file bytes)",
-        });
-      } else return;
-      progress = this.reports.read(lane.key);
-    };
-    await reconcile();
-    // Deliver before saving, so only alerts that reached the callback count as sent; a failed one is sent again next sweep.
-    const undelivered = new Map<string, string>();
-    for (const message of freshAlerts) {
-      try {
-        await this.deps.alert?.(lane, message);
-      } catch (error) {
-        undelivered.set(message, error instanceof Error ? error.message : String(error));
+    const recheck = recheckQuiet(judging, read);
+    const settled = await this.locked(lane, prepared.basis, async () => {
+      // Without a hook, only close records the final unknown reading.
+      if (this.options.usageArgv?.length) this.record(usage);
+      const verdict = await judgeSweep(judging, read, recheck);
+      // Preserve delivery serialization with park/reopen: only observation I/O moved outside this lock. Deliver before
+      // saving so a failed callback is retried next sweep rather than recorded as sent.
+      const undelivered = new Map<string, string>();
+      for (const message of verdict.freshAlerts) {
+        try {
+          await this.deps.alert?.(lane, message);
+        } catch (error) {
+          undelivered.set(message, error instanceof Error ? error.message : String(error));
+        }
       }
-    }
-    progress = this.reports.read(lane.key);
-    const currentEvidence = freshAlerts.length
-      ? selectedEvidence([...(progress?.evidenced ?? []), ...this.checkpoints.read(lane.key)])
-      : evidence;
-    if (currentEvidence.signature !== evidence.signature) {
-      advanced = true;
-      activeAt = this.deps.clock.now();
-      hung = false;
-    }
-    terminal = progress?.state === "done" || progress?.state === "halted";
-    hung &&= !terminal && progress?.state !== "blocked";
-    await reconcile();
-    const lastReportAt = progress?.lastReport?.at ?? null;
-    const uncertainty = evidence.evidenceError === undefined ? {} : { evidenceError: evidence.evidenceError };
-    const observation: Observation = {
-      at: now,
-      timer: timer?.seconds ?? null,
-      timerKind: timer?.kind ?? null,
-      hung: progress?.state === "stalled" && hung,
-      activity: currentEvidence.signature,
-      files: evidence.files,
-      ...(coverage === undefined ? {} : { coverage: { ...coverage, changed: coverage.changed || advanced } }),
-      activeAt,
-      lastReportAt,
-      lastEvidenceAt: currentEvidence.lastEvidenceAt,
-      ...uncertainty,
-      alerts: alerts().filter((message) => !undelivered.has(message)),
-    };
-    writeObservation(path, observation);
-    if (undelivered.size)
-      throw new Error(
-        `alert delivery failed for ${lane.key}: ${[...undelivered].map(([message, why]) => `${message} (${why})`).join("; ")}`,
-      );
-    return {
-      enabled: true,
-      state: progress?.state ?? "running",
-      alerts: freshAlerts,
-      usage,
-      hung: provedHung && observation.hung === true,
-      heldHung: observation.hung === true,
-      coverageComplete: complete,
-      lastReportAt,
-      lastEvidenceAt: currentEvidence.lastEvidenceAt,
-      ...uncertainty,
-    };
+      const result = await verdict.settle(undelivered, path);
+      if (undelivered.size)
+        throw new Error(
+          `alert delivery failed for ${lane.key}: ${[...undelivered].map(([message, why]) => `${message} (${why})`).join("; ")}`,
+        );
+      return result;
+    });
+    return settled ?? NOT_OBSERVED;
   }
 
   async close(lane: SupervisedLane): Promise<UsageSnapshot | null> {
     if (!this.enabled(lane)) return null;
-    // A close that already recorded its final reading (a retried or second close) returns it and runs no hook, so a
-    // cost ledger gets each lane once. {closeKey} is the same on every attempt, for a ledger that dedupes on it.
+    // Record each openedAt generation once; retries reuse the final reading and stable {closeKey}.
     const path = this.costPath(lane.key);
     const recorded = existsSync(path)
       ? readFileSync(path, "utf8")
           .split("\n")
           .filter((line) => line.trim())
           .map((line) => JSON.parse(line) as UsageSnapshot)
-          .findLast((entry) => entry.final === true)
+          .findLast(
+            (entry) =>
+              entry.final === true &&
+              (entry.openedAt === lane.openedAt ||
+                (entry.openedAt === undefined && Date.parse(entry.at) >= Date.parse(lane.openedAt))),
+          )
       : undefined;
     if (recorded) return recorded;
     const snapshot = await readUsage(this.deps.run, this.options.usageArgv, lane, this.deps.clock.now());

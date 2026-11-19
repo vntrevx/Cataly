@@ -182,7 +182,8 @@ test("Astra R1 (cfbfb77): a reference after the third scan, two prunes past the 
 });
 
 test("without --delete-quarantined nothing is removed after any grace period; with it only unused copies go", () => {
-  const c = pruneFixture();
+  // This private cache has only wrapper references from this worker; the test starts no live holder process.
+  const c = pruneFixture(() => ownProcessFiles([String(process.pid)]));
   const unused = c.native("unused");
   const used = c.native("used");
   c.prune({ graceMs: GRACE, now: 0 });

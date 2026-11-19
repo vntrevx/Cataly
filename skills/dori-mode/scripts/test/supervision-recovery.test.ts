@@ -49,7 +49,7 @@ for (const failedDelivery of [false, true]) {
     if (!source) throw new Error("fixture needs its first candidate");
     for (const refs of [[], [fileEvidence(source, f.repo)]]) {
       const reportedAt = f.clock.at + 1;
-      await f.reports.report(f.lane.key, "milestone", "still working", reportedAt, refs);
+      await f.reports.report(f.lane.key, "milestone", "still working", reportedAt, undefined, refs);
       const result = (await f.sweep()).result;
       expect(result.state).toBe("stalled");
       expect(result.heldHung).toBe(true);

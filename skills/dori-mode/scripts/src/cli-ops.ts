@@ -1,9 +1,11 @@
 /** dori sync, boot, verify-pr and the host loops: watch, freshness, dead-panes, guard, heavy, can-launch. */
-import { dirname, join } from "node:path";
+import { terminalMonitorDirs } from "./boot-monitors.ts";
 import { bootCheck, envSlackCheck } from "./boot.ts";
 import { type Command, die, every, slackAuth } from "./cli-context.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { Decisions } from "./decisions.ts";
+import { doctorCheck } from "./doctor.ts";
+import { monitorPresets } from "./monitor-presets.ts";
 import { watchTick } from "./done-flow.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
@@ -27,10 +29,6 @@ const sync: Command = async ({ values, deps }) => {
 };
 
 const boot: Command = async ({ deps, config }) => {
-  const sessionDirs = [
-    process.env["PI_SESSION_DIR"],
-    process.env["PI_SESSION_FILE"] && dirname(process.env["PI_SESSION_FILE"]),
-  ];
   const r = await bootCheck({
     ...deps,
     reports: new Reports(config.stateDir),
@@ -38,7 +36,7 @@ const boot: Command = async ({ deps, config }) => {
     decisions: new Decisions(config.stateDir),
     // A bad token file is a failed boot line, not an exit: boot is the read-only report a fresh lead depends on.
     slack: envSlackCheck((token) => new Slack(fetchHttp, realClock, slackAuth(token))),
-    monitorDirs: sessionDirs.flatMap((dir) => (dir ? [join(dir, "extensions", "terminal")] : [])),
+    monitorDirs: terminalMonitorDirs(deps.env ?? process.env),
   });
   for (const line of r.lines) console.log(line);
   process.exit(r.exitCode);
@@ -86,6 +84,31 @@ const heavy: Command = async ({ rest, config }) => {
 export const opsCommands: Readonly<Record<string, Command>> = {
   sync,
   boot,
+  doctor: async ({ deps, opt, values }) => {
+    const repo = opt("repo");
+    if (values["repo"] !== undefined && (repo === undefined || !/^[\w.-]+\/[\w.-]+$/.test(repo)))
+      die("--repo must be owner/repo");
+    const result = await doctorCheck(deps, repo);
+    if (values["json"]) console.log(JSON.stringify(result));
+    else {
+      for (const finding of result.findings) console.log(`${finding.severity} ${finding.check}: ${finding.detail}`);
+      console.log(
+        `DOCTOR warn=${result.warnings} ignored=${result.ignored.join(",") || "none"} read-only; nothing changed`,
+      );
+    }
+    process.exit(result.exitCode);
+  },
+  "monitor-presets": async ({ key, values }) => {
+    const presets = monitorPresets.filter((preset) => key === undefined || preset.name === key);
+    if (!presets.length) die(`unknown monitor preset: ${key}`);
+    console.log(
+      JSON.stringify(
+        presets.map(({ events: _events, ...preset }) => preset),
+        null,
+        values["json"] ? 0 : 2,
+      ),
+    );
+  },
   "verify-pr": verifyPrCommand,
   watch: async ({ deps }) => {
     console.log("LANE_WATCH_READY");

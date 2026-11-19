@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "../src/done-flow.ts";
+import { openDiscordLaneInbox } from "../src/messenger/discord-lane-inbox.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World, WT } from "./fakes.ts";
 
@@ -178,4 +179,29 @@ test("closing directly refuses while a signal is not live and leaves the pane al
   expect(r.closed).toBe(false);
   expect(r.lines.at(-1)).toStartWith("REFUSED demo-lane");
   expect(closedVia()).toHaveLength(0);
+});
+
+test("a close waits for accepted Discord work to reach the native lane", async () => {
+  const deps = at(T0);
+  const discordLane = { ...lane, thread: "discord:123", session: "bound-omp-session" };
+  await deps.registry.write(discordLane);
+  const inbox = openDiscordLaneInbox(state.dir);
+  try {
+    inbox.add(discordLane.session, {
+      channel: "123",
+      message: "456",
+      text: "owner work",
+      reference: null,
+      replyTo: null,
+      attachments: [],
+    });
+    const blocked = await closeLane(deps, discordLane, "manual");
+    expect(blocked.closed).toBe(false);
+    expect(blocked.lines.at(-1)).toContain("Discord messages are still pending");
+    expect(closedVia()).toHaveLength(0);
+    inbox.acknowledge(discordLane.session, "123", "456");
+    expect((await closeLane(deps, discordLane, "manual")).closed).toBe(true);
+  } finally {
+    inbox.close();
+  }
 });

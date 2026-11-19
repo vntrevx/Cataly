@@ -21,7 +21,15 @@ const report: Command = async ({ key, need, strings, lane, config }) => {
   if (!isReportKind(kind)) return die("--kind must be milestone, blocker, question, halted or done");
   const text = need("text");
   const evidence = evidenceFiles(strings);
-  console.log(reportLine(await new Reports(config.stateDir).report(target.key, kind, text, realClock.now(), evidence)));
+  const report = await new Reports(config.stateDir).report(
+    target.key,
+    kind,
+    text,
+    realClock.now(),
+    target.lifecycleEpoch,
+    evidence,
+  );
+  console.log(reportLine(report));
 };
 
 const lessonAdd = async (

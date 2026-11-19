@@ -150,19 +150,23 @@ describe("supervision", () => {
       const reports = new Reports(f.dir);
       const result = join(f.dir, "result.txt");
       writeFileSync(result, "first");
-      await reports.report(lane.key, "milestone", "starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "starting", f.clock.now(), undefined, [fileEvidence(result, f.dir)]);
       await f.supervisor.sweep(lane, "Working 21m");
       f.clock.at += 20 * 60_000;
       // The same bytes reported again, after a touch and under new words, are the report clock only.
       utimesSync(result, new Date(f.clock.at), new Date(f.clock.at));
-      await reports.report(lane.key, "milestone", "still starting", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "still starting", f.clock.now(), undefined, [
+        fileEvidence(result, f.dir),
+      ]);
       const repeated = await f.supervisor.sweep(lane, "Working 41m");
       expect(repeated.state).toBe("stalled");
       expect(repeated.lastReportAt).toBe(new Date(f.clock.now()).toISOString());
       expect(repeated.lastEvidenceAt).toBe(new Date(start).toISOString());
       f.clock.at += 60_000;
       writeFileSync(result, "second");
-      await reports.report(lane.key, "milestone", "second result", f.clock.now(), [fileEvidence(result, f.dir)]);
+      await reports.report(lane.key, "milestone", "second result", f.clock.now(), undefined, [
+        fileEvidence(result, f.dir),
+      ]);
       const fresh = await f.supervisor.sweep(lane, "Working 42m");
       expect(fresh).toMatchObject({
         state: "running",

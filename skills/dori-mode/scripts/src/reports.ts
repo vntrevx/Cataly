@@ -7,27 +7,25 @@ import { LANE_KEY, Registry } from "./registry.ts";
 
 export type ReportKind = "milestone" | "blocker" | "question" | "halted" | "done";
 export type ProgressState = "running" | "blocked" | "halted" | "done" | "stalled";
-export type Report = {
+type EventFields = {
+  readonly key: string;
+  readonly at: string;
+  readonly text: string;
+  readonly generation?: string;
+  /** Selected evidence, independent of the event text and report clock. */
+  readonly evidenceRefs?: readonly EvidenceRef[];
+  readonly evidenceSequence?: number;
+};
+export type Report = EventFields & {
   readonly type: "report";
-  readonly key: string;
-  readonly at: string;
   readonly kind: ReportKind;
-  readonly text: string;
-  /** The evidence the lane selected for this report (evidence.ts); its text and time are never evidence. */
-  readonly evidenceRefs?: readonly EvidenceRef[];
-  readonly evidenceSequence?: number;
 };
-export type Activity = {
+export type Activity = EventFields & {
   readonly type: "activity";
-  readonly key: string;
-  readonly at: string;
   readonly state: "running" | "stalled";
-  readonly text: string;
-  /** Stable filesystem observations share the report/checkpoint clock without moving the report clock. */
-  readonly evidenceRefs?: readonly EvidenceRef[];
-  readonly evidenceSequence?: number;
 };
-export type LaneEvent = Report | Activity;
+export type LaneEvent = Report | Activity | (EventFields & { readonly type: "reopen" });
+type EventScope = { readonly generation: string | undefined };
 export type Progress = {
   readonly state: ProgressState;
   readonly lastReport: Report | null;
@@ -78,7 +76,8 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
     !("text" in value) ||
     typeof value.text !== "string" ||
     !value.text.trim() ||
-    !("type" in value)
+    !("type" in value) ||
+    ("generation" in value && typeof value.generation !== "string")
   ) {
     throw new ReportError(`invalid report record for ${key}`);
   }
@@ -94,7 +93,9 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
     text: value.text,
     ...(evidenceRefs !== undefined ? { evidenceRefs } : {}),
     ...(evidenceSequence !== undefined ? { evidenceSequence } : {}),
+    ...("generation" in value && typeof value.generation === "string" ? { generation: value.generation } : {}),
   };
+  if (value.type === "reopen") return { ...common, type: "reopen" };
   if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
     return { ...common, type: "report", kind: value.kind };
   }
@@ -115,7 +116,8 @@ export class Reports {
     return join(this.stateDir, "lanes", key, "reports.jsonl");
   }
 
-  read(key: string): Progress | null {
+  // With no scope, inspect the raw journal. An explicit undefined generation selects only legacy records.
+  read(key: string, scope?: EventScope): Progress | null {
     const path = this.path(key);
     if (!existsSync(path)) return null;
     let progress: Progress | null = null;
@@ -130,8 +132,12 @@ export class Reports {
         if (!(error instanceof SyntaxError || error instanceof ReportError)) throw error;
         throw new ReportError(`${path}:${index + 1}: ${error.message}`);
       }
+      if (scope && event.generation !== scope.generation) continue;
       if (event.evidenceRefs?.length) evidenced.push(event);
-      if (event.type === "report") {
+      if (event.type === "reopen") {
+        lastReport = null;
+        progress = { state: "running", lastReport, lastEvent: event, evidenced };
+      } else if (event.type === "report") {
         lastReport = event;
         progress = { state: reportState(event.kind), lastReport: event, lastEvent: event, evidenced };
       } else if (!progress || progress.state === "running" || progress.state === "stalled") {
@@ -167,6 +173,7 @@ export class Reports {
     kind: ReportKind,
     text: string,
     now: number,
+    generation?: string,
     evidenceRefs: readonly EvidenceRef[] = [],
   ): Promise<Report> {
     const report: Report = {
@@ -176,6 +183,7 @@ export class Reports {
       text: text.trim(),
       at: new Date(now).toISOString(),
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
+      ...(generation === undefined ? {} : { generation }),
     };
     return this.append(report);
   }
@@ -186,8 +194,9 @@ export class Reports {
     now: number,
     staleAfterMs: number,
     resumeOnWorking = true,
+    scope?: EventScope,
   ): Promise<Progress | null> {
-    const progress = this.read(key);
+    const progress = this.read(key, scope);
     if (!progress || (progress.state !== "running" && progress.state !== "stalled")) return progress;
     const visible = Bun.stripANSI(screen);
     const lastAt = (pattern: RegExp): number => {
@@ -207,11 +216,13 @@ export class Reports {
     const state =
       failed || (idle && !working && stale) ? "stalled" : working && resumeOnWorking ? "running" : progress.state;
     if (state === progress.state) return progress;
+    const { generation } = progress.lastEvent;
     const event: Activity = {
       type: "activity",
       key,
       at: new Date(now).toISOString(),
       state,
+      ...(generation === undefined ? {} : { generation }),
       text: failed
         ? "compaction failed"
         : state === "stalled"
@@ -219,6 +230,6 @@ export class Reports {
           : "Working activity resumed",
     };
     await this.append(event);
-    return this.read(key);
+    return this.read(key, scope);
   }
 }

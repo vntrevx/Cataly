@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 import { takeLock } from "./checkpoint-lock.ts";
+import type { NativeCloseIntent } from "./native-close.ts";
 import type { BudgetLimits } from "./supervision-observe.ts";
 
 // A writer holds a lane's lock for one synchronous read and write, so a short wait covers any live contention.
@@ -29,7 +30,10 @@ export type Lane = {
   readonly pane?: string | undefined;
   readonly tab?: string;
   readonly session?: string;
+  readonly sessionFile?: string;
   readonly sessionVia?: string;
+  /** Terminal intent and operator-defined condition; never an automatic resume trigger. */
+  readonly hold?: { readonly reason: string; readonly resumeWhen?: string; readonly outcome?: "parked" | "abandoned" };
   readonly brief: string;
   readonly done: string;
   readonly cwd?: string;
@@ -40,6 +44,8 @@ export type Lane = {
   readonly objection?: Objection;
   readonly history?: readonly HistoryEntry[];
   readonly openedAt: string;
+  readonly lifecycleEpoch?: string;
+  readonly nativeCloseIntent?: NativeCloseIntent;
   readonly closedAt?: string;
   readonly lastReplyAt?: number;
   readonly lastNudgeAt?: number;
@@ -86,12 +92,12 @@ const sameSession = (a: SessionRef | undefined, b: SessionRef): boolean =>
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
-/**
- * The lane's status generation: every status change (a claim, objection, verification, pause, resume or close) goes
- * through `withStatus` and appends one history entry, even when the status stays the same, as a second objection does.
- * Bookkeeping fields (freshness notes, `claim.emitted`, a receipt) leave it as it is.
- */
-const generation = (lane: Lane): string => `${lane.openedAt} ${lane.history?.length ?? 0} ${statusOf(lane)}`;
+// Only a status transition or a new open epoch invalidates an in-flight decision.
+export const sameLaneGeneration = (seen: Lane, current: Lane): boolean =>
+  seen.openedAt === current.openedAt &&
+  seen.lifecycleEpoch === current.lifecycleEpoch &&
+  (seen.history?.length ?? 0) === (current.history?.length ?? 0) &&
+  statusOf(seen) === statusOf(current);
 
 export const withStatus = (
   lane: Lane,
@@ -172,7 +178,7 @@ export class Registry {
   discard(lane: Lane): Promise<void> {
     return this.locked(lane.key, () => {
       const current = this.readNow(lane.key);
-      if (current && generation(current) === generation(lane)) rmSync(this.path(lane.key), { force: true });
+      if (current && sameLaneGeneration(lane, current)) rmSync(this.path(lane.key), { force: true });
     });
   }
 
@@ -188,14 +194,9 @@ export class Registry {
     });
   }
 
-  /**
-   * A change decided from `seen`, applied only while the stored lane has `seen`'s status generation (else null): a later
-   * claim, objection, pause or close, even a second objection to a not-done lane, is never overwritten.
-   */
-  transition(seen: Lane, next: (current: Lane) => Lane): Promise<Lane | null> {
-    return this.update(seen.key, (current) =>
-      current && generation(current) === generation(seen) ? next(current) : null,
-    );
+  /** Apply a decision only while the lane still has the observed generation. */
+  transition(seen: Lane, next: (current: Lane) => Lane | null): Promise<Lane | null> {
+    return this.update(seen.key, (current) => (current && sameLaneGeneration(seen, current) ? next(current) : null));
   }
 
   // Reading never creates the lanes directory (dori boot is read-only); write() creates it.
@@ -216,7 +217,7 @@ export class Registry {
       .filter((lane) => lane !== null);
   }
 
-  /** Like list(), but a lane file that cannot be read, parsed, or holds no lane key is returned in `unreadable` instead of throwing. */
+  /** Like list(), but unreadable records and keys not matching their filename are isolated in `unreadable`. */
   async scan(): Promise<{ lanes: Lane[]; unreadable: string[] }> {
     const lanes: Lane[] = [];
     const unreadable: string[] = [];
@@ -224,7 +225,7 @@ export class Registry {
       try {
         const lane: unknown = this.readNow(basename(f, ".json"));
         if (lane === null) continue;
-        if (typeof lane !== "object" || !("key" in lane) || typeof lane.key !== "string")
+        if (typeof lane !== "object" || !("key" in lane) || lane.key !== basename(f, ".json"))
           throw new Error("not a lane record");
         lanes.push(lane as Lane);
       } catch {

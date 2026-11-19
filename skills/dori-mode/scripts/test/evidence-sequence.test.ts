@@ -40,7 +40,7 @@ test("a held journal lock refuses at once ahead of a held registry lock, without
     } finally {
       release();
     }
-    const next = await f.reports.report(KEY, "milestone", "B", now, [f.ref("B")]);
+    const next = await f.reports.report(KEY, "milestone", "B", now, undefined, [f.ref("B")]);
     expect(next.evidenceSequence).toBe(2);
     expect(journal(f.reports.path(KEY))).toEqual([next]);
   } finally {
@@ -70,7 +70,7 @@ test("evidence writers still wait out a held registry lock for 5 s in 10 ms retr
       expect(attempts).toBe(0);
       const started = Date.now();
       const waits = await Promise.allSettled([
-        f.reports.report(KEY, "milestone", "evidence", T0, [ref]),
+        f.reports.report(KEY, "milestone", "evidence", T0, undefined, [ref]),
         f.checkpoints.write(KEY, step("evidence", f.source, [ref]), Date.now()),
       ]);
       const elapsed = Date.now() - started;
@@ -94,7 +94,9 @@ test("evidence writers still wait out a held registry lock for 5 s in 10 ms retr
       release();
     }
     // The timed-out writers consumed no number.
-    expect((await f.reports.report(KEY, "milestone", "evidence", T0, [f.ref("B")])).evidenceSequence).toBe(1);
+    expect((await f.reports.report(KEY, "milestone", "evidence", T0, undefined, [f.ref("B")])).evidenceSequence).toBe(
+      1,
+    );
     expect(existsSync(lock)).toBe(false);
   } finally {
     f.done();
@@ -128,7 +130,7 @@ test("sequence-less journals stay readable, fold by time, and new evidence or re
     // New evidence in the old report's millisecond: the unsequenced record first, then acceptance order (C, then D),
     // though the merge lists D before C.
     const newC = await f.checkpoints.write(KEY, step("new-c", f.source, [c]), T0 + 60_000);
-    const newD = await f.reports.report(KEY, "milestone", "new-d", T0 + 60_000, [d]);
+    const newD = await f.reports.report(KEY, "milestone", "new-d", T0 + 60_000, undefined, [d]);
     expect([newC.checkpoint.evidenceSequence, newD.evidenceSequence]).toEqual([1, 2]);
     expect(evidenceClock(grouped(f.dir))).toEqual({ lastEvidenceAt: at(60), lastEvidence: d });
     // Retries of an old and a new step return their stored records, without capture or a number.
@@ -201,7 +203,9 @@ test("the writer assigns every sequence: a supplied one is replaced, and none pa
     const last = { key: KEY, at: iso(T0), ...step("last", f.source, [a]), evidenceSequence: Number.MAX_SAFE_INTEGER };
     writeFileSync(f.checkpoints.path(KEY), `${JSON.stringify(last)}\n`);
     const before = readFileSync(f.reports.path(KEY), "utf8");
-    await expect(f.reports.report(KEY, "milestone", "B", T0, [a])).rejects.toThrow("evidence sequence exhausted");
+    await expect(f.reports.report(KEY, "milestone", "B", T0, undefined, [a])).rejects.toThrow(
+      "evidence sequence exhausted",
+    );
     expect(readFileSync(f.reports.path(KEY), "utf8")).toBe(before);
     expect(existsSync(`${new Registry(f.dir).path(KEY)}.lock`)).toBe(false);
   } finally {

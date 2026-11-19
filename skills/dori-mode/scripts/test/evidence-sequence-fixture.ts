@@ -51,7 +51,7 @@ export const journal = (path: string): Evidenced[] =>
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Evidenced);
 
-/** The source-grouped merge production laneEvidence folds: every report-journal record, then every checkpoint. */
+/** The source-grouped merge the production verdict folds: every report-journal record, then every checkpoint. */
 export const grouped = (stateDir: string): Evidenced[] => [
   ...(new Reports(stateDir).read(KEY)?.evidenced ?? []),
   ...new Checkpoints(stateDir).read(KEY),
@@ -101,7 +101,7 @@ export const spawnWriter = (
   const script = join(stateDir, `${role}-writer.test.ts`);
   const call =
     role === "report"
-      ? `new Reports(dir).report(key, "milestone", "accepted", ${now}, ${JSON.stringify([ref])})`
+      ? `new Reports(dir).report(key, "milestone", "accepted", ${now}, undefined, ${JSON.stringify([ref])})`
       : `new Checkpoints(dir).write(key, ${JSON.stringify(step("accepted", source, [ref]))}, ${now})`;
   writeFileSync(
     script,

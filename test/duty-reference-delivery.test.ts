@@ -24,57 +24,64 @@ const WAITING_CASES = MODES.flatMap((mode) => ["current", "legacy"].map((schema)
 async function referenceLane(mode: (typeof MODES)[number]) {
   const s = setup();
   const lane = await startLane(s.d, "references", s.brief, { group: "w1" });
-  const log = join(s.d.store.root, "herdr-calls.jsonl");
+  const log = join(s.d.store.root, "herdr-calls.argv");
   const failures = join(s.d.store.root, "enter-failures");
-  const script = join(s.d.store.root, "fake-herdr.ts");
+  const script = join(s.d.store.root, "fake-herdr.sh");
   writeFileSync(log, "");
   writeFileSync(failures, "0");
   writeFileSync(
     script,
-    `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
-const [group, verb, id] = args;
-const ok = (result) => console.log(JSON.stringify({ result }));
-if (group === "agent" && verb === "prompt") {
-  if (${mode === "typed fallback"}) {
-    process.stderr.write('{"error":{"code":"agent_not_ready"}}');
-    process.exit(1);
-  }
-  ok({});
-} else if (group === "pane" && verb === "get") {
-  ok({ pane: { pane_id: id, agent: "pi", agent_status: "idle" } });
-} else if (group === "pane" && verb === "process-info") {
-  ok({ process_info: { foreground_process_group_id: 101, foreground_processes: [{ name: "omo", argv: ["omo"] }] } });
-} else if (group === "pane" && verb === "send-keys" && args[3] === "enter") {
-  const left = Number(readFileSync(${JSON.stringify(failures)}, "utf8"));
-  if (left > 0) {
-    writeFileSync(${JSON.stringify(failures)}, String(left - 1));
-    process.stderr.write("fixture Enter failed");
-    process.exit(1);
-  }
-  ok({});
-} else if (group === "pane" && verb === "send-text") {
-  ok({});
-} else {
-  process.stderr.write("unexpected fake herdr call: " + JSON.stringify(args));
-  process.exit(1);
-}
+    String.raw`log=$1; failures=$2; mode=$3; pane_json=$4
+shift 4
+printf '%s\0' "$#" "$@" >> "$log"
+if [[ "$1" == agent && "$2" == prompt ]]; then
+  if [[ "$mode" == "typed fallback" ]]; then
+    printf '%s' '{"error":{"code":"agent_not_ready"}}' >&2
+    exit 1
+  fi
+elif [[ "$1" == pane && "$2" == get ]]; then
+  printf '{"result":{"pane":{"pane_id":%s,"agent":"pi","agent_status":"idle"}}}\n' "$pane_json"
+  exit 0
+elif [[ "$1" == pane && "$2" == process-info ]]; then
+  printf '%s\n' '{"result":{"process_info":{"foreground_process_group_id":101,"foreground_processes":[{"name":"omo","argv":["omo"]}]}}}'
+  exit 0
+elif [[ "$1" == pane && "$2" == send-keys && "$4" == enter ]]; then
+  IFS= read -r left < "$failures"
+  if (( left > 0 )); then
+    printf '%s' "$((left - 1))" > "$failures"
+    printf '%s' 'fixture Enter failed' >&2
+    exit 1
+  fi
+elif [[ "$1" != pane || "$2" != send-text ]]; then
+  printf 'unexpected fake herdr call:' >&2
+  printf ' %q' "$@" >&2
+  exit 1
+fi
+printf '%s\n' '{"result":{}}'
 `,
   );
   const exec: Exec = (cmd, argv, options) => {
     expect(cmd).toBe("herdr");
-    return spawnExec(process.execPath, [script, ...argv], options);
+    const paneJson = JSON.stringify(argv[2] ?? "");
+    return spawnExec("/bin/bash", ["--noprofile", "--norc", script, log, failures, mode, paneJson, ...argv], options);
   };
   const sleeps: number[] = [];
   const runtime = new HerdrRuntime(exec, "", { env: {}, sleep: async (ms) => void sleeps.push(ms) });
   const d = { ...s.d, exec, runtimes: new Runtimes("herdr", () => runtime) };
-  const calls = (): string[][] =>
-    readFileSync(log, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
+  const calls = (): string[][] => {
+    // Each record is its argument count followed by that many NUL-terminated arguments.
+    const fields = readFileSync(log, "utf8").split("\0");
+    if (fields.at(-1) !== "") throw new Error("Unterminated fixture argv log");
+    const result: string[][] = [];
+    for (let i = 0; i < fields.length - 1; ) {
+      const count = Number(fields[i++]);
+      if (!Number.isInteger(count) || count < 1 || i + count >= fields.length)
+        throw new Error("Incomplete fixture argv record");
+      result.push(fields.slice(i, i + count));
+      i += count;
+    }
+    return result;
+  };
   const received = (pane = "w1:p1") =>
     calls()
       .filter((a) => a[2] === pane && (mode === "agent prompt" ? a[0] === "agent" : a[1] === "send-text"))

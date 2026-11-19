@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add explicit lane parking, exact-session reopening, abandonment receipts and a read-only hold ledger. Keep worktrees, accepted pending Discord messages and ordinary Done verification.
+
+- Add read-only lane status, historical ETA summaries and opt-in single-message Discord/Telegram boards. Boards validate options before delivery, omit URL credentials and parameters, and retain pending holds; Telegram recovery requires an existing message binding.
+
+- Add read-only `dori doctor` configuration, adoption and monitor diagnostics, canonical `monitor-presets`, and an advisory boot summary. Doctor checks external terminal metadata and verifies the native monitor's restart policy; documented filters include supervision and loop-error events.
+
+- Read-only `dori sync` shares one successful process-table snapshot and one herdr pane list within a pass. Later passes, failed reads, hc group queries and all `--write` observations stay fresh.
+
+- Route ordinary Discord messages for an unambiguously connected lane to its own OMP session. Existing connections need no new setting; exact ASK replies still resolve the open form instead of starting a turn.
+
+- Supported native OMP ASK forms are automatically available through an already connected Discord receiver with an unambiguous destination. Existing settings and explicit routes stay in place; only the configured owner's reply to the exact message answers that ASK.
+
+- `dori voice discord` adds an opt-in, paid, owner-only Discord voice assistant configured by `voice` in the existing Dori config. It reads lanes and reports, searches the web, posts notes and forwards work to the lead once, claiming delivery only after receipt is observed; forwarded requests carry a written-approval policy, not an effect-point authorization gate. Daily, cumulative and backend spending caps apply, though in-flight usage can exceed them. Native codecs are optional dependencies loaded only by this command. See [the voice guide](docs/discord-voice.md).
+
 - Opted-in Dori monitors can restart unexpectedly exited receiver processes with a bounded retry policy. The policy survives session resume and managed handoff; clean exits, explicit stops, and monitors without the policy retain their existing behavior.
 
 - Document opt-in GPT-6.2 Sol Ultrafast defaults for external OMP 19 lanes and cover the alias in the GPT-6.2 prompt integration. Explicit external commands no longer require a consumer-native receipt; managed launchers retain receipt checks and their pinned runtime.
@@ -204,3 +218,4 @@ The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, pu
 
 - Lane reports, checkpoints and filesystem observations share an evidence clock independent of report time. Reworded reports, touches, commits of unchanged bytes and identical tool results do not reset it; changed bytes and structured results do. `--evidence-file` and lane-only `dori_report` preserve idempotent receipts and source-bound native background completions. Rotating observations hash at most 256 paths; new hung declarations require a final all-candidate stat confirmation, not an atomic snapshot. Unstable observations remain unknown and persistent read errors are deduplicated without hiding budget alerts; native timing and declared artifact locators do not masquerade as new results.
 - Equal-millisecond evidence from report and checkpoint journals replays in a shared, locked acceptance sequence. Unchanged observations stay quiet without hiding real file reversions; checkpoint retries, immediate writer refusal and legacy journal reads are preserved.
+- Evidence supervision prepares and commits only for the same lane generation, with observation I/O outside the delivery lock. Reopened lanes retain their own reports and state instead of accepting a stale sweep.

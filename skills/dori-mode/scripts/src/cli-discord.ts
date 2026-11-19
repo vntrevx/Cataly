@@ -1,15 +1,20 @@
 /** The Discord Gateway plumbing shared by `dori presence discord` and `dori inbound discord --gateway`. */
 import { die, every } from "./cli-context.ts";
+import { withDeliveryLock } from "./delivery-lock.ts";
 import { Discord } from "./messenger/discord.ts";
 import { DiscordChannels, inboundContext } from "./messenger/discord-channels.ts";
 import type { GatewayClock, GatewaySocket } from "./messenger/discord-gateway.ts";
+import { routeDiscordAskReply } from "./messenger/discord-ask-mailbox.ts";
+import { type DiscordAskReceiverPublication, openDiscordAskReceiver } from "./messenger/discord-ask-receiver.ts";
 import { discordInbound, formatDiscordInbound, formatInboundContext } from "./messenger/discord-inbound.ts";
 import type { Emit } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
 import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
+import { discordLaneRoute, openDiscordLaneInbox } from "./messenger/discord-lane-inbox.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { recordOwes } from "./owes.ts";
+import { Registry } from "./registry.ts";
 import { realClock } from "./run.ts";
 
 export const openDiscordSocket = (url: string): GatewaySocket => {
@@ -75,6 +80,9 @@ export const discordInboundCommand = async (
   if (!all && channelIds.length === 0) discordInboundEnv("DORI_DISCORD_CHANNEL_ID", env["DORI_DISCORD_CHANNEL_ID"]);
   const token = env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
   const queue = discordInboundQueue(stateDir);
+  const delivery = { registry: new Registry(stateDir), clock: realClock };
+  let receiver: DiscordAskReceiverPublication | undefined;
+  let laneInbox: ReturnType<typeof openDiscordLaneInbox> | undefined;
   try {
     if (!gateway && queue.first())
       die("Discord inbound has pending Gateway work; restart with --gateway before REST mode");
@@ -85,10 +93,38 @@ export const discordInboundCommand = async (
       all,
       threads,
     });
+    if (gateway || pollMinutes > 0)
+      receiver = openDiscordAskReceiver(
+        stateDir,
+        token,
+        ownerId,
+        channelIds,
+        intake.channels,
+        gateway ? Infinity : pollMinutes * 60_000 + 15_000,
+      );
     const watching = all ? "all" : intake.channels().join(",");
     const where = context ? inboundContext(discord, new DiscordChannels(stateDir), realClock.now) : undefined;
     // Context and the owner line remain one stdout group, after the owe is published.
     const emit: Emit = async (message, signal) => {
+      signal?.throwIfAborted();
+      if (routeDiscordAskReply(stateDir, message, ownerId)) return;
+      const route = await discordLaneRoute(stateDir, message.channel);
+      if (route) {
+        const held = await withDeliveryLock(delivery, route.key, async () => {
+          signal?.throwIfAborted();
+          const current = await discordLaneRoute(stateDir, message.channel);
+          if (current && current.key !== route.key) throw new Error("Discord lane route changed; cursor not advanced");
+          if (current?.kind === "closing")
+            throw new Error("Discord lane native close is in progress; cursor not advanced");
+          if (route.kind !== "live" || current?.kind !== "live" || current.session !== route.session) return false;
+          signal?.throwIfAborted();
+          laneInbox ??= openDiscordLaneInbox(stateDir);
+          laneInbox.add(current.session, message);
+          return true;
+        });
+        if (!held.ok) throw new Error("Discord lane delivery is locked; cursor not advanced");
+        if (held.value) return;
+      }
       const text = where
         ? `${formatDiscordInbound(message)}\n${formatInboundContext(message, await where(message.channel))}`
         : formatDiscordInbound(message);
@@ -99,11 +135,48 @@ export const discordInboundCommand = async (
     console.log(
       `INBOUND_READY discord owner=${ownerId} channel=${watching} bot=${intake.botId}${gateway ? " mode=gateway" : ""}`,
     );
-    if (!gateway) return await every(pollMinutes, () => intake.poll(emit));
+    if (!gateway)
+      return await every(pollMinutes, async () => {
+        try {
+          await intake.poll(emit);
+          receiver?.refresh();
+        } catch (error) {
+          receiver?.suspend();
+          throw error;
+        }
+      });
+    // Gateway receipts mean successful backfill on the observed connection, not a separate connectivity probe.
+    let connected = false;
+    let generation = 0;
+    const live = {
+      ...intake,
+      async sync(...args: Parameters<typeof intake.sync>) {
+        const current = generation;
+        try {
+          await intake.sync(...args);
+          if (connected && current === generation) receiver?.refresh();
+        } catch (error) {
+          receiver?.suspend();
+          throw error;
+        }
+      },
+    };
     await untilStopped(
-      discordInboundLive(intake, openDiscordSocket, token, discordClock, emit, (l) => console.log(l), queue),
+      discordInboundLive(live, openDiscordSocket, token, discordClock, emit, (line) => console.log(line), queue, {
+        ready() {
+          connected = true;
+          generation++;
+        },
+        disconnect() {
+          connected = false;
+          generation++;
+          receiver?.suspend();
+        },
+      }),
     );
   } finally {
+    receiver?.close();
+    laneInbox?.close();
     queue.close();
   }
 };

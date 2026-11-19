@@ -62,7 +62,8 @@ for (const selectedBy of ["report", "checkpoint"] as const) {
     const fingerprint = fileEvidence(source, repo);
     expect(novelEvidence(reports.read(active.key)?.evidenced ?? [], [fingerprint])).toEqual([]);
     clock.at += 5 * 60_000;
-    if (selectedBy === "report") await reports.report(active.key, "milestone", "B is ready", clock.at, [fingerprint]);
+    if (selectedBy === "report")
+      await reports.report(active.key, "milestone", "B is ready", clock.at, undefined, [fingerprint]);
     else
       await new Checkpoints(state.dir).write(
         active.key,

@@ -116,7 +116,7 @@ test("a report accepted while the observer's novel evidence waits to append keep
       evidenceRefs: [b],
     });
     // Meanwhile the lane's own report of B, made at the original time, is accepted first.
-    const report = await new Reports(f.dir).report(KEY, "milestone", "B", T0, [b]);
+    const report = await new Reports(f.dir).report(KEY, "milestone", "B", T0, undefined, [b]);
     expect([report.at, report.evidenceSequence]).toEqual([iso(T0), 2]);
     resume.resolve();
     const result = await sweep;

@@ -186,7 +186,7 @@ describe("evidence clock", () => {
 
   test("journals keep valid refs and refuse malformed ones", async () => {
     const reports = new Reports(state.dir);
-    await reports.report("demo-lane", "milestone", "first", Date.parse(at(1)), [file("/r", A)]);
+    await reports.report("demo-lane", "milestone", "first", Date.parse(at(1)), undefined, [file("/r", A)]);
     await reports.report("demo-lane", "milestone", "no evidence", Date.parse(at(2)));
     const progress = reports.read("demo-lane");
     expect(progress?.evidenced.map((report) => report.text)).toEqual(["first"]);

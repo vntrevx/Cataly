@@ -73,7 +73,7 @@ test("a new verdict rechecks its current window after evidence collection", asyn
   const read = f.reports.read.bind(f.reports);
   const collected = spyOn(f.reports, "read").mockImplementation((key) => {
     const progress = read(key);
-    // laneEvidence reads the journal after observeFiles has finished the current window.
+    // The verdict reads the journal after readWindow has finished the current window.
     if (turn === 7 && !changed) {
       fs.writeFileSync(current, "changed after the current window read");
       changed = true;
