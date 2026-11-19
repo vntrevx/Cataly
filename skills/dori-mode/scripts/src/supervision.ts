@@ -30,6 +30,7 @@ export type SupervisionResult = {
   readonly hung: boolean;
 };
 type Observation = {
+  readonly openedAt: string;
   readonly at: number;
   readonly timer: number | null;
   readonly timerKind: string | null;
@@ -81,7 +82,7 @@ export class Supervision {
         }
       }
     }
-    const snapshot = { key: lane.key, at: new Date(now).toISOString(), ...usage };
+    const snapshot = { key: lane.key, openedAt: lane.openedAt, at: new Date(now).toISOString(), ...usage };
     // Without a usage hook every sweep would append the same unknown reading; close still records its final one.
     if (persist) this.record(snapshot);
     return snapshot;
@@ -105,7 +106,8 @@ export class Supervision {
     if (!this.enabled(lane)) return { enabled: false, state: null, alerts: [], usage: null, hung: false };
     const now = this.deps.clock.now();
     const path = join(dirname(this.reports.path(lane.key)), "supervision.json");
-    const previous = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Observation) : null;
+    const saved = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Observation) : null;
+    const previous = saved?.openedAt === lane.openedAt ? saved : null;
     const activity = await this.activity(lane);
     const timer = workingTimer(screen);
     const activeAt = !previous || activity !== previous.activity ? now : previous.activeAt;
@@ -185,6 +187,7 @@ export class Supervision {
     }
     // Save the post-blocker signature so our own report does not count as progress.
     const observation: Observation = {
+      openedAt: lane.openedAt,
       at: now,
       timer: timer?.seconds ?? null,
       timerKind: timer?.kind ?? null,
@@ -205,15 +208,19 @@ export class Supervision {
 
   async close(lane: SupervisedLane): Promise<UsageSnapshot | null> {
     if (!this.enabled(lane)) return null;
-    // A close that already recorded its final reading (a retried or second close) returns it and runs no hook, so a
-    // cost ledger gets each lane once. {closeKey} is the same on every attempt, for a ledger that dedupes on it.
+    // Record each openedAt generation once; retries reuse the final reading and stable {closeKey}.
     const path = this.costPath(lane.key);
     const recorded = existsSync(path)
       ? readFileSync(path, "utf8")
           .split("\n")
           .filter((line) => line.trim())
           .map((line) => JSON.parse(line) as UsageSnapshot)
-          .findLast((entry) => entry.final === true)
+          .findLast(
+            (entry) =>
+              entry.final === true &&
+              (entry.openedAt === lane.openedAt ||
+                (entry.openedAt === undefined && Date.parse(entry.at) >= Date.parse(lane.openedAt))),
+          )
       : undefined;
     if (recorded) return recorded;
     const snapshot = await this.usage(lane, this.deps.clock.now(), false);

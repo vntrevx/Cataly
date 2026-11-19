@@ -7,6 +7,26 @@ import type { FlowDeps } from "./done-flow.ts";
 import { Reports } from "./reports.ts";
 import { startupScreen } from "./startup-screen.ts";
 
+export const lastLines = (screen: string): string =>
+  screen
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(-3)
+    .join(" / ")
+    .replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)")
+    .slice(0, 240) || "(blank)";
+
+// OMP goals come from its trusted current-session record, never quoted screen text. Custom agents may use their
+// footer marker or omo goal record. An empty marker opts out of the goal check, not the ready-status check.
+export const goalShown = (screen: string, marker: string): boolean =>
+  screen
+    .split("\n")
+    .filter((s) => s.trim())
+    .slice(-3)
+    .join("\n")
+    .includes(marker);
+
 const missingSession = (ref: SessionRef, error: unknown): boolean =>
   isKind(error, "not_found") ||
   (ref.runtime === "herdr" && error instanceof ToolError && /not.?found/i.test(reasonOf(error)));

@@ -4,6 +4,7 @@ import { configPath } from "./config.ts";
 import type { Decisions } from "./decisions.ts";
 import { decisionBootLines } from "./decisions-render.ts";
 import type { FlowDeps } from "./done-flow.ts";
+import { holdLines } from "./holds.ts";
 import { shellQuote } from "./launch-footer.ts";
 import type { SessionInfo } from "../../../../src/runtime/types.ts";
 import type { Slack } from "./messenger/slack.ts";
@@ -164,6 +165,7 @@ export const bootCheck = async (deps: BootDeps): Promise<{ exitCode: number; lin
   const warnings = workspaceCheck(deps.config, rts.choice?.kind, panes);
   if (warnings.length) failed = true;
   lines.push(...warnings);
+  lines.push(...holdLines(registered));
   lines.push(...journals);
   // The lead's open requests, each with its Next line, so a compacted lead resumes from the record, not from memory.
   try {

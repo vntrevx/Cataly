@@ -1,151 +1,36 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
 import type { PaneState } from "../src/lane-state.ts";
-import { launchLane } from "../src/launch.ts";
-import { Reports } from "../src/reports.ts";
-import { sessionDirFor } from "../src/session-id.ts";
-import { agentIn, depsFor, fakeClock, laneState, newWorld, withState, type TestState, type World } from "./fakes.ts";
+import { newWorld, withState, type TestState, type World } from "./fakes.ts";
+import { startOmpLane, type OmpLaunchOptions } from "./omp-launch-fixture.ts";
 
-const T0 = Date.parse("2026-01-01T12:00:00.000Z");
 let state: TestState;
 let world: World;
-let n = 0;
 beforeEach(() => {
   state = withState();
   world = newWorld();
 });
 afterEach(() => state.done());
 
-const start = async (
-  key: string,
-  patch: Partial<PaneState> = {},
-  options: {
-    firstLane?: string;
-    at?: string;
-    screen?: string;
-    slow?: boolean;
-    packageCommand?: boolean;
-    model?: string;
-    startDelay?: number;
-    suspended?: boolean;
-    unreportedUntil?: number;
-    startupWaitSeconds?: number;
-    goalMarker?: string;
-    finish?: { after: number; kind: "closed" | "verified-done" | "journal"; readFailure?: string };
-  } = {},
-) => {
-  const brief = join(state.dir, `${key}.md`);
-  writeFileSync(brief, "# Ship the fixture\n");
-  const sessionsDir = join(state.dir, "omp-store");
-  const dir = sessionDirFor(sessionsDir, "/repo");
-  mkdirSync(dir, { recursive: true });
-  const id = `01a1b6d8-0000-7000-8000-${String(++n).padStart(12, "0")}`;
-  const at = options.at ?? "2026-01-01T12:00:03.000Z";
-  const sessionFile = join(dir, `${at.replace(/:/g, "-").replace(".", "-")}_${id}.jsonl`);
-  writeFileSync(
-    sessionFile,
-    [
-      { type: "session", id, timestamp: at, cwd: "/repo" },
-      {
-        type: "message",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Read the brief at ${brief}. You are the ${options.firstLane ?? key} lane; report as the footer says.`,
-            },
-          ],
-        },
-      },
-    ]
-      .map((entry) => JSON.stringify(entry))
-      .join("\n") + "\n",
-  );
-  world = newWorld();
-  world.screen = options.screen ?? "Working (12s)\nprompt\nGoal: ...";
-  world.panes = [{ pane_id: "w:p9", workspace_id: "w", agent: "omp", agent_status: "working" }];
-  if (options.unreportedUntil && world.panes[0]) world.panes[0].agent_status = "unknown";
-  if (options.suspended && world.panes[0]) world.panes[0].foreground = "zsh";
-  agentIn(world, "w:p9");
-  laneState(state.dir, "w:p9", { sessionId: id, sessionFile, ...patch });
-  const clock = fakeClock(T0);
-  let finished = false;
-  const base = depsFor(
-    world,
-    {
-      ...clock,
-      sleep: async (ms) => {
-        clock.at += ms;
-        if (options.unreportedUntil && clock.at >= T0 + options.unreportedUntil && world.panes[0])
-          world.panes[0].agent_status = "working";
-        if (options.finish && !finished && clock.at >= T0 + options.finish.after) {
-          const current = await base.registry.read(key);
-          if (!current) throw new Error("lane not registered before startup check");
-          if (options.finish.kind === "journal") new Reports(state.dir).report(key, "done", "finished", clock.at);
-          else await base.registry.write({ ...current, status: options.finish.kind });
-          world.panes = [];
-          finished = true;
-        }
-        if (options.slow && ms === 10_000)
-          laneState(state.dir, "w:p9", { sessionId: id, sessionFile, goal: { status: "active" } });
-      },
-    },
-    state.dir,
-    {
-      sessionsDir,
-      ...(options.startupWaitSeconds === undefined ? {} : { startupWaitSeconds: options.startupWaitSeconds }),
-      ...(options.goalMarker === undefined ? {} : { goalMarker: options.goalMarker }),
-      ...(options.packageCommand
-        ? {
-            agentCommand: [
-              "bun",
-              "/opt/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js",
-              "--dori-role",
-              "lane",
-              "--model",
-              "{model}",
-              "{prompt}",
-            ],
-          }
-        : {}),
-    },
-  );
-  const deps = {
-    ...base,
-    run: async (argv: readonly string[]) => {
-      if (finished && options.finish?.readFailure && argv[0] === "herdr" && argv[2] === "read")
-        return { code: 1, out: "", err: options.finish.readFailure };
-      if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create")
-        return {
-          code: 0,
-          out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }),
-          err: "",
-        };
-      if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run") clock.at += options.startDelay ?? 0;
-      return base.run(argv);
-    },
-  };
-  return launchLane(deps, {
-    key,
-    title: "fixture",
-    brief,
-    done: "closed acme/app#3",
-    ...(options.model === undefined ? {} : { model: options.model }),
-  });
+const start = async (key: string, patch: Partial<PaneState> = {}, options: OmpLaunchOptions = {}) => {
+  const launched = await startOmpLane(state, key, patch, options);
+  world = launched.world;
+  return launched.result;
 };
 
 test("OMP startup reads its own live goal and session launch prompt even when the footer is truncated", async () => {
-  expect((await start("active-lane")).startup).toBe("STARTUP_OK active-lane w:p9");
+  const active = await start("active-lane");
+  expect(active.startup).toBe("STARTUP_OK active-lane w:p9");
   const command = world.calls.find((argv) => argv[2] === "run")?.at(-1) ?? "";
-  expect(command).toContain("omp --dori-role lane --model anthropic/claude-opus-5-5");
-  expect(command).toContain("ulw set goal and work");
+  expect(command).toBe(
+    `omp --dori-launch-model=anthropic/claude-opus-5-5 --dori-role=lane --model=anthropic/claude-opus-5-5 --config=${active.lane.modelProfileFile}`,
+  );
+  expect(command).not.toContain("ulw set goal and work");
+  expect(world.calls.filter((argv) => argv[2] === "send-text")).toHaveLength(1);
+  expect(world.calls.find((argv) => argv[2] === "send-text")?.[4]).toContain("ulw set goal and work");
   expect((await start("package-lane", {}, { packageCommand: true })).startup).toBe("STARTUP_OK package-lane w:p9");
   const overridden = await start("override-lane", {}, { model: "provider/explicit-model" });
   expect(overridden.lane.model).toBe("provider/explicit-model");
-  expect(world.calls.find((argv) => argv[2] === "run")?.at(-1)).toContain("--model provider/explicit-model");
+  expect(world.calls.find((argv) => argv[2] === "run")?.at(-1)).toContain("--model=provider/explicit-model");
   expect((await start("slow-lane", { goal: { status: "none" } }, { slow: true })).startup).toBe(
     "STARTUP_OK slow-lane w:p9",
   );
@@ -165,7 +50,8 @@ test("a quoted omo footer, another lane's prompt or an old session cannot satisf
   expect((await start("stale-lane", {}, { at: "2026-01-01T11:50:00.000Z" })).startup).toStartWith(
     "STARTUP_NO_GOAL stale-lane w:p9",
   );
-  expect((await start("lead-role", { role: "dori" })).startup).toStartWith("STARTUP_NO_GOAL lead-role w:p9");
+  expect((await start("lead-role", { role: "dori" })).startup).toStartWith("STARTUP_MODEL_HOLD lead-role w:p9");
+  expect(world.calls.filter((argv) => argv[2] === "send-text")).toHaveLength(0);
   expect((await start("dead-writer", { pid: 77 })).startup).toStartWith("STARTUP_UNCONFIRMED dead-writer w:p9");
   expect((await start("approval-lane", { approvalPending: true })).startup).toStartWith(
     "STARTUP_UNCONFIRMED approval-lane w:p9",
@@ -192,7 +78,9 @@ test("OMP extension, flag and model failures retain STARTUP_ERROR classification
 
 test("a working OMP lane with its own active goal is not failed by an old error its first screen quotes", async () => {
   const screen = "Working on logs\nFailed to load extension /example: old error copied for analysis\nWorking on logs";
-  expect((await start("quoting-lane", {}, { screen })).startup).toBe("STARTUP_OK quoting-lane w:p9");
+  expect((await start("quoting-lane", { goal: { status: "none" } }, { screen, slow: true })).startup).toBe(
+    "STARTUP_OK quoting-lane w:p9",
+  );
   expect((await start("failing-lane", { goal: { status: "none" } }, { screen })).startup).toBe(
     "STARTUP_ERROR failing-lane w:p9: Failed to load extension",
   );
@@ -209,7 +97,7 @@ test("slow OMP readiness is waited for even with an active goal; neither goals n
     expect(result.startup).toStartWith(`STARTUP_UNCONFIRMED ${key} w:p9: no ready agent status (unknown) after 60 s;`);
   }
   expect((await start("late-no-goal", { goal: { status: "none" } }, { unreportedUntil: 100_000 })).startup).toStartWith(
-    "STARTUP_NO_GOAL late-no-goal w:p9: the agent is running but shows no goal after 180 s;",
+    "STARTUP_NO_GOAL late-no-goal w:p9: the agent is running but shows no goal after 181 s;",
   );
 });
 

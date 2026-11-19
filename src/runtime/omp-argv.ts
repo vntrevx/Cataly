@@ -37,10 +37,12 @@ const isRunner = (argv: readonly string[], at: number): boolean => {
 /**
  * What an exact argv runs, after leading `NAME=value` assignments and the `env` utility with its options: the command
  * itself (that prefix removed), as `omp` when it starts OMP and `other` otherwise, or `unparsed` when a command prefix
- * cannot be read unambiguously, which must not be taken for either.
+ * cannot be read unambiguously, which must not be taken for either. For OMP, `argsAt` is the first native option
+ * index within `command`, after its executable/package entry and any Bun/Node bootstrap arguments.
  */
 export type OmpArgv =
-  | { readonly kind: "omp" | "other"; readonly command: readonly string[] }
+  | { readonly kind: "omp"; readonly command: readonly string[]; readonly argsAt: number }
+  | { readonly kind: "other"; readonly command: readonly string[] }
   | { readonly kind: "unparsed" };
 
 /**
@@ -92,7 +94,7 @@ const OMP_PACKAGE = /^@oh-my-pi\/pi-coding-agent(?:@\S+)?$/;
 
 export function classifyOmpArgv(argv: readonly string[]): OmpArgv {
   const { at, launched, runner, stuck } = prefixEnd(argv);
-  if (runner) return { kind: "omp", command: argv.slice(at) };
+  if (runner) return { kind: "omp", command: argv.slice(at), argsAt: 1 };
   // An unreadable launcher prefix matters only when it may run OMP; any other command keeps its own contract.
   if (stuck !== undefined) {
     return stuck === "env" || names(argv.slice(at)) || assignsOmp(argv, at) || runsOmpPackage(argv)
@@ -122,9 +124,9 @@ const assignsOmp = (argv: readonly string[], at: number): boolean =>
 
 /** What a command without assignment, env or launcher prefixes runs. */
 function classifyCommand(command: readonly string[]): OmpArgv {
-  if (sourceOmpArgv(command)) return { kind: "omp", command };
+  if (sourceOmpArgv(command)) return { kind: "omp", command, argsAt: command[3] === "--preload" ? 6 : 4 };
   const name = command[0]?.split("/").at(-1) ?? "";
-  if (OMP_EXECUTABLE.test(command[0] ?? "")) return { kind: "omp", command };
+  if (OMP_EXECUTABLE.test(command[0] ?? "")) return { kind: "omp", command, argsAt: 1 };
   // A shell runs a script Dori cannot read: one that names OMP must declare its engine.
   if (SHELLS.has(name)) return names(command) ? { kind: "unparsed" } : { kind: "other", command };
   if (name !== "bun" && name !== "node") return { kind: "other", command };
@@ -135,7 +137,7 @@ function classifyCommand(command: readonly string[]): OmpArgv {
     script++;
     while (command[script]?.startsWith("-")) script++;
   }
-  if (OMP_EXECUTABLE.test(command[script] ?? "")) return { kind: "omp", command };
+  if (OMP_EXECUTABLE.test(command[script] ?? "")) return { kind: "omp", command, argsAt: script + 1 };
   if (script > prefix && command.slice(script + 1).some((arg) => OMP_EXECUTABLE.test(arg))) return { kind: "unparsed" };
   return { kind: "other", command };
 }

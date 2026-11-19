@@ -4,6 +4,7 @@ import { accessSync, constants, readFileSync, realpathSync, rmSync, writeFileSyn
 import { type CreateSpec, formatRef, type SessionRef } from "../../../../src/runtime/types.ts";
 import { type Lane, type Registry, sessionFields } from "./registry.ts";
 import type { ChosenRuntimes } from "./run.ts";
+import { createModelProfileFile } from "./model-profile.ts";
 
 export type OpenedLane =
   | { readonly kind: "opened"; readonly lane: Lane; readonly ref: SessionRef }
@@ -13,11 +14,12 @@ export type OpenedLane =
 const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 // Each cleanup step is tried on its own: one that fails is reported and never stops the others.
-const removeStaged = (staged: string): void => {
+export const removePrepared = (path: string | undefined): void => {
+  if (!path) return;
   try {
-    rmSync(staged, { force: true });
+    rmSync(path, { force: true });
   } catch (error) {
-    process.stderr.write(`dori: could not remove the staged brief ${staged} (${why(error)})\n`);
+    process.stderr.write(`dori: could not remove the prepared launch file ${path} (${why(error)})\n`);
   }
 };
 
@@ -45,6 +47,7 @@ export const openLaneSession = async (
   draft: Lane,
   brief: string,
   preamble: string,
+  profileStateDir?: string,
 ): Promise<OpenedLane> => {
   const target = briefTarget(brief);
   const staged = `${target}.${process.pid}.${randomUUID()}.launch`;
@@ -58,19 +61,22 @@ export const openLaneSession = async (
     original = readFileSync(target);
     writeFileSync(backup, original, { flag: "wx", mode: 0o600 });
   } catch (error) {
-    removeStaged(staged);
-    removeStaged(backup);
+    removePrepared(staged);
+    removePrepared(backup);
     return { kind: "failed", what: "brief not writable", error };
   }
   let ref: SessionRef;
+  let modelProfileFile: string | undefined;
   try {
+    if (profileStateDir) modelProfileFile = createModelProfileFile(profileStateDir);
     ref = await rts.default.create(spec);
   } catch (error) {
-    removeStaged(staged);
-    removeStaged(backup);
+    removePrepared(staged);
+    removePrepared(backup);
+    removePrepared(modelProfileFile);
     return { kind: "failed", what: "session create failed", error };
   }
-  const lane: Lane = { ...draft, ...sessionFields(ref) };
+  const lane: Lane = { ...draft, ...sessionFields(ref), ...(modelProfileFile ? { modelProfileFile } : {}) };
   let registered = false;
   let keepBackup = false;
   let failure: OpenedLane = { kind: "taken" };
@@ -79,8 +85,8 @@ export const openLaneSession = async (
     if (registered) {
       // Written in place, as the brief file itself: its inode, hard links, owner, group, mode and ACL stay.
       writeFileSync(target, preamble);
-      removeStaged(staged);
-      removeStaged(backup);
+      removePrepared(staged);
+      removePrepared(backup);
       return { kind: "opened", lane, ref };
     }
   } catch (error) {
@@ -98,8 +104,9 @@ export const openLaneSession = async (
       failure = { kind: "failed", what: "brief not written", error: reason };
     }
   }
-  removeStaged(staged);
-  if (!keepBackup) removeStaged(backup);
+  removePrepared(staged);
+  removePrepared(modelProfileFile);
+  if (!keepBackup) removePrepared(backup);
   if (registered)
     await registry.discard(lane).catch((error: unknown) => {
       process.stderr.write(`dori: could not remove lane ${lane.key} after its launch failed (${why(error)})\n`);

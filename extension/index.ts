@@ -16,12 +16,32 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "../skills/dori-mode/scripts/src/config";
+import { isMainThread } from "node:worker_threads";
+import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ownedModelProfileFile } from "../skills/dori-mode/scripts/src/model-profile.ts";
+import {
+  bindModelProfile,
+  captureModelSnapshot,
+  checkModelProfile,
+  loadNativeProfileModules,
+  type NativeProfileModules,
+  releaseModelProfile,
+  thinkingSelectionDrift,
+} from "./lane-model-profile.ts";
+import { type DoriConfig, loadConfig } from "../skills/dori-mode/scripts/src/config";
+import { Registry } from "../skills/dori-mode/scripts/src/registry.ts";
+import { realClock, run } from "../skills/dori-mode/scripts/src/run.ts";
+import { requestLaneModelSwitch } from "../skills/dori-mode/scripts/src/model-switch.ts";
+import { claimModelSwitch, type ModelSwitchReceipt } from "../skills/dori-mode/scripts/src/model-switch-state.ts";
 import { SourceBundleError } from "../src/release/source-bundle.ts";
 import {
   type DoriRole,
   type GoalStatus,
+  type ModelReadback,
+  type ModelSnapshot,
   type PaneState,
+  exactModelIdentity,
+  isModelSnapshot,
   paneStatePath,
   readPaneState,
   writePaneState,
@@ -34,6 +54,8 @@ import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from 
 
 interface SessionEntry {
   type: string;
+  thinkingLevel?: string | null;
+  configured?: string | null;
   customType?: string;
   data?: unknown;
   mode?: string;
@@ -42,11 +64,47 @@ export interface DoriContext {
   cwd: string;
   mode: string;
   abort(): void;
+  isIdle(): boolean;
+  hasPendingMessages(): boolean;
+  getAsyncJobSnapshot(): {
+    readonly running: readonly unknown[];
+    readonly delivery: {
+      readonly queued: number;
+      readonly delivering: boolean;
+      readonly pendingJobIds: readonly string[];
+    };
+  } | null;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
+  modelRegistry: {
+    getAvailableForProviders(providers: ReadonlySet<string>): PromptModel[];
+    isUsingSubscription(model: PromptModel): boolean;
+  };
   sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
   ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
 }
+/** A native registry ref's session on any thread: the AgentSession itself, or a worker's handle to one elsewhere. */
+interface NativeSessionHandle {
+  readonly model?: PromptModel | undefined;
+  readonly sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
+}
+/** A root AgentSession living on this thread. */
+interface NativeModelSession extends NativeSessionHandle {
+  readonly settings: Settings;
+  readonly sessionManager: DoriContext["sessionManager"] & {
+    appendModelChange(model: string): void;
+    appendThinkingLevelChange(thinkingLevel?: string, configured?: string): void;
+  };
+  readonly agent: { readonly state: { readonly model?: PromptModel } };
+  getAsyncJobTree(): { readonly running: readonly unknown[] } | null;
+  configuredThinkingLevel(): string | undefined;
+  subscribe(listener: (event: { readonly type: string }) => void): () => void;
+}
+
+/** The registry's session is this thread's AgentSession running `settings`; a worker handle never has settings. */
+const runsSettings = (session: NativeSessionHandle, settings: Settings | undefined): session is NativeModelSession =>
+  settings !== undefined && "settings" in session && session.settings === settings;
+
 interface Goal {
   objective: string;
   status: string;
@@ -80,6 +138,16 @@ interface Schema {
 }
 type Handler = (event: unknown, ctx: DoriContext) => unknown;
 export interface DoriApi {
+  pi: {
+    readonly MAIN_AGENT_ID: string;
+    readonly AgentRegistry: {
+      global(): {
+        get(id: string): { readonly parentId?: string; readonly session?: NativeSessionHandle | null } | undefined;
+      };
+    };
+  };
+  getThinkingLevel(): string | undefined;
+  setModel(model: PromptModel): Promise<boolean>;
   zod: {
     object(shape: Record<string, Schema>): Schema;
     string(): Schema;
@@ -112,6 +180,7 @@ export interface DoriApi {
 const ROLE_FLAG = "dori-role";
 const ROLE_ENTRY = "omp-dori:role";
 const MONITOR_ENTRY = "omp-dori:monitor";
+const MODEL_SNAPSHOT_ENTRY = "omp-dori:model-snapshot";
 const ONLY_IN_ROLE = "works only in Dori sessions (omp --dori-role dori|lane)";
 // budget-limited halts the goal until a person raises the budget; unknown statuses must never read as "none",
 // which `dori pause` treats as nothing-to-pause.
@@ -128,6 +197,27 @@ const GOAL_STATUS: Record<string, GoalStatus> = {
  * re-evaluating this module, so a subagent finds its spawning agent's role here through `ctx.agent.parentId`.
  */
 const agentRoles = new Map<string, DoriRole>();
+
+interface ModelProfileBinding {
+  readonly modules: NativeProfileModules;
+  readonly ownerApi: DoriApi["pi"];
+  readonly owner: NativeModelSession;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly sessionFile: string | undefined;
+  readonly file: string;
+  snapshot?: ModelSnapshot;
+  error?: string;
+  unsubscribe?: () => void;
+}
+
+/**
+ * Lane profile bindings by the native root session that owns them. A subagent reaches one only through native registry
+ * lineage up to that live session object, so another SDK session, a reused agent id or a disposed root never matches.
+ * The map belongs to this module graph: a worker-thread subagent imports its own copy and checks its root the way
+ * `workerRootProblem` describes.
+ */
+const rootModelProfiles = new WeakMap<NativeSessionHandle, ModelProfileBinding>();
 
 const parseRole = (value: unknown): DoriRole | undefined => (value === "dori" || value === "lane" ? value : undefined);
 
@@ -209,6 +299,65 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     description: "Private session-bound monitor bootstrap for an explicit managed legacy handoff",
     type: "string",
   });
+
+  pi.registerFlag("dori-launch-model", {
+    description: "Require this exact provider/model before accepting a lane launch brief",
+    type: "string",
+  });
+
+  const launchSessionIds = new Set<string>();
+  let modelProfile: ModelProfileBinding | undefined;
+  let modelProfileError: string | undefined;
+  let modelSwitch: ModelSwitchReceipt | undefined;
+  let modelChanging = false;
+  let doriConfig: DoriConfig | undefined;
+  let nativeProfileModules: NativeProfileModules | undefined;
+  let workerSettingsError: string | undefined;
+  // Native binds this factory before a worker-thread session emits anything; its subagents check their root through
+  // native settings at every boundary, so those are loaded with the factory.
+  if (!isMainThread) {
+    try {
+      nativeProfileModules = await loadNativeProfileModules();
+    } catch (error) {
+      workerSettingsError = `native settings are unavailable in this worker (${errorText(error)})`;
+    }
+  }
+  const modelReadback = (ctx: DoriContext): ModelReadback => {
+    const snapshot = modelProfile?.sessionId === ctx.sessionManager.getSessionId() ? modelProfile.snapshot : undefined;
+    const selector =
+      snapshot?.provenance.requested ??
+      (launchSessionIds.has(ctx.sessionManager.getSessionId()) ? pi.getFlag("dori-launch-model") : undefined);
+    const requested = typeof selector === "string" ? exactModelIdentity(selector) : null;
+    // Native command contexts copy model at entry; a pinned owner is the live readback after an awaited setter.
+    const model = snapshot ? modelProfile?.owner.agent.state.model : ctx.model;
+    const observed = model?.provider ? { provider: model.provider, id: model.id } : null;
+    const base = { requested, observed, checkedAt: new Date().toISOString(), source: "native-extension" as const };
+    if (!model || !observed || (selector !== undefined && !requested))
+      return { ...base, status: "unknown", billing: "unknown" };
+    if (!requested) return { ...base, status: "unrequested", billing: "unknown" };
+    const billing = ctx.modelRegistry.isUsingSubscription(model) ? "subscription" : "non-subscription";
+    const expected = snapshot?.model ?? requested;
+    const key = `${expected.provider}/${expected.id}`.toLowerCase();
+    const available = ctx.modelRegistry.getAvailableForProviders(new Set([expected.provider.toLowerCase()]));
+    const matches = available.filter((candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === key);
+    const selected = snapshot
+      ? matches.find((candidate) => candidate.provider === expected.provider && candidate.id === expected.id)
+      : (matches.find((candidate) => candidate.id === requested.id) ?? (matches.length === 1 ? matches[0] : undefined));
+    if (!selected) return { ...base, status: matches.length ? "unknown" : "unavailable", billing };
+    return {
+      ...base,
+      status: observed.provider === selected.provider && observed.id === selected.id ? "matched" : "mismatch",
+      billing,
+    };
+  };
+  const assertLaunchModel = (ctx: DoriContext): void => {
+    if (ctx.agent.kind !== "main" || pi.getFlag("dori-launch-model") === undefined) return;
+    if (launchSessionIds.size > 0 && !launchSessionIds.has(ctx.sessionManager.getSessionId())) return;
+    const readback = modelReadback(ctx);
+    if (role === "lane" && readback.status === "matched") return;
+    ctx.abort();
+    throw new Error(`STARTUP_MODEL_HOLD: exact launch model ${readback.status}; no automatic substitution`);
+  };
 
   let role: DoriRole | undefined;
   let stateDir: string | undefined;
@@ -322,19 +471,38 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     }
     if (paneHeldByAnother(paneId)) return;
     const sessionFile = ctx.sessionManager.getSessionFile();
-    writePaneState(stateDir, {
-      paneId,
-      role,
-      sessionId: session.id,
-      ...(sessionFile ? { sessionFile } : {}),
-      cwd: ctx.cwd,
-      pid: process.pid,
-      startedAt: session.startedAt,
-      updatedAt: new Date().toISOString(),
-      goal,
-      agentStatus,
-      approvalPending: approvals.size > 0,
-    });
+    try {
+      writePaneState(stateDir, {
+        paneId,
+        role,
+        sessionId: session.id,
+        ...(sessionFile ? { sessionFile } : {}),
+        cwd: ctx.cwd,
+        pid: process.pid,
+        startedAt: session.startedAt,
+        updatedAt: new Date().toISOString(),
+        goal,
+        agentStatus,
+        approvalPending: approvals.size > 0,
+        modelReadback: modelReadback(ctx),
+        modelSnapshot: modelProfile?.snapshot,
+        modelProfileFile: modelProfile?.file,
+        modelSnapshotError: modelProfileError,
+        modelSwitch,
+      });
+    } catch (error) {
+      // An old clean frame must not authorize a worker after this owner failed to publish a HOLD. A foreign or
+      // different session's record is never removed, and cleanup failure must not replace the publication error.
+      const stale = readPaneState(stateDir, paneId);
+      if (stale?.pid === process.pid && stale.sessionId === session.id && stale.sessionFile === sessionFile) {
+        try {
+          rmSync(paneStatePath(stateDir, paneId), { force: true });
+        } catch (invalidating) {
+          console.error(`omp-dori: could not invalidate stale pane ${paneId}: ${errorText(invalidating)}`);
+        }
+      }
+      throw error;
+    }
     if (role === "dori")
       runtimeHealth.update({
         stateDir,
@@ -399,6 +567,250 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     if (next.size !== active.length || active.some((name) => !next.has(name))) await pi.setActiveTools([...next]);
   };
 
+  const recordModelSnapshot = (binding: ModelProfileBinding, snapshot: ModelSnapshot): void => {
+    if (snapshot.configuredThinkingLevel === "auto") {
+      const manager = binding.owner.sessionManager;
+      const last = manager.getBranch().findLast((entry) => entry.type === "thinking_level_change");
+      // Native may never record auto when its first resolution equals the provisional effort. Record the actual
+      // selector alongside our snapshot so native resume, not a re-selection from current defaults, restores it.
+      if ((last?.configured ?? last?.thinkingLevel) !== "auto")
+        manager.appendThinkingLevelChange(pi.getThinkingLevel(), "auto");
+    }
+    pi.appendEntry(MODEL_SNAPSHOT_ENTRY, snapshot);
+  };
+
+  const syncModelProfile = async (
+    ctx: DoriContext,
+    branch: readonly SessionEntry[],
+    freshLaunch: boolean,
+    carried: boolean,
+  ): Promise<void> => {
+    modelProfileError = undefined;
+    if (role !== "lane") {
+      if (modelProfile) {
+        modelProfile.unsubscribe?.();
+        const failed = await releaseModelProfile(modelProfile.owner.settings, modelProfile.file);
+        if (failed) {
+          modelProfile.error = modelProfileError = failed;
+          return;
+        }
+        rootModelProfiles.delete(modelProfile.owner);
+      }
+      modelProfile = undefined;
+      return;
+    }
+    const saved = branch.findLast((entry) => entry.type === "custom" && entry.customType === MODEL_SNAPSHOT_ENTRY);
+    const inherited = carried ? modelProfile?.snapshot : undefined;
+    try {
+      nativeProfileModules ??= await loadNativeProfileModules();
+      // Native runs every extension handler in its session's settings scope: these are this lane session's own.
+      const settings = nativeProfileModules.findScopedSettings();
+      const file = stateDir && settings && ownedModelProfileFile(settings.getConfigFiles(), stateDir);
+      if (!file) {
+        if (saved || modelProfile) throw new Error("saved lane snapshot has no process-owned model profile overlay");
+        // Older and opaque launchers have no private overlay. Keep their existing launch contract.
+        return;
+      }
+      // A process-owned overlay is a guarded launch: only the verified native root session running it may bind it.
+      const owner = pi.pi.AgentRegistry.global().get(pi.pi.MAIN_AGENT_ID)?.session;
+      if (
+        !owner ||
+        ctx.agent.id !== pi.pi.MAIN_AGENT_ID ||
+        !runsSettings(owner, settings) ||
+        owner.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() ||
+        owner.sessionManager.getSessionFile() !== ctx.sessionManager.getSessionFile()
+      )
+        throw new Error("native root session identity is unverified");
+      if (modelProfile) {
+        modelProfile.unsubscribe?.();
+        if (modelProfile.owner !== owner) rootModelProfiles.delete(modelProfile.owner);
+      }
+      const binding: ModelProfileBinding = {
+        modules: nativeProfileModules,
+        ownerApi: pi.pi,
+        owner,
+        agentId: ctx.agent.id,
+        sessionId: ctx.sessionManager.getSessionId(),
+        sessionFile: ctx.sessionManager.getSessionFile(),
+        file,
+        error: "native model profile is binding",
+      };
+      modelProfile = binding;
+      rootModelProfiles.set(owner, binding);
+      // Both native observers run synchronously, before a worker peer read is answered. Publish sticky root drift
+      // before the settings push a worker mirror may lag on; peers have no configured-thinking getter of their own.
+      const publishDrift = (): void => {
+        if (modelChanging || modelProfile !== binding || !binding.snapshot || binding.error) return;
+        const failed =
+          checkModelProfile(binding.modules, owner.settings, binding.file, binding.snapshot, owner.agent.state.model) ??
+          thinkingSelectionDrift(binding.snapshot, owner.configuredThinkingLevel());
+        if (!failed) return;
+        binding.error = modelProfileError = failed;
+        savePane(ctx);
+      };
+      const stopThinking = owner.subscribe((event) => {
+        if (event.type === "thinking_level_changed") publishDrift();
+      });
+      const stopLayers = owner.settings.onLayersChange(publishDrift);
+      binding.unsubscribe = () => {
+        stopThinking();
+        stopLayers();
+      };
+      let snapshot: ModelSnapshot;
+      if (saved) {
+        if (!isModelSnapshot(saved.data))
+          throw new Error("latest native model snapshot is malformed; no older snapshot selected");
+        snapshot = saved.data;
+      } else if (inherited) snapshot = inherited;
+      else {
+        const proof = modelReadback(ctx);
+        const requested = pi.getFlag("dori-launch-model");
+        if (!freshLaunch || proof.status !== "matched" || typeof requested !== "string")
+          throw new Error(
+            "native model snapshot is unknown; use an explicit idle /dori-lane-model selection from the Dori head",
+          );
+        const captured = captureModelSnapshot(nativeProfileModules, owner.settings, {
+          kind: "launch",
+          requested,
+          model: proof.observed,
+          configuredThinkingLevel: owner.configuredThinkingLevel(),
+          thinkingLevel: pi.getThinkingLevel(),
+        });
+        if (typeof captured === "string") throw new Error(captured);
+        snapshot = captured;
+      }
+      binding.snapshot = snapshot;
+      const failed =
+        (await bindModelProfile(nativeProfileModules, owner.settings, file, snapshot)) ??
+        checkModelProfile(nativeProfileModules, owner.settings, file, snapshot, owner.agent.state.model) ??
+        thinkingSelectionDrift(snapshot, owner.configuredThinkingLevel());
+      if (failed) throw new Error(failed);
+      binding.error = undefined;
+      if (!saved) {
+        // Native /new keeps the live model without recording it. Journal the verified carried selection so a reopen
+        // before any assistant response restores that model through native history, not through current defaults.
+        if (inherited) owner.sessionManager.appendModelChange(`${snapshot.model.provider}/${snapshot.model.id}`);
+        recordModelSnapshot(binding, snapshot);
+      }
+    } catch (error) {
+      modelProfileError = errorText(error);
+      if (modelProfile) modelProfile.error = modelProfileError;
+      ctx.ui.notify(
+        `MODEL_SNAPSHOT_HOLD: ${modelProfileError}. Fix: restore the saved profile or select a model explicitly from the idle Dori head flow.`,
+        "warning",
+      );
+    }
+  };
+
+  /** The lane root binding a subagent descends from, followed through the native registry's live lineage. */
+  const inheritedModelProfile = (ctx: DoriContext): ModelProfileBinding | undefined => {
+    const registry = pi.pi.AgentRegistry.global();
+    const seen = new Set<string>();
+    for (let id = ctx.agent.parentId; id !== undefined && !seen.has(id); ) {
+      seen.add(id);
+      const ref = registry.get(id);
+      const binding = ref?.session ? rootModelProfiles.get(ref.session) : undefined;
+      if (binding) return binding;
+      id = ref?.parentId;
+    }
+    return undefined;
+  };
+
+  /**
+   * A worker-thread subagent runs its own copy of this module, so its lane root's binding is out of reach. It checks
+   * the root through what native carries across threads instead: the root settings mirror its own settings read
+   * through, the root session read live through the native registry, and the pane state the root publishes after every
+   * profile change, whose pid, session and overlay must all name that root. Only a root on a Dori-owned overlay needs
+   * this; a legacy, opaque or ordinary root has none and its subagents pass as before.
+   */
+  const workerRootProblem = (ctx: DoriContext): string | undefined => {
+    if (isMainThread || stateDir === undefined) return undefined;
+    const paneId = process.env.HC_TERMINAL_ID || process.env.HERDR_PANE_ID;
+    const modules = nativeProfileModules;
+    if (!modules) {
+      // Without native settings only this process's own pinned-lane publication can say a root is pinned.
+      const pane = paneId ? readPaneState(stateDir, paneId) : null;
+      return pane?.pid === process.pid && pane.modelProfileFile
+        ? (workerSettingsError ?? "native settings are not loaded in this worker")
+        : undefined;
+    }
+    let root = modules.findScopedSettings();
+    for (let parent = root?.overlayParent(); parent; parent = parent.overlayParent()) root = parent;
+    const file = root && ownedModelProfileFile(root.getConfigFiles(), stateDir);
+    if (!root || !file) {
+      const pane = paneId ? readPaneState(stateDir, paneId) : null;
+      return pane?.pid === process.pid && pane.role === "lane" && pane.modelProfileFile
+        ? (pane.modelSnapshotError ?? "owning lane model profile overlay is missing")
+        : undefined;
+    }
+    if (!root.isMirror) return "worker settings do not mirror the native root's settings";
+    const registry = pi.pi.AgentRegistry.global();
+    const seen = new Set<string>();
+    let id = ctx.agent.parentId;
+    while (id !== undefined && id !== pi.pi.MAIN_AGENT_ID && !seen.has(id)) {
+      seen.add(id);
+      id = registry.get(id)?.parentId;
+    }
+    const owner = id === pi.pi.MAIN_AGENT_ID ? registry.get(id)?.session : undefined;
+    // Finish the live peer reads before observing the root's synchronously published profile/selection HOLD.
+    const sessionId = owner?.sessionManager.getSessionId();
+    const sessionFile = owner?.sessionManager.getSessionFile();
+    const actualModel = owner?.model;
+    const pane = paneId ? readPaneState(stateDir, paneId) : null;
+    if (
+      !owner ||
+      !pane ||
+      pane.pid !== process.pid ||
+      pane.role !== "lane" ||
+      pane.sessionId !== sessionId ||
+      pane.sessionFile !== sessionFile ||
+      pane.modelProfileFile !== file
+    )
+      return "native root lane state is unverified";
+    if (pane.modelSnapshotError) return pane.modelSnapshotError;
+    if (pane.modelSwitch?.status === "changing") return "explicit idle model change is in progress";
+    if (!isModelSnapshot(pane.modelSnapshot)) return "owning lane model snapshot is unknown";
+    return checkModelProfile(modules, root, file, pane.modelSnapshot, actualModel) ?? undefined;
+  };
+
+  const assertModelProfile = (ctx: DoriContext): void => {
+    const binding = ctx.agent.kind === "main" ? modelProfile : inheritedModelProfile(ctx);
+    let failed = modelChanging
+      ? "explicit idle model change is in progress"
+      : ctx.agent.kind === "main"
+        ? modelProfileError
+        : binding?.error;
+    if (!failed && binding) {
+      const owner = binding.ownerApi.AgentRegistry.global().get(binding.agentId)?.session;
+      if (
+        owner !== binding.owner ||
+        binding.owner.sessionManager.getSessionId() !== binding.sessionId ||
+        binding.owner.sessionManager.getSessionFile() !== binding.sessionFile
+      )
+        failed = "owning native lane session changed";
+      else if (!binding.snapshot) failed = "owning lane model snapshot is unknown";
+      else
+        failed =
+          checkModelProfile(
+            binding.modules,
+            binding.owner.settings,
+            binding.file,
+            binding.snapshot,
+            binding.owner.agent.state.model,
+          ) ??
+          thinkingSelectionDrift(binding.snapshot, binding.owner.configuredThinkingLevel()) ??
+          undefined;
+    } else if (!failed && ctx.agent.kind === "sub") failed = workerRootProblem(ctx);
+    if (!failed) return;
+    ctx.abort();
+    if (ctx.agent.kind === "main") {
+      modelProfileError = failed;
+      if (modelProfile) modelProfile.error = failed;
+      savePane(ctx);
+    }
+    throw new Error(`MODEL_SNAPSHOT_HOLD: ${failed}; no automatic substitution`);
+  };
+
   // Registered only once a role session appears: approval handlers make omp emit approval events and disable read
   // speculation for the whole process, which ordinary sessions must not pay for.
   const registerLifecycle = (): void => {
@@ -413,22 +825,35 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       savePane(ctx);
     });
     pi.on("session_shutdown", () => {
+      if (modelProfile) {
+        modelProfile.unsubscribe?.();
+        rootModelProfiles.delete(modelProfile.owner);
+      }
       monitors.stopAll();
       retirePane();
     });
   };
 
-  const syncMain = async (ctx: DoriContext, branch: readonly SessionEntry[], bootstrap = false): Promise<void> => {
+  const syncMain = async (
+    ctx: DoriContext,
+    branch: readonly SessionEntry[],
+    lifecycle: { bootstrap: boolean; freshLaunch: boolean; carried: boolean },
+  ): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     // Monitors belong to the Dori session that started them; their lines must not wake whatever session comes next.
     if (session?.id !== sessionId || role !== "dori") monitors.stopAll();
     if (session?.id !== sessionId) {
       session = { id: sessionId, startedAt: new Date().toISOString() };
+      modelSwitch = undefined;
       approvals.clear();
       agentStatus = "idle";
     }
     if (role && !lifecycleRegistered) registerLifecycle();
-    if (bootstrap && role === "dori") {
+    // Before the profile sync, whose pane publication must not carry the previous session's goal. A bootstrap below
+    // adds only monitor and intake entries, never a goal.
+    goal = recordedGoal(branch);
+    await syncModelProfile(ctx, branch, lifecycle.freshLaunch, lifecycle.carried);
+    if (lifecycle.bootstrap && role === "dori") {
       try {
         if (bootstrapMonitors(pi, branch, sessionId, recordedMonitors(branch))) branch = ctx.sessionManager.getBranch();
         rejectedBootstrap = undefined;
@@ -443,7 +868,6 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         throw error;
       }
     }
-    goal = recordedGoal(branch);
     if (role && loadError && !warned) {
       warned = true;
       ctx.ui.notify(
@@ -451,8 +875,9 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         "warning",
       );
     }
-    await syncTools();
+    // Publish the verified root profile before tool activation can dispatch worker-thread work, exactly once.
     savePane(ctx);
+    await syncTools();
     if (role === "dori") {
       restoreMonitors(ctx, branch, managedRestorePending);
       managedRestorePending = false;
@@ -505,20 +930,25 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     pi.on(eventName, async (event, ctx) => {
       const branch = ctx.sessionManager.getBranch();
       let flaggedRole = false;
+      let carried = false;
       if (ctx.agent.kind === "sub") {
         role = ctx.agent.parentId === undefined ? undefined : agentRoles.get(ctx.agent.parentId);
       } else {
+        if (eventName === "session_start" && launchSessionIds.size === 0)
+          launchSessionIds.add(ctx.sessionManager.getSessionId());
         const recorded = recordedRole(branch);
         // `/new` emits `session_switch` with `reason: "new"`; its empty branch has no role entry to read. Adopting
         // that emptiness would strip `monitor`, stop the monitors that answer the messenger, and drop the pane record
         // for the rest of the process lifetime, so the process's own role carries over instead.
-        const carried =
+        carried =
           eventName === "session_switch" &&
           typeof event === "object" &&
           event !== null &&
           "reason" in event &&
           event.reason === "new";
         role = recorded ?? (carried ? role : undefined);
+        if (carried && role === "lane" && session && launchSessionIds.has(session.id))
+          launchSessionIds.add(ctx.sessionManager.getSessionId());
         const flagged = pi.getFlag(ROLE_FLAG);
         if (role === undefined && eventName === "session_start" && flagged !== undefined) {
           role = parseRole(flagged);
@@ -545,7 +975,11 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       else agentRoles.delete(ctx.agent.id);
       try {
         if (ctx.agent.kind === "main")
-          await syncMain(ctx, ctx.sessionManager.getBranch(), eventName === "session_start");
+          await syncMain(ctx, ctx.sessionManager.getBranch(), {
+            bootstrap: eventName === "session_start",
+            freshLaunch: flaggedRole,
+            carried,
+          });
       } finally {
         // A rejected bootstrap has cleared the role, so it is not recorded; any other failure keeps the role this
         // process runs with, and its record, as a later resume without the flag must restore it.
@@ -590,6 +1024,8 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
 
   // OMP chains prompt replacements in extension/handler order; append to the prompt this handler receives.
   pi.on("before_agent_start", (event, ctx) => {
+    assertLaunchModel(ctx);
+    assertModelProfile(ctx);
     if (role && requiredLoadError) {
       ctx.abort();
       throw requiredLoadError;
@@ -599,11 +1035,215 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     return systemPrompt && { systemPrompt };
   });
 
+  pi.on("before_subagent_spawn", (_event, ctx) => {
+    try {
+      assertModelProfile(ctx);
+    } catch (error) {
+      return { block: true, reason: errorText(error) };
+    }
+  });
+
   pi.on("before_provider_request", (_event, ctx) => {
+    assertLaunchModel(ctx);
+    assertModelProfile(ctx);
     if (role && requiredLoadError) {
       ctx.abort();
       throw requiredLoadError;
     }
+  });
+
+  for (const event of ["session_before_switch", "session_before_branch", "session_before_tree"]) {
+    pi.on(event, (_event, ctx) => {
+      if (ctx.agent.kind === "main" && modelChanging) return { cancel: true };
+    });
+  }
+
+  pi.registerCommand("dori-lane-model", {
+    description: "Explicitly change one idle lane's model from its native Dori head",
+    async handler(args, ctx) {
+      if (ctx.agent.kind !== "main" || role !== "dori" || !stateDir || !doriConfig) {
+        ctx.ui.notify("/dori-lane-model works only in the native main Dori head", "warning");
+        return;
+      }
+      const parts = args.trim().split(/\s+/);
+      if (parts.length !== 2) {
+        ctx.ui.notify("Usage: /dori-lane-model <lane-key> <provider/id>. Pause the lane first.", "warning");
+        return;
+      }
+      savePane(ctx);
+      const pane = process.env.HC_TERMINAL_ID || process.env.HERDR_PANE_ID;
+      const head = pane ? readPaneState(stateDir, pane) : null;
+      if (!head || head.pid !== process.pid || head.sessionId !== ctx.sessionManager.getSessionId()) {
+        ctx.ui.notify("MODEL_SWITCH_REFUSED: this head has no owned native pane record", "warning");
+        return;
+      }
+      const result = await requestLaneModelSwitch(
+        { config: doriConfig, registry: new Registry(stateDir), run, clock: realClock, env: process.env },
+        parts[0]!,
+        parts[1]!,
+        head,
+      );
+      ctx.ui.notify(result.lines.join("\n"), result.code === 0 ? "info" : "warning");
+    },
+  });
+
+  pi.registerCommand("dori-model-apply", {
+    description: "Apply a single pending head-authorized idle lane model request",
+    async handler(args, ctx) {
+      const parts = args.trim().split(/\s+/);
+      if (
+        parts.length !== 2 ||
+        ctx.agent.kind !== "main" ||
+        role !== "lane" ||
+        !stateDir ||
+        modelChanging ||
+        modelSwitch?.nonce === parts[1]
+      )
+        return;
+      const binding = modelProfile;
+      if (!binding) {
+        ctx.ui.notify("MODEL_SWITCH_REFUSED: reopen this lane with a process-owned model profile first", "warning");
+        return;
+      }
+      const idleProblem = (): string | undefined => {
+        if (!ctx.isIdle() || agentStatus !== "idle") return "native lane is not idle";
+        if (approvals.size || ctx.hasPendingMessages()) return "native lane has an approval or queued input";
+        if (!["none", "paused", "complete", "dropped"].includes(goal.status)) return "pause the native goal first";
+        const jobs = ctx.getAsyncJobSnapshot();
+        if (
+          !jobs ||
+          jobs.running.length ||
+          jobs.delivery.queued ||
+          jobs.delivery.delivering ||
+          jobs.delivery.pendingJobIds.length ||
+          binding.owner.getAsyncJobTree()?.running.length !== 0
+        )
+          return "native asynchronous or descendant work is pending or unknown";
+        if (
+          binding.ownerApi.AgentRegistry.global().get(binding.agentId)?.session !== binding.owner ||
+          binding.sessionId !== ctx.sessionManager.getSessionId() ||
+          binding.sessionFile !== ctx.sessionManager.getSessionFile()
+        )
+          return "native owning session changed";
+        return undefined;
+      };
+      const busy = idleProblem();
+      if (busy) {
+        ctx.ui.notify(`MODEL_SWITCH_REFUSED: ${busy}`, "warning");
+        return;
+      }
+      const previousError = binding.error;
+      const previousProfileError = modelProfileError;
+      let accepted = false;
+      modelChanging = true;
+      binding.error = "explicit idle model change is in progress";
+      try {
+        savePane(ctx);
+        const pane = process.env.HC_TERMINAL_ID || process.env.HERDR_PANE_ID;
+        const self = pane ? readPaneState(stateDir, pane) : null;
+        if (!self || self.pid !== process.pid) return;
+        const request = await claimModelSwitch(new Registry(stateDir), parts[0]!, parts[1]!, self, (receipt) => {
+          const changed = idleProblem();
+          if (changed) throw new Error(changed);
+          accepted = true;
+          modelSwitch = receipt;
+          savePane(ctx);
+        });
+        if (!request) return;
+        if (request.priorSnapshotId !== (binding.snapshot?.id ?? null))
+          throw new Error("snapshot changed since the head request");
+        const changed = idleProblem();
+        if (changed) throw new Error(changed);
+        const requested = exactModelIdentity(request.requested)!;
+        const available = ctx.modelRegistry.getAvailableForProviders(new Set([requested.provider.toLowerCase()]));
+        const matches = available.filter(
+          (candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === request.requested.toLowerCase(),
+        );
+        const selected =
+          matches.find((candidate) => candidate.id === requested.id) ?? (matches.length === 1 ? matches[0] : undefined);
+        if (!selected?.provider) throw new Error("requested exact native model is unavailable or ambiguous");
+        if (!(await pi.setModel(selected))) throw new Error("native model setter refused the requested model");
+        if (
+          binding.owner.sessionManager.getSessionId() !== binding.sessionId ||
+          binding.owner.sessionManager.getSessionFile() !== binding.sessionFile
+        )
+          throw new Error("native session changed during model selection");
+        const actual = binding.owner.agent.state.model;
+        if (actual?.provider !== selected.provider || actual.id !== selected.id)
+          throw new Error("native model readback did not confirm the explicit selection");
+        const observed = { provider: selected.provider, id: selected.id };
+        let snapshot: ModelSnapshot;
+        if (binding.snapshot)
+          snapshot = {
+            ...binding.snapshot,
+            id: request.nonce,
+            model: observed,
+            configuredThinkingLevel: binding.owner.configuredThinkingLevel() ?? null,
+            thinkingLevel: pi.getThinkingLevel() ?? null,
+            capturedAt: new Date().toISOString(),
+            provenance: { ...binding.snapshot.provenance, kind: "idle-switch", requested: request.requested },
+          };
+        else {
+          const captured = captureModelSnapshot(binding.modules, binding.owner.settings, {
+            kind: "idle-switch",
+            requested: request.requested,
+            model: observed,
+            configuredThinkingLevel: binding.owner.configuredThinkingLevel(),
+            thinkingLevel: pi.getThinkingLevel(),
+          });
+          if (typeof captured === "string") throw new Error(captured);
+          snapshot = captured;
+        }
+        const failed =
+          (await bindModelProfile(binding.modules, binding.owner.settings, binding.file, snapshot)) ??
+          checkModelProfile(
+            binding.modules,
+            binding.owner.settings,
+            binding.file,
+            snapshot,
+            binding.owner.agent.state.model,
+          ) ??
+          thinkingSelectionDrift(snapshot, binding.owner.configuredThinkingLevel());
+        if (failed) throw new Error(failed);
+        recordModelSnapshot(binding, snapshot);
+        binding.snapshot = snapshot;
+        binding.error = modelProfileError = undefined;
+        modelSwitch = { nonce: request.nonce, status: "changed" };
+      } catch (error) {
+        const reason = errorText(error);
+        if (accepted) {
+          modelSwitch = { nonce: parts[1]!, status: "failed", reason };
+          // The earlier state stands only when native reads back the unchanged session, model and pinned profile;
+          // anything else holds as it is, without rollback or reselection.
+          const owner = binding.ownerApi.AgentRegistry.global().get(binding.agentId)?.session;
+          const unchanged =
+            binding.snapshot !== undefined &&
+            owner === binding.owner &&
+            binding.owner.sessionManager.getSessionId() === binding.sessionId &&
+            binding.owner.sessionManager.getSessionFile() === binding.sessionFile &&
+            checkModelProfile(
+              binding.modules,
+              binding.owner.settings,
+              binding.file,
+              binding.snapshot,
+              binding.owner.agent.state.model,
+            ) === null &&
+            thinkingSelectionDrift(binding.snapshot, binding.owner.configuredThinkingLevel()) === null;
+          if (unchanged) {
+            binding.error = previousError;
+            modelProfileError = previousProfileError;
+          } else binding.error = modelProfileError = reason;
+        }
+        ctx.ui.notify(`MODEL_SWITCH_FAILED: ${reason}`, "warning");
+      } finally {
+        modelChanging = false;
+        if (!accepted) {
+          binding.error = previousError;
+          modelProfileError = previousProfileError;
+        }
+        savePane(ctx);
+      }
+    },
   });
 
   const z = pi.zod;
@@ -692,6 +1332,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
 
   try {
     const config = await loadConfig();
+    doriConfig = config;
     stateDir = config.stateDir;
     // An empty ompUlwPath means a standalone omp-ulw extension already serves every session; importing it again
     // would register its commands and handlers twice.

@@ -13,6 +13,12 @@
     "paths": {
       "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader": [
         "../test/fixtures/omp-native-host/node_modules/@oh-my-pi/pi-coding-agent/dist/types/extensibility/extensions/loader.d.ts"
+      ],
+      "@oh-my-pi/pi-coding-agent/config/settings": [
+        "../test/fixtures/omp-native-host/node_modules/@oh-my-pi/pi-coding-agent/dist/types/config/settings.d.ts"
+      ],
+      "@oh-my-pi/pi-coding-agent/session/settings": [
+        "../test/fixtures/omp-native-host/node_modules/@oh-my-pi/pi-coding-agent/dist/types/session/settings.d.ts"
       ]
     }
   },

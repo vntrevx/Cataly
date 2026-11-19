@@ -1,9 +1,11 @@
+import { realpathSync } from "node:fs";
 import { mayRunOmpArgv } from "../../../../src/runtime/omp-argv.ts";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 import { withDeliveryLock } from "./delivery-lock.ts";
 import { type FlowDeps, movedOn } from "./done-flow.ts";
-import type { GoalStatus } from "./lane-state.ts";
+import type { GoalStatus, PaneState } from "./lane-state.ts";
 import { trustedPaneState } from "./session-id.ts";
+import { verifiedModelSnapshot } from "./launch-model.ts";
 import { runtimesOf } from "./run.ts";
 import { readScreen, sendVerified, statusLookup } from "./sessions.ts";
 import { type Lane, type LaneStatus, sessionOf, statusOf, withStatus } from "./registry.ts";
@@ -33,15 +35,44 @@ const goalCommand = async (
   ref: SessionRef,
   text: string,
   target: GoalStatus,
-): Promise<"confirmed" | "unconfirmed" | "failed"> => {
+  lane: Lane,
+): Promise<
+  | "confirmed"
+  | "unconfirmed"
+  | "failed"
+  | "identity unverified before send"
+  | "identity changed during readback"
+  | "native model snapshot unverified"
+> => {
   const rts = runtimesOf(deps);
   const omp = mayRunOmpArgv(deps.config.agentCommand);
+  const sameSession = (state: PaneState | null): boolean => {
+    if (state?.sessionId !== lane.session || state?.role !== "lane") return false;
+    try {
+      return realpathSync(state.cwd) === realpathSync(lane.cwd ?? deps.config.defaultCwd);
+    } catch {
+      return false;
+    }
+  };
+  if (omp) {
+    const state = await trustedPaneState(deps.run, deps.config.stateDir, ref, rts);
+    if (lane.session && !sameSession(state)) return "identity unverified before send";
+    const profileFile = lane.modelProfileFile ?? state?.modelProfileFile;
+    if (
+      target === "active" &&
+      (profileFile || lane.modelReadback?.source !== "launch-preflight") &&
+      (!profileFile || !state || state.role !== "lane" || typeof verifiedModelSnapshot(state, profileFile) === "string")
+    )
+      return "native model snapshot unverified";
+  }
   const shown = omp ? NO_GOAL_SHOWN : target === "paused" ? PAUSED_SHOWN : RESUMED_SHOWN;
   const before = count(await readScreen(rts, ref, 200), shown);
   if ((await sendVerified(rts, deps.clock, ref, text)) === "failed") return "failed";
   for (let attempt = 0; attempt < READ_BACK_TRIES; attempt++) {
     if (omp) {
-      const goal = (await trustedPaneState(deps.run, deps.config.stateDir, ref, rts))?.goal?.status;
+      const state = await trustedPaneState(deps.run, deps.config.stateDir, ref, rts);
+      if (lane.session && !sameSession(state)) return "identity changed during readback";
+      const goal = state?.goal.status;
       if (goal === target || goal === "none") return "confirmed";
       if ((goal === "complete" || goal === "dropped") && count(await readScreen(rts, ref, 200), shown) > before)
         return "confirmed";
@@ -55,13 +86,14 @@ const goalCommand = async (
 const beforePause = (lane: Lane): LaneStatus =>
   lane.pausedFrom && PAUSABLE.has(lane.pausedFrom) ? lane.pausedFrom : "working";
 
-export const pauseLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<PauseResult> => {
+export const pauseLane = async (deps: FlowDeps, lane: Lane, note: string, locked = false): Promise<PauseResult> => {
   const status = statusOf(lane);
   if (status === "paused") return { lane, lines: [`PAUSED ${lane.key} already`], code: 0 };
   if (!PAUSABLE.has(status)) return { lane, lines: [`NOT_PAUSED ${lane.key} is ${status}, not working`], code: 2 };
   const ref = sessionOf(lane);
   if (!ref) return { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} has no pane, so its goal cannot be paused`], code: 3 };
   // The whole pause holds the lane's delivery lock, so a `dori tell` cannot start a turn after its Escape.
+  if (locked) return pauseHeld(deps, lane, ref, status, note);
   const held = await withDeliveryLock(deps, lane.key, () => pauseHeld(deps, lane, ref, status, note));
   if (held.ok) return held.value;
   return {
@@ -82,7 +114,7 @@ const pauseHeld = async (
 ): Promise<PauseResult> => {
   // The goal first: stopping the running turn must not hand off to a goal continuation. sendVerified delivers it under
   // the status it reads, so a working agent gets it as queued input ("working"), an idle one under "idle".
-  const goal = await goalCommand(deps, ref, "/goal pause", "paused");
+  const goal = await goalCommand(deps, ref, "/goal pause", "paused", lane);
   if (goal !== "confirmed")
     return { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} /goal pause ${goal}; lane left ${status}`], code: 3 };
   const at = new Date(deps.clock.now()).toISOString();
@@ -105,15 +137,33 @@ const pauseHeld = async (
   };
 };
 
-export const resumeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<PauseResult> => {
+export const resumeLane = async (deps: FlowDeps, lane: Lane, note: string, locked = false): Promise<PauseResult> => {
+  if (!locked) {
+    const held = await withDeliveryLock(deps, lane.key, async () => {
+      const current = await deps.registry.read(lane.key);
+      return resumeLane(deps, current ?? lane, note, true);
+    });
+    return held.ok
+      ? held.value
+      : { lane, lines: [`RESUME_UNVERIFIED ${lane.key} delivery lock: ${held.holder}`], code: 3 };
+  }
   if (statusOf(lane) !== "paused")
     return { lane, lines: [`NOT_RESUMED ${lane.key} is ${statusOf(lane)}, not paused`], code: 2 };
   const ref = sessionOf(lane);
   if (!ref)
     return { lane, lines: [`RESUME_UNVERIFIED ${lane.key} has no pane, so its goal cannot be resumed`], code: 3 };
-  const goal = await goalCommand(deps, ref, "/goal resume", "active");
+  const goal = await goalCommand(deps, ref, "/goal resume", "active", lane);
   if (goal !== "confirmed")
-    return { lane, lines: [`RESUME_UNVERIFIED ${lane.key} /goal resume ${goal}; lane left paused`], code: 3 };
+    return {
+      lane,
+      code: 3,
+      lines: [
+        `RESUME_UNVERIFIED ${lane.key} /goal resume ${goal}; lane left paused`,
+        ...(goal === "native model snapshot unverified"
+          ? ["Fix: park/reopen the lane, then select its model explicitly with /dori-lane-model before resuming"]
+          : []),
+      ],
+    };
   const now = deps.clock.now();
   // Quiet time starts again at the resume: a long pause must not turn into an instant nudge.
   const resumed = await deps.registry.transition(lane, (current) =>

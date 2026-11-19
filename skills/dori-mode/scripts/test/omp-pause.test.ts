@@ -2,10 +2,22 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 
 import { freshnessTick } from "../src/freshness.ts";
-import { paneStatePath, readPaneState } from "../src/lane-state.ts";
+import { paneStatePath, readPaneState, type PaneState } from "../src/lane-state.ts";
+import { createModelProfileFile } from "../src/model-profile.ts";
+import { snapshotFor } from "./model-snapshot-fixture.ts";
 import { pauseLane, resumeLane } from "../src/pause.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
-import { agentIn, depsFor, fakeClock, hcSent, laneState, newWorld, sent, withState, type World } from "./fakes.ts";
+import {
+  agentIn,
+  depsFor,
+  fakeClock,
+  hcSent,
+  laneState as baseLaneState,
+  newWorld,
+  sent,
+  withState,
+  type World,
+} from "./fakes.ts";
 import { hcTerm } from "./hc-runner.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
@@ -26,8 +38,26 @@ const working: Lane = {
 const deps = (ms = T0) => depsFor(world, fakeClock(ms), state.dir);
 const escapes = () => world.calls.filter((c) => c[2] === "send-keys" && c[4] === "escape");
 
+let nativeModel: Partial<PaneState>;
+const laneState = (dir: string, pane: string, patch: Partial<PaneState> = {}): void =>
+  baseLaneState(dir, pane, { ...nativeModel, ...patch });
+
 beforeEach(async () => {
   state = withState();
+  const snapshot = snapshotFor("fixture/saved");
+  nativeModel = {
+    agentStatus: "idle",
+    modelProfileFile: createModelProfileFile(state.dir),
+    modelSnapshot: snapshot,
+    modelReadback: {
+      requested: snapshot.model,
+      observed: snapshot.model,
+      status: "matched",
+      billing: "unknown",
+      checkedAt: snapshot.capturedAt,
+      source: "native-extension",
+    },
+  };
   world = newWorld();
   world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent: "omp", agent_status: "idle" }];
   agentIn(world, "w:p7");

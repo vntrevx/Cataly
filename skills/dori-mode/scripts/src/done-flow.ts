@@ -141,6 +141,12 @@ export const closeLane = async (
   lesson?: Pick<LessonInput, "rule" | "evidence">,
   locked = false,
 ): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+  if (!locked) {
+    const held = await withDeliveryLock(deps, lane.key, () => closeLane(deps, lane, note, lesson, true));
+    return held.ok
+      ? held.value
+      : { closed: false, lines: [`HELD ${lane.key} a message to the lane is in flight (${held.holder})`] };
+  }
   const exists = deps.exists ?? existsSync;
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
@@ -149,13 +155,10 @@ export const closeLane = async (
   // The close is committed before anything irreversible, and only if nothing moved the lane on since it was read: an
   // objection or new claim written meanwhile keeps it open, and one written after this finds it closed.
   const at = iso(deps.clock);
-  const commit = () =>
-    deps.registry.transition(lane, (current) => withStatus(current, "closed", note, at, { closedAt: at }));
-  // A tell is sent before the close or refused after it (`locked`: the watch holds the lock); a held lock refuses.
-  const held = locked ? { ok: true as const, value: await commit() } : await withDeliveryLock(deps, lane.key, commit);
-  if (!held.ok)
-    return { closed: false, lines: [...lines, `HELD ${lane.key} a message to the lane is in flight (${held.holder})`] };
-  if (!held.value) return { closed: false, lines: [...lines, await movedOn(deps, lane, "close")] };
+  const closed = await deps.registry.transition(lane, (current) =>
+    withStatus(current, "closed", note, at, { closedAt: at }),
+  );
+  if (!closed) return { closed: false, lines: [...lines, await movedOn(deps, lane, "close")] };
   // Cost is recorded on a best-effort basis: a failing hook is printed and never keeps a verified lane open.
   try {
     const cost = await new Supervision({ ...deps, stateDir: deps.config.stateDir }, deps.config.supervision).close(
@@ -178,8 +181,9 @@ export const closeLane = async (
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
     cleanup.push(r.code === 0 ? `worktree ${wt} removed` : `worktree ${wt} kept: ${r.err.slice(0, 120)}`);
   }
-  const receipt = { checks, note, cleanup };
-  await deps.registry.update(lane.key, (current) => current && { ...current, receipt });
+  const receipt = { outcome: "done", checks, note, cleanup };
+  if (!(await deps.registry.transition(closed, (current) => ({ ...current, receipt }))))
+    return { closed: false, lines: [...lines, await movedOn(deps, closed, "close receipt (cleanup finished)")] };
   if (lesson) {
     try {
       const added = new Lessons(deps.config.stateDir).add({ ...lesson, lane: lane.key, cwd: root }, deps.clock.now());

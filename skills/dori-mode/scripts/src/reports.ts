@@ -19,7 +19,10 @@ export type Activity = {
   readonly state: "running" | "stalled";
   readonly text: string;
 };
-export type LaneEvent = Report | Activity;
+export type LaneEvent =
+  | Report
+  | Activity
+  | { readonly type: "reopen"; readonly key: string; readonly at: string; readonly text: string };
 export type Progress = {
   readonly state: ProgressState;
   readonly lastReport: Report | null;
@@ -73,6 +76,7 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
     throw new ReportError(`invalid report record for ${key}`);
   }
   const common = { key, at: value.at, text: value.text };
+  if (value.type === "reopen") return { ...common, type: "reopen" };
   if (value.type === "report" && "kind" in value && isReportKind(value.kind)) {
     return { ...common, type: "report", kind: value.kind };
   }
@@ -107,7 +111,10 @@ export class Reports {
         if (!(error instanceof SyntaxError || error instanceof ReportError)) throw error;
         throw new ReportError(`${path}:${index + 1}: ${error.message}`);
       }
-      if (event.type === "report") {
+      if (event.type === "reopen") {
+        lastReport = null;
+        progress = { state: "running", lastReport, lastEvent: event };
+      } else if (event.type === "report") {
         lastReport = event;
         progress = { state: reportState(event.kind), lastReport: event, lastEvent: event };
       } else if (!progress || progress.state === "running" || progress.state === "stalled") {

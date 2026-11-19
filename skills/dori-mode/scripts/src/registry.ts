@@ -4,7 +4,8 @@ import { basename, join } from "node:path";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 import { takeLock } from "./checkpoint-lock.ts";
 import type { BudgetLimits } from "./supervision-observe.ts";
-
+import type { ModelReadback, ModelSnapshot } from "./lane-state.ts";
+import type { ModelSwitchRequest } from "./model-switch-state.ts";
 // A writer holds a lane's lock for one synchronous read and write, so a short wait covers any live contention.
 const LOCK_WAIT_MS = 5_000;
 const LOCK_RETRY_MS = 10;
@@ -29,11 +30,19 @@ export type Lane = {
   readonly pane?: string | undefined;
   readonly tab?: string;
   readonly session?: string;
+  readonly sessionFile?: string;
   readonly sessionVia?: string;
+  /** A parked lane's reason and operator-defined condition; never an automatic resume trigger. */
+  readonly hold?: { readonly reason: string; readonly resumeWhen?: string };
   readonly brief: string;
   readonly done: string;
   readonly cwd?: string;
   readonly model?: string;
+  readonly modelReadback?: ModelReadback;
+  readonly modelSnapshot?: ModelSnapshot;
+  readonly modelProfileFile?: string;
+  /** The head's one pending lane-model request; validated where read, cleared only by its nonce. */
+  readonly modelSwitchRequest?: ModelSwitchRequest;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly claim?: Claim;
@@ -86,11 +95,8 @@ const sameSession = (a: SessionRef | undefined, b: SessionRef): boolean =>
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
-/**
- * The lane's status generation: every status change (a claim, objection, verification, pause, resume or close) goes
- * through `withStatus` and appends one history entry, even when the status stays the same, as a second objection does.
- * Bookkeeping fields (freshness notes, `claim.emitted`, a receipt) leave it as it is.
- */
+// withStatus advances the generation for every transition, even repeated objections or reopen.
+// Bookkeeping fields (freshness notes, claim.emitted, receipt) leave the generation unchanged.
 const generation = (lane: Lane): string => `${lane.openedAt} ${lane.history?.length ?? 0} ${statusOf(lane)}`;
 
 export const withStatus = (
@@ -120,10 +126,7 @@ export class Registry {
     return this.readNow(key);
   }
 
-  /**
-   * Runs `fn` under the lane's writer lock. `fn` is synchronous, so the lock is held for one read and one write and
-   * never across pane, git or network I/O. Another writer's lock is waited out; a dead or stale one is taken over.
-   */
+  /** One synchronous read/write under the lane lock; wait for live holders, take over dead or stale ones. */
   private async locked<T>(key: string, fn: () => T): Promise<T> {
     mkdirSync(this.dir, { recursive: true });
     const lock = `${this.path(key)}.lock`;
@@ -176,10 +179,7 @@ export class Registry {
     });
   }
 
-  /**
-   * Read-modify-write of one lane under its lock: `fn` gets the stored lane (or null) and returns the lane to store, or
-   * null to leave it. A lane held across I/O is changed here, never written back whole, so a change meanwhile is kept.
-   */
+  /** Atomic read-modify-write after I/O: read the latest lane (or null); return null to preserve it unchanged. */
   update(key: string, fn: (current: Lane | null) => Lane | null): Promise<Lane | null> {
     return this.locked(key, () => {
       const next = fn(this.readNow(key));
@@ -192,7 +192,7 @@ export class Registry {
    * A change decided from `seen`, applied only while the stored lane has `seen`'s status generation (else null): a later
    * claim, objection, pause or close, even a second objection to a not-done lane, is never overwritten.
    */
-  transition(seen: Lane, next: (current: Lane) => Lane): Promise<Lane | null> {
+  transition(seen: Lane, next: (current: Lane) => Lane | null): Promise<Lane | null> {
     return this.update(seen.key, (current) =>
       current && generation(current) === generation(seen) ? next(current) : null,
     );

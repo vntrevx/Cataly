@@ -47,6 +47,10 @@ const USAGE = `dori <command> [options]
   decision digest                      one line per open decision, to paste into a status message
   close  <key> [--note TEXT] [--lesson TEXT] [--evidence PATH]
                                        close now (Done signals must read back live); an optional lesson never blocks it
+  close  <key> --abandon --reason TEXT  explicitly abandon without claiming Done; preserve worktrees
+  park   <key> --note TEXT [--resume-when TEXT]  pause and close a native OMP lane; preserve its session and worktrees
+  reopen <key> [--note TEXT]           reopen its exact OMP session; verify the goal resume
+  holds  [--thread REF]                read-only paused/parked ledger; conditions never auto-resume
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
   resume <key> [--note TEXT]           undo pause: goal resumed (read back), lane back to its earlier status
   tell   <key> --text TEXT             one verified message to the lane's agent: TOLD (exit 0), TELL_UNCONFIRMED (exit 3,
@@ -117,6 +121,8 @@ const flags = parseArgs({
     evidence: { type: "string" },
     reason: { type: "string", multiple: true },
     note: { type: "string" },
+    abandon: { type: "boolean" },
+    "resume-when": { type: "string" },
     write: { type: "boolean" },
     loop: { type: "string" },
     gateway: { type: "boolean" },
@@ -172,6 +178,9 @@ switch (command) {
   case "claim-done":
   case "object-done":
   case "close":
+  case "park":
+  case "reopen":
+  case "holds":
   case "pause":
   case "resume":
   case "tell":
