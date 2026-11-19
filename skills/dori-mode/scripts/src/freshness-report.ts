@@ -9,16 +9,6 @@ export const lastReportLine = (screen: string, key: string): string | null => {
   return hits.at(-1)?.replace(/["'\])\s,]+$/, "") ?? null;
 };
 
-export const scrubForThread = (line: string, home: string): string =>
-  line
-    .replace(/^\[REPORT\]\s*[^|]*\|\s*[^|]*\|\s*/, "")
-    .split(home)
-    .join("~")
-    .replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)")
-    .replace(/\bw\w+:p\w+\b/g, "(pane)")
-    .replace(/`/g, "'")
-    .trim();
-
 // A report is a line that starts with [REPORT], or the last quoted element of an argv row, the shape lanes are told
 // to send it in: an argv array ending in "lead:p1", "[REPORT] key | kind | text". Instructions
 // and prompts that quote the grammar mid-sentence are dropped before parsing, so an example is never posted as the

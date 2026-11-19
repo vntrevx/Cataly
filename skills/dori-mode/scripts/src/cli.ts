@@ -1,10 +1,8 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { releaseVersion } from "../../../../src/release/version.ts";
-
 import type { Command } from "./cli-context.ts";
 import type { FlowDeps } from "./done-flow.ts";
-
 const USAGE = `dori <command> [options]
 
   harness <command> [args...]          dispatch every upstream harness command (up, inbox, duty, review, merge, loop, backlog, migrate...)
@@ -13,6 +11,10 @@ const USAGE = `dori <command> [options]
   launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
          [--wall-minutes N|none] [--token-limit N|none] [--cost-limit N|none] [--activity-path FILE ...] [--dry-run]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+  status [<key>] [--json]              read-only lane, runtime, journal, decision and monitor observations
+  board discord|telegram [--to ID] [--thread ID] [--lane KEY] [--loop MIN] [--message ID]
+                                       opt-in single status message; reuse its ID, edit only changed content
+  eta <prefix> [--json]                historical closed-lane elapsed time (at least 3 samples)
   sync   [--write]                     registry vs live panes; read-only unless --write
   boot                                 read-only check after a restart: Slack auth, vanished panes, journals, open worklog items and decisions, stale watches
   doctor [--json] [--repo owner/repo]   read-only configuration, adoption and monitor diagnostics; exit 1 on warnings
@@ -105,7 +107,6 @@ const config = await loadConfig().catch((e: unknown) =>
   e instanceof ConfigError ? die(e.message) : Promise.reject(e),
 );
 const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
-
 const flags = parseArgs({
   args: rest,
   allowPositionals: true,
@@ -165,7 +166,6 @@ const flags = parseArgs({
     self: { type: "string" },
   },
 });
-
 let commands: Readonly<Record<string, Command>> = {};
 switch (command) {
   case "report":
@@ -184,6 +184,11 @@ switch (command) {
   case "resume":
   case "tell":
     commands = (await import("./cli-lanes.ts")).laneCommands;
+    break;
+  case "status":
+  case "board":
+  case "eta":
+    commands = (await import("./cli-status.ts")).statusCommands;
     break;
   case "sync":
   case "boot":
@@ -220,7 +225,6 @@ switch (command) {
     break;
 }
 const handler = Object.hasOwn(commands, command) ? commands[command] : undefined;
-
 try {
   if (handler) await handler(makeCli(command, rest, flags, config, deps));
   else {
@@ -234,9 +238,12 @@ try {
   const { journalErrors } = await import("./cli-journal.ts");
   const { decisionErrors } = await import("./cli-decisions.ts");
   const { prErrors } = await import("./cli-pr.ts");
+  const { statusErrors } = await import("./cli-status.ts");
   if (
     e instanceof LaunchError ||
-    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors].some((type) => e instanceof type)
+    [...messengerErrors, ...journalErrors, ...decisionErrors, ...prErrors, ...statusErrors].some(
+      (type) => e instanceof type,
+    )
   )
     die((e as Error).message);
   throw e;

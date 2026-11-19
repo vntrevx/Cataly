@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 
 import { anchoredReportLine } from "../src/freshness-report.ts";
-import { freshnessTick } from "../src/freshness.ts";
+import { freshnessTick, scrubForThread } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
+
+test("freshness keeps its public scrubber for status consumers", () => {
+  expect(scrubForThread("[REPORT] demo-lane | milestone | /home/reader/project w1:p2", "/home/reader")).toBe(
+    "~/project (pane)",
+  );
+});
 
 // Rendered rows in the shapes real panes show: an instruction, a prompt, argv, and a wrapped report.
 const instruction =

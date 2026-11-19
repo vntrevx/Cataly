@@ -191,6 +191,20 @@ The cursor is committed under `<stateDir>/discord-inbound/<channelId>.json` in a
 
 Only a remote history-read 403/404 removes an unavailable discovered channel; explicitly configured targets still fail on those responses. Content conversion, delivery and local cursor failures are not permission loss. In Gateway mode they stop intake before later queued messages can advance past the failed message. If an already watched channel's cursor disappears, intake reports the missing-state error rather than silently dropping live messages or recreating a baseline. First-seen scope-all channels still seed their new cursors as described above.
 
+An owner message to an exact Discord channel or thread registered to one
+native OMP lane goes to that lane as a Dori Monitor message, with no terminal
+keystrokes and no new setting. The receiver commits the lane inbox before
+advancing its cursor; pending messages survive a resume of the same session.
+Unbound or ambiguous channels keep the lead's existing intake behavior.
+An exact reply to an open ASK takes precedence over ordinary chat.
+
+To take over an independently configured receiver, stop the old reader before
+starting that exact lane once with `--dori-lane-receiver`. This uses its
+existing explicit receiver state and credentials, requires a separate mailbox
+and cursor root, and remembers the takeover on that session only. The normal
+shared receiver requires no flag. Restart the shared receiver when upgrading
+so it uses the new routing logic.
+
 #### Answering native OMP ASK from Discord
 
 On a supported Discord connection, ASK is enabled automatically once

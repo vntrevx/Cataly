@@ -1,5 +1,6 @@
 /** The Discord Gateway plumbing shared by `dori presence discord` and `dori inbound discord --gateway`. */
 import { die, every } from "./cli-context.ts";
+import { withDeliveryLock } from "./delivery-lock.ts";
 import { Discord } from "./messenger/discord.ts";
 import { DiscordChannels, inboundContext } from "./messenger/discord-channels.ts";
 import type { GatewayClock, GatewaySocket } from "./messenger/discord-gateway.ts";
@@ -10,8 +11,10 @@ import type { Emit } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
 import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
+import { discordLaneTarget, openDiscordLaneInbox } from "./messenger/discord-lane-inbox.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { recordOwes } from "./owes.ts";
+import { Registry } from "./registry.ts";
 import { realClock } from "./run.ts";
 
 export const openDiscordSocket = (url: string): GatewaySocket => {
@@ -77,7 +80,9 @@ export const discordInboundCommand = async (
   if (!all && channelIds.length === 0) discordInboundEnv("DORI_DISCORD_CHANNEL_ID", env["DORI_DISCORD_CHANNEL_ID"]);
   const token = env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
   const queue = discordInboundQueue(stateDir);
+  const delivery = { registry: new Registry(stateDir), clock: realClock };
   let receiver: DiscordAskReceiverPublication | undefined;
+  let laneInbox: ReturnType<typeof openDiscordLaneInbox> | undefined;
   try {
     if (!gateway && queue.first())
       die("Discord inbound has pending Gateway work; restart with --gateway before REST mode");
@@ -103,6 +108,20 @@ export const discordInboundCommand = async (
     const emit: Emit = async (message, signal) => {
       signal?.throwIfAborted();
       if (routeDiscordAskReply(stateDir, message, ownerId)) return;
+      const lane = await discordLaneTarget(stateDir, message.channel);
+      if (lane) {
+        const held = await withDeliveryLock(delivery, lane.key, async () => {
+          signal?.throwIfAborted();
+          const current = await discordLaneTarget(stateDir, message.channel);
+          if (current?.key !== lane.key || current.session !== lane.session) return false;
+          signal?.throwIfAborted();
+          laneInbox ??= openDiscordLaneInbox(stateDir);
+          laneInbox.add(lane.session, message);
+          return true;
+        });
+        if (!held.ok) throw new Error("Discord lane delivery is locked; cursor not advanced");
+        if (held.value) return;
+      }
       const text = where
         ? `${formatDiscordInbound(message)}\n${formatInboundContext(message, await where(message.channel))}`
         : formatDiscordInbound(message);
@@ -154,6 +173,7 @@ export const discordInboundCommand = async (
     );
   } finally {
     receiver?.close();
+    laneInbox?.close();
     queue.close();
   }
 };

@@ -29,8 +29,9 @@ import {
 import type { MonitorSpec } from "../src/update/deployment-types.ts";
 import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./bootstrap.ts";
 import { RuntimeHealthWriter } from "./deployment-health.ts";
-import { DiscordAsk } from "./discord-ask.ts";
+import { DiscordAsk, routeFor } from "./discord-ask.ts";
 import { type AskLane, automaticDiscordAskRoute, bindAskLane } from "./discord-ask-auto.ts";
+import { DiscordLane } from "./discord-lane.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
 import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
 import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from "../skills/dori-mode/scripts/src/owes";
@@ -40,11 +41,13 @@ interface SessionEntry {
   customType?: string;
   data?: unknown;
   mode?: string;
+  content?: unknown;
 }
 export interface DoriContext {
   cwd: string;
   mode: string;
   abort(): void;
+  isIdle?(): boolean;
   agent: { kind: "main" | "sub"; id: string; parentId?: string };
   model?: PromptModel;
   sessionManager: { getSessionId(): string; getSessionFile(): string | undefined; getBranch(): SessionEntry[] };
@@ -218,6 +221,10 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     description: "Private session-bound monitor bootstrap for an explicit managed legacy handoff",
     type: "string",
   });
+  pi.registerFlag("dori-lane-receiver", {
+    description: "Take over an existing separately scoped Discord receiver for this lane",
+    type: "boolean",
+  });
 
   let role: DoriRole | undefined;
   let stateDir: string | undefined;
@@ -241,7 +248,9 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   let paneWritten: string | undefined;
   const approvals = new Set<string>();
   const discordAsk = new DiscordAsk();
+  const discordLane = new DiscordLane();
   let askLane: AskLane | undefined;
+  let ownsDiscordReceiver = false;
   let managedRestorePending = process.env.DORI_MANAGED_STARTUP === "1";
   const monitors = new Monitors(
     async (content, delivery) => {
@@ -333,11 +342,26 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     }
     if (paneHeldByAnother(paneId)) return;
     const sessionFile = ctx.sessionManager.getSessionFile();
+    let discordReceiver: PaneState["discordLaneReceiver"];
+    if (role === "lane" && ownsDiscordReceiver) {
+      try {
+        const route = routeFor(stateDir, session.id);
+        if (route && route.receiverStateDir !== stateDir)
+          discordReceiver = { channel: route.channel, stateDir: route.receiverStateDir };
+      } catch {
+        // Invalid explicit routes do not advertise ownership or start intake.
+      }
+    }
     writePaneState(stateDir, {
       paneId,
       role,
       sessionId: session.id,
       ...(sessionFile ? { sessionFile } : {}),
+      ...(role === "lane" && askLane ? { discordLaneKey: askLane.key } : {}),
+      ...(role === "lane" && ctx.mode === "tui" && !requiredLoadError && !ownsDiscordReceiver
+        ? { discordLaneInbox: true }
+        : {}),
+      ...(discordReceiver ? { discordLaneReceiver: discordReceiver } : {}),
       cwd: ctx.cwd,
       pid: process.pid,
       startedAt: session.startedAt,
@@ -436,6 +460,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     });
     pi.on("tool_execution_end", (event) => discordAsk.finish(event));
     pi.on("session_shutdown", () => {
+      discordLane.stop();
       discordAsk.clear();
       monitors.stopAll();
       retirePane();
@@ -445,6 +470,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   const syncMain = async (ctx: DoriContext, branch: readonly SessionEntry[], bootstrap = false): Promise<void> => {
     const sessionId = ctx.sessionManager.getSessionId();
     // Monitors belong to the Dori session that started them; their lines must not wake whatever session comes next.
+    discordLane.stop();
     if (session?.id !== sessionId || !role) discordAsk.clear();
     if (session?.id !== sessionId || role !== "dori") monitors.stopAll();
     if (session?.id !== sessionId) {
@@ -478,6 +504,15 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     }
     await syncTools();
     savePane(ctx);
+    if (role === "lane" && stateDir && !requiredLoadError)
+      discordLane.start(
+        pi,
+        stateDir,
+        ctx,
+        askLane,
+        ownsDiscordReceiver,
+        () => agentStatus === "idle" && approvals.size === 0 && goal.status !== "blocked" && goal.status !== "paused",
+      );
     if (role === "dori") {
       restoreMonitors(ctx, branch, managedRestorePending);
       managedRestorePending = false;
@@ -565,6 +600,22 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
                 (kind, binding) => pi.appendEntry(kind, binding),
               )
             : undefined;
+        const id = ctx.sessionManager.getSessionId();
+        ownsDiscordReceiver =
+          role === "lane" &&
+          branch.some(
+            (entry) =>
+              entry.type === "custom" && entry.customType === "omp-dori:discord-lane-receiver" && entry.data === id,
+          );
+        if (
+          role === "lane" &&
+          !ownsDiscordReceiver &&
+          eventName === "session_start" &&
+          pi.getFlag("dori-lane-receiver") === true
+        ) {
+          pi.appendEntry("omp-dori:discord-lane-receiver", id);
+          ownsDiscordReceiver = true;
+        }
         if (carried && role === "dori" && recorded === undefined) {
           for (const spec of session?.monitorSpecs ?? [])
             pi.appendEntry(MONITOR_ENTRY, {

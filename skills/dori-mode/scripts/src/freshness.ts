@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { anchoredReportLine, scrubForThread } from "./freshness-report.ts";
+import { anchoredReportLine } from "./freshness-report.ts";
 import { checkPausedLane } from "./pause.ts";
 import { runtimesOf } from "./run.ts";
 import { readScreen } from "./sessions.ts";
@@ -10,6 +10,16 @@ import { tellLane } from "./tell.ts";
 import { type Lane, sessionOf, statusOf } from "./registry.ts";
 import { type Progress, ReportError, reportLine, Reports } from "./reports.ts";
 import { Supervision, type SupervisionResult } from "./supervision.ts";
+
+export const scrubForThread = (line: string, home: string): string =>
+  line
+    .replace(/^\[REPORT\]\s*[^|]*\|\s*[^|]*\|\s*/, "")
+    .split(home)
+    .join("~")
+    .replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)")
+    .replace(/\bw\w+:p\w+\b/g, "(pane)")
+    .replace(/`/g, "'")
+    .trim();
 
 export type SweepAct = {
   readonly kind:

@@ -178,8 +178,31 @@ export const readMonitorManifests = (
         const data = JSON.parse(readFileSync(path, "utf8")) as Manifest["data"];
         if (data.version !== 1 || !Array.isArray(data.monitors) || typeof data.sessionId !== "string")
           throw new Error("invalid monitor metadata");
-        // A null or non-object entry makes the whole file unreadable here, never a crash in the cleanup pass.
-        if (!data.monitors.every((m: unknown) => typeof m === "object" && m !== null && !Array.isArray(m)))
+        // Shared status/cleanup fields must be typed. Legacy argv retains command-based matching when unusable.
+        if (
+          !data.monitors.every((value: unknown) => {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+            const monitor = value as Monitor;
+            for (const field of [
+              "name",
+              "cwd",
+              "filter",
+              "monitorId",
+              "sessionId",
+              "description",
+              "command",
+              "path",
+              "target",
+            ] as const)
+              if (monitor[field] !== undefined && typeof monitor[field] !== "string") return false;
+            for (const field of ["persistent", "suspended", "deliveryPaused"] as const)
+              if (monitor[field] !== undefined && typeof monitor[field] !== "boolean") return false;
+            return (
+              monitor.expiresAt === undefined ||
+              (typeof monitor.expiresAt === "number" && Number.isFinite(monitor.expiresAt))
+            );
+          })
+        )
           throw new Error("invalid monitor entry");
         const omp = dir === ompDir;
         if (

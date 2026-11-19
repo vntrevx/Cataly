@@ -30,7 +30,7 @@ export function bindAskLane(
     : undefined;
 }
 
-async function laneChannel(stateDir: string, sessionId: string, binding: AskLane | undefined) {
+export async function laneChannel(stateDir: string, sessionId: string, binding: AskLane | undefined) {
   const pane = process.env["HC_TERMINAL_ID"]
     ? parseRef(`hc:${process.env["HC_TERMINAL_ID"]}`)
     : parseRef(process.env["HERDR_PANE_ID"] ?? "");

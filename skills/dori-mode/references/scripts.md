@@ -20,6 +20,27 @@ On Linux, `sampleHost` also exposes `cgroup`: the tightest visible ancestor hard
 
 Each budget retains raw `currentBytes` and `chargedFreePct`. Admission uses `freePct`, an available-budget estimate that subtracts clean, unmapped file cache from current usage: `max(0, file - shmem - file_mapped - file_dirty - file_writeback)`, capped at current usage. This prevents ordinary file caching from permanently holding a constrained account. It does not treat shared, mapped, dirty, writeback or kernel pages as free, and it is an estimate rather than an allocation guarantee. v1 uses `cache`/`mapped_file` and the matching local or `total_*` counters according to `memory.use_hierarchy`. Missing or malformed cache statistics set `cgroup.incomplete` and keep the raw charged budget as the conservative fallback. Missing limit or usage readings also set `incomplete`; readable budgets still apply, and unavailable budgets retain the existing host fallback rather than becoming an invented zero or unlimited value. No supported cgroup membership yields `version: null`. A resolved v2 hierarchy retains `version: 2` when memory interface files are absent: missing non-root limits set `incomplete: true`, while absent interfaces at the hierarchy root are expected. A fully readable unlimited hierarchy has null budgets with `incomplete: false`. Cgroup namespaces can hide outer ancestors, so only the visible hierarchy is covered. macOS does not read cgroup files.
 
+## Lane status and one-message boards
+
+`dori status [<key>] [--json]` reads open lanes, or one named lane including a closed lane. It joins registry state, PID/session-verified OMP runtime state, report/checkpoint journals, open decisions and recorded monitor metadata. Unreadable registry files and invalid status fields are isolated with `registryIncomplete: true`; healthy lanes remain visible, and an empty incomplete view is unknown rather than "none open". Each source keeps its timestamp; unavailable runtime or journal observations are unknown, not idle or zero. Runtime identity must also match the lane's recorded session binding (`sync --write` establishes it); an unbound lane is unknown even if its pane contains a live agent. Damaged decision or monitor metadata makes its count unknown rather than reporting the remaining readable subset as a complete count. Monitor flags and expiry values are validated before counting. Legacy argv that boot can match through command still makes status counts unknown when malformed. Monitor metadata does not prove a process is running. The last sweep note and nudge/post timestamps are recorded evidence, not a prediction of the next freshness action. Status never runs a sweep, writes journals, sends messages or reads private session transcripts.
+
+`dori eta <key-prefix> [--json]` summarizes historical opening-to-close elapsed minutes for that explicit prefix. Fewer than three valid closed lanes produces no estimate; otherwise the median, range and sample count are shown. An incomplete registry also suppresses the estimate and identifies the readable sample count. This is not a completion promise.
+
+Start a board only when its destination is authorized:
+
+```sh
+dori board discord --thread 123456789 --loop 2
+dori board telegram --to -100123456789 --thread 42 --loop 2
+```
+
+The existing `DORI_DISCORD_TOKEN` or `DORI_TELEGRAM_TOKEN` supplies authentication. Discord accepts numeric channel IDs with `--to` or a thread ID with `--thread`; Telegram requires a numeric chat ID. `--lane KEY` limits the view. Omit `--loop` (or set it to `0`) for one update; a positive value is minutes. No board starts with installation, boot, status or launch. Supervise the command with a native monitor if desired; stopping that monitor stops updates.
+
+The board rejects unsupported options or extra positional arguments. A supplied `--lane` must name exactly one valid lane; it never falls back to all lanes.
+
+Each destination owns one private `<stateDir>/boards/<sha256>.json` record. A lock serializes writers, and the message ID survives restart. Unchanged content sends nothing; changed content edits that message, never splits it. The bounded summary scrubs local paths and pane IDs, neutralizes mentions, and states when lanes were omitted. HTTP(S) evidence links retain their origin and path, not URL userinfo, query strings or fragments. Because spaces can belong to an unquoted path, text from a local path to the end of its non-URL segment is omitted conservatively. Its timestamp is the last successful content update, not a heartbeat: a stopped updater leaves that timestamp unchanged.
+
+Before a send/edit, a durable pending record is written. An ambiguous create or any failed edit stops the command and holds future calls rather than creating another message. A definitively rejected initial create (HTTP/API 4xx, including exhausted 429 backoff) removes only its own uncreated intent; after correcting permissions, a new explicit invocation can create the board. There is no automatic resend. Even an edit with a known ID requires explicit acknowledgement after failure: inspect the destination and pass `--message ID`. Discord scopes an edit to the selected channel. Telegram edits identify only the chat and message, not the topic, so a Telegram recovery ID must already be recorded for the exact board destination. An ambiguous Telegram create without a recorded ID stays pending; the command cannot safely attach an unbound ID. A missing message is not automatically replaced. Do not delete a pending record or retry a create merely because the response was lost. API acceptance is not proof that the owner read the board.
+
 ## Configuration
 
 `~/.dori/config.json` (or the path in `DORI_CONFIG`). Every field is optional; see `config.example.json`. `DORI_STATE_DIR`, `DORI_LEAD_PANE` and `DORI_RUNTIME` override the file.
@@ -238,7 +259,11 @@ A paused lane is skipped by `freshness`: no nudge, no post. Only `dori resume` e
 Both print `PAUSED` / `RESUMED` and exit 0 on success. A lane in any other state is refused (`NOT_PAUSED` / `NOT_RESUMED`, exit 2), and a second `pause` is a no-op. A lane claimed, objected to or closed while the goal command ran is left as that writer put it (`LANE_CHANGED`, exit 3); the goal command itself was confirmed, so check the lane before retrying. `claim-done` and `object-done` on a paused lane move it out of `paused` in the registry while its goal stays paused.
 
 ### `dori tell <key> --text TEXT`
-Sends the lead's message to a registered lane's session once through `sendVerified`. Ordinary messages from `claim-done`, `object-done` and freshness share its durable delivery fence. Explicit `pause` and `resume` remain control operations: they can still run and never resolve a message hold. A normal tell prints one line:
+Sends the lead's message to a registered lane's session once through `sendVerified`. Ordinary messages from `claim-done`, `object-done` and freshness share its durable delivery fence. Explicit `pause` and `resume` remain control operations: they can still run and never resolve a message hold.
+
+This is a fence for Dori automation (`tell`, freshness nudges, and claim/objection notices), not a global native input lock. Direct owner messages through native Discord and native ASK replies keep their existing admission rules, so an uncertain automated send cannot cut off owner control or change the native ASK contract. Owner input does not resolve the record: later Dori automation remains held until the exact-ID release.
+
+A normal tell prints one line:
 
 | Line | Exit | Meaning |
 |---|---|---|
@@ -255,7 +280,7 @@ Before runtime delivery, a private, atomically replaced and fsynced `<stateDir>/
 
 Watch notification refusals and uncertainty are stdout `LANE_NOTIFY_HELD` / `LANE_NOTIFY_UNCONFIRMED` events, not just stderr warnings. Freshness emits `HELD` for a refused nudge and `DELIVERY-ERROR` for a state/runtime error; watch emits `LANE_WATCH_ERROR` for a failed settle. Use the filters in [setup](setup.md#5-monitors) and reconcile these events even when the lane already changed to not-done. State transitions do not prove delivery.
 
-If `.delivery` is corrupt or unreadable, leave sends blocked. Inspect the original session and recover the exact last record from trusted evidence; do not delete the file or invent a replacement ID to bypass its hold. If that record cannot be recovered, ask the operator how to recover state. Once a valid uncertain record is restored, the normal exact-ID release remains a separate explicit decision.
+If `.delivery` is corrupt or unreadable, leave these automated sends blocked. Inspect the original session and recover the exact last record from trusted evidence; do not delete the file or invent a replacement ID to bypass its hold. If that record cannot be recovered, ask the operator how to recover state. Once a valid uncertain record is restored, the normal exact-ID release remains a separate explicit decision.
 
 The three tell modes are mutually exclusive. A later message rejected by the fence is not queued for automatic delivery after resolution. Neither activity nor a pause/resume changes the hold, and resolving it does not resume a paused lane.
 

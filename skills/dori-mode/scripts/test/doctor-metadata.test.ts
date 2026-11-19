@@ -70,11 +70,14 @@ test("doctor skips malformed stored lane keys before reporting supervision or re
     thread: "none",
     openedAt: new Date(now).toISOString(),
   };
+  const malformedLaunched = "bad-launched\nWARN forged journal status";
+  const malformedAdopted = "bad-adopted\nWARN forged adopted status";
   for (const [file, key, reportProtocol] of [
     ["launched", "launched", "jsonl-v1"],
     ["adopted", "adopted", undefined],
-    ["bad-launched", "bad-launched\nWARN forged journal status", "jsonl-v1"],
-    ["bad-adopted", "bad-adopted\nWARN forged adopted status", undefined],
+    [malformedLaunched, malformedLaunched, "jsonl-v1"],
+    [malformedAdopted, malformedAdopted, undefined],
+    ["different-file", "different-key", "jsonl-v1"],
   ]) {
     writeFileSync(join(registryDir, `${file}.json`), JSON.stringify({ ...record, key, reportProtocol }));
   }
@@ -93,7 +96,7 @@ test("doctor skips malformed stored lane keys before reporting supervision or re
       { check: "supervision", severity: "WARN", detail: "no configured ceilings for active lanes: launched" },
     ]);
     expect(result.findings.filter((finding) => finding.check === "registry")).toEqual([
-      { check: "registry", severity: "WARN", detail: "lanes=2 unreadable=0 invalidKeys=2" },
+      { check: "registry", severity: "WARN", detail: "lanes=2 unreadable=1 invalidKeys=2" },
     ]);
     expect(result.findings.map((finding) => finding.detail).join("\n")).not.toContain("forged");
     expect(readJournal.mock.calls).toEqual([["launched"]]);

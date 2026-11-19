@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- Add read-only lane status, historical ETA summaries and opt-in single-message Discord/Telegram boards. Boards validate options before delivery, omit URL credentials and parameters, and retain pending holds; Telegram recovery requires an existing message binding.
+
 - Add read-only `dori doctor` configuration, adoption and monitor diagnostics, canonical `monitor-presets`, and an advisory boot summary. Doctor checks external terminal metadata and verifies the native monitor's restart policy; documented filters include supervision and loop-error events.
 
 - Read-only `dori sync` shares one successful process-table snapshot and one herdr pane list within a pass. Later passes, failed reads, hc group queries and all `--write` observations stay fresh.
+
+- Route ordinary Discord messages for an unambiguously connected lane to its own OMP session. Existing connections need no new setting; exact ASK replies still resolve the open form instead of starting a turn.
 
 - Supported native OMP ASK forms are automatically available through an already connected Discord receiver with an unambiguous destination. Existing settings and explicit routes stay in place; only the configured owner's reply to the exact message answers that ASK.
 
@@ -208,4 +212,4 @@ The terminal-admission integration group uses a test-local 20-second budget for 
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
 
-- Lane messages persist a private local dispatch identity before delivery. An uncertain send fences later tells, automatic nudges and claim/objection notifications across restart; explicit pause/resume remains available. `dori tell <key> --status` inspects the latest record, and `--resolve ID --note WHY` releases only that exact hold without confirming, cancelling or replaying the original action. These IDs are not native submission/run receipts.
+- Lane messages persist a private local dispatch identity before delivery. An uncertain send fences later tells, automatic nudges and claim/objection notifications across restart; explicit pause/resume remains available. `dori tell <key> --status` inspects the latest record, and `--resolve ID --note WHY` releases only that exact hold without confirming, cancelling or replaying the original action. These IDs are not native submission/run receipts. Direct native Discord owner input and ASK replies keep their existing admission rules and do not clear the automation hold.

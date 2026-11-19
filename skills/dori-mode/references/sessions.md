@@ -79,6 +79,8 @@ For a registered lane, `dori tell <key> --text TEXT` does steps 1, 3 and 4 throu
 
 An unconfirmed dispatch now keeps a private, durable local request ID. It fences later `tell` messages, automatic nudges, and claim/objection notifications even after restart; a rejected later message is not queued. `dori tell <key> --status` shows that record. Only `dori tell <key> --resolve REQUEST_ID --note REASON` ends that exact hold: it does not prove the action ran, cancel the original input, or resend anything. Inspect the original session and obtain the operator's decision before releasing it. Ordinary activity cannot clear a hold. Explicit pause/resume remains available, and releasing a hold does not resume a paused lane. See the scripts reference for statuses, errors and concurrency.
 
+This hold covers Dori automation, not direct native owner input. Native Discord owner messages and native ASK replies retain their existing admission rules so the owner can still control the session. They do not release the uncertain record; later tells, nudges and claim/objection notices remain held until an exact-ID release.
+
 ## Watching
 
 - Sessions that turn blocked or ask a question: answer them or bring them to the owner.

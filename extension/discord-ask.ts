@@ -24,7 +24,7 @@ type ObjectMap = Record<string, unknown>;
 const record = (value: unknown): value is ObjectMap =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-function routeFor(stateDir: string, session: string): DiscordAskRoute | false | undefined {
+export function routeFor(stateDir: string, session: string): DiscordAskRoute | false | undefined {
   const raw = readPrivateAskFile(join(stateDir, "discord-ask.json"), 64 * 1_024);
   if (raw === undefined) return undefined;
   const config: unknown = JSON.parse(raw);
@@ -47,6 +47,20 @@ function routeFor(stateDir: string, session: string): DiscordAskRoute | false | 
   return { channel, owner, tokenFile, tokenFileFormat, receiverStateDir };
 }
 
+export function discordAskToken(route: DiscordAskRoute): string {
+  if ("token" in route) return route.token;
+  const contents = readPrivateAskFile(route.tokenFile, 16_384);
+  const token =
+    route.tokenFileFormat === "dotenv"
+      ? /^(?:export[ \t]+)?DORI_DISCORD_TOKEN=(?:"([\w.-]+)"|'([\w.-]+)'|([\w.-]+))[ \t]*\r?$/m
+          .exec(contents ?? "")
+          ?.slice(1)
+          .find(Boolean)
+      : contents?.trim();
+  if (!token || !/^[\w.-]+$/.test(token)) throw new Error("Invalid Discord ASK bot token file");
+  return token;
+}
+
 const requestSignal = (signal: AbortSignal) => AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
 
 async function askOnDiscord(
@@ -60,20 +74,7 @@ async function askOnDiscord(
     warn("This ASK form needs the local OMP dialog; nothing was posted to Discord.");
     return;
   }
-  let token: string | undefined;
-  if ("token" in route) {
-    token = route.token;
-  } else {
-    const contents = readPrivateAskFile(route.tokenFile, 16_384);
-    token =
-      route.tokenFileFormat === "dotenv"
-        ? /^(?:export[ \t]+)?DORI_DISCORD_TOKEN=(?:"([\w.-]+)"|'([\w.-]+)'|([\w.-]+))[ \t]*\r?$/m
-            .exec(contents ?? "")
-            ?.slice(1)
-            .find(Boolean)
-        : contents?.trim();
-    if (!token || !/^[\w.-]+$/.test(token)) throw new Error("Invalid Discord ASK bot token file");
-  }
+  const token = discordAskToken(route);
   signal.throwIfAborted();
   const discord = new Discord(fetchHttp, { now: Date.now, sleep: Bun.sleep }, token);
   const path = `/channels/${route.channel}/messages`;
