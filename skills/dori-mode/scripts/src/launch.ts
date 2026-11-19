@@ -5,6 +5,7 @@ import { BRIEF_START, footer, originalBrief, quoteForPane } from "./launch-foote
 import { mayRunOmpArgv } from "../../../../src/runtime/omp-argv.ts";
 import { parseRef } from "../../../../src/runtime/types.ts";
 import { openLaneSession } from "./launch-session.ts";
+import { selectionFor } from "./launch-selection.ts";
 import { LANE_KEY, type Lane, RESERVED_LANE_KEY, sessionFields, upgradeLane } from "./registry.ts";
 import { iso, runtimesOf } from "./run.ts";
 import { Reports } from "./reports.ts";
@@ -79,7 +80,6 @@ export const prepareLaunch = async (
   input: LaunchInput,
 ): Promise<{ readonly lane: Lane; readonly preamble: string; readonly warnings: string[] }> => {
   await validateLaunch(deps, input);
-  const model = input.model ?? deps.config.defaultModel;
   const cwd = input.cwd ?? deps.config.defaultCwd;
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
@@ -90,7 +90,8 @@ export const prepareLaunch = async (
     brief: input.brief,
     done: input.done,
     cwd,
-    model,
+    model: input.model ?? deps.config.defaultModel,
+    launchSelection: selectionFor(deps.config),
     openedAt: iso(deps.clock),
     reportProtocol: "jsonl-v1",
     budget: {

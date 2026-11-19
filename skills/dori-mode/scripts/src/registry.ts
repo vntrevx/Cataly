@@ -34,6 +34,7 @@ export type Lane = {
   readonly done: string;
   readonly cwd?: string;
   readonly model?: string;
+  readonly launchSelection?: import("./launch-selection.ts").LaunchSelection;
   readonly worktrees?: readonly string[];
   readonly status?: LaneStatus;
   readonly claim?: Claim;
