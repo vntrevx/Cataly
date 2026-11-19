@@ -50,6 +50,38 @@ Each budget retains raw `currentBytes` and `chargedFreePct`. Admission uses `fre
 
 Hooks are argv templates for your messenger CLI. `{thread}`, `{text}` and `{key}` are filled into each argument separately, so the text stays one argument whatever it contains.
 
+### Optional GPT-6.2 Sol Ultrafast lanes
+
+For an explicitly selected external OMP 19 runtime, configure OMP to load both
+the Cataly role extension and the
+[Codex 500k extension](https://github.com/dbc-hbin/omp-openai-codex-500k-extension).
+For an extension installed as a package, add its `index.ts` to OMP's `extensions`
+setting if the package is not auto-discovered. Keep the existing Cataly ULW
+configuration. Before changing either default, run `omp models openai-codex`
+with the **same** executable and OMP configuration that the lane will use.
+Continue only if it lists `openai-codex/gpt-6.2-sol-ultrafast`; the extension
+requires a Codex account that advertises Ultrafast.
+
+- For `dori launch`, set `"defaultModel": "openai-codex/gpt-6.2-sol-ultrafast"`
+  in Cataly's `config.json`. Keep `--model {model}` in `agentCommand` so
+  per-lane `--model` overrides still work.
+  To create the native goal before the first turn on external OMP 19, end that
+  template with `"--goal", "{prompt}"` instead of just `"{prompt}"`. Keep
+  OMP's `goal.enabled` on and do not pass a second positional prompt. This
+  setting is for fresh interactive lanes on the external runtime, not the
+  bundled OMP.
+- For `dori harness start`, set the external OMP configuration's
+  `modelRoles.default` to `openai-codex/gpt-6.2-sol-ultrafast`. This OMP default
+  also applies to other fresh sessions on that configuration that do not
+  select a model explicitly.
+
+For an unwrapped deployment whose `agentCommand` starts with `"omp"`, export
+`DORI_AGENT_ARGV='["/absolute/path/to/omp"]'` before invoking Cataly to select
+the same external executable for both paths. This does not replace managed
+wrappers or change running sessions. Setting a model ID alone does not
+install the extension or enable the tier. The 500,000-token window is a local
+context budget, not a server-side capacity increase.
+
 ## Library modules
 
 The CLI is a thin layer over typed modules you can import in your own scripts:

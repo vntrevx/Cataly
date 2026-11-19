@@ -62,3 +62,41 @@ plugin({ name: "handler-guard", setup(build) {
   expect(invalid.stderr.toString()).not.toContain("HANDLER_LOADED_BEFORE_ADMISSION");
   expect(invalid.stdout.toString()).toBe("");
 });
+
+test("an explicitly configured external OMP needs no native receipt, but the managed default still does", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "dori-cli-external-")));
+  roots.push(home);
+  const source = join(home, ".dori/releases/releases", `${"a".repeat(40)}-${"b".repeat(16)}`);
+  const root = resolve(import.meta.dir, "..");
+  mkdirSync(source, { recursive: true });
+  for (const tree of ["src", "skills/dori-mode/scripts/src"])
+    cpSync(join(root, tree), join(source, tree), { recursive: true });
+  cpSync(join(root, "package.json"), join(source, "package.json"));
+  const stateDir = join(home, "state");
+  mkdirSync(join(stateDir, "lanes"), { recursive: true });
+  writeFileSync(join(stateDir, "lanes/fixture.json"), JSON.stringify({ key: "fixture", status: "working" }));
+  const config = join(home, "config.json");
+  const invoke = (executable: string) => {
+    writeFileSync(config, JSON.stringify({ stateDir, agentCommand: [executable], ompUlwPath: "/explicit-ulw" }));
+    return Bun.spawnSync(
+      [process.execPath, join(source, "skills/dori-mode/scripts/src/cli.ts"), "checkpoints", "fixture"],
+      {
+        env: { HOME: home, PATH: process.env["PATH"], DORI_CONFIG: config, DORI_TELEMETRY: "0", DO_NOT_TRACK: "1" },
+        timeout: 15_000,
+      },
+    );
+  };
+  const external = invoke(join(home, "external/bin/omp"));
+  expect({ code: external.exitCode, out: external.stdout.toString(), err: external.stderr.toString() }).toEqual({
+    code: 0,
+    out: "[]\n",
+    err: "",
+  });
+
+  for (const executable of ["omp", join(home, ".dori/bin/omp"), join(source, "scripts/consumer/omp")]) {
+    const managed = invoke(executable);
+    expect(managed.exitCode).not.toBe(0);
+    expect(managed.stdout.toString()).toBe("");
+    expect(managed.stderr.toString()).toContain("consumer-manifests");
+  }
+});

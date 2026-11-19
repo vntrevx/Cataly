@@ -6,12 +6,13 @@ import { readSourceBundle } from "../src/release/source-bundle.ts";
 import { ULW_UPDATE_FILES, type UlwCandidate } from "../src/release/source-bundle-update.ts";
 import { RELEASE_REPOSITORY } from "./release-gate.ts";
 import { githubApi } from "./release-process.ts";
+import { canonicalUlwPull, existingUlwPull, type UlwApi } from "./update-ulw-existing.ts";
 
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>;
+type Api = UlwApi;
 
 /** A fresh trusted job publishes only three validated metadata files; candidate/upstream code never sees its token. */
 export async function publishUlwCandidate(source: string, directory: string, api: Api = githubApi): Promise<string> {
@@ -49,6 +50,19 @@ export async function publishUlwCandidate(source: string, directory: string, api
   const main = await api(`${root}/git/ref/heads/main`);
   if (!object(main) || !object(main["object"]) || main["object"]["sha"] !== candidate["sourceCommit"])
     throw new Error("Main advanced after ULW preparation; prepare a fresh candidate instead of rebasing automatically");
+  const branch = `automation/ulw-${candidate["commit"]}-${candidate["previousIdentity"].slice(0, 12)}`;
+  const refs = await api(`${root}/git/matching-refs/heads/${branch}`);
+  if (!Array.isArray(refs)) throw new Error("Invalid ULW branch lookup");
+  const exact = refs.filter((ref) => object(ref) && ref["ref"] === `refs/heads/${branch}`);
+  if (exact.length > 1) throw new Error("Ambiguous ULW branch identity");
+  const ref = exact[0];
+  const known = object(ref) && object(ref["object"]) && sha(ref["object"]["sha"]) ? ref["object"]["sha"] : undefined;
+  if (exact.length && !known) throw new Error("Invalid existing ULW branch");
+  const prior = await existingUlwPull(source, directory, candidate, branch, known, api);
+  if (prior) {
+    if (prior.state === "open") await dispatchIfUnrun(root, branch, known!, api);
+    return prior.url;
+  }
   const base = await api(`${root}/git/commits/${candidate["sourceCommit"]}`);
   if (!object(base) || !object(base["tree"]) || !sha(base["tree"]["sha"])) throw new Error("Invalid Dori base commit");
   const files = [];
@@ -62,12 +76,7 @@ export async function publishUlwCandidate(source: string, directory: string, api
   }
   const tree = await api(`${root}/git/trees`, "POST", { base_tree: base["tree"]["sha"], tree: files });
   if (!object(tree) || !sha(tree["sha"])) throw new Error("GitHub did not create the exact ULW tree");
-  const branch = `automation/ulw-${candidate["commit"]}-${candidate["previousIdentity"].slice(0, 12)}`;
-  const refs = await api(`${root}/git/matching-refs/heads/${branch}`);
-  if (!Array.isArray(refs)) throw new Error("Invalid ULW branch lookup");
   let commit: string;
-  const exact = refs.filter((ref) => object(ref) && ref["ref"] === `refs/heads/${branch}`);
-  if (exact.length > 1) throw new Error("Ambiguous ULW branch identity");
   if (exact.length) {
     const ref = exact[0];
     if (!object(ref) || !object(ref["object"]) || !sha(ref["object"]["sha"]))
@@ -94,14 +103,6 @@ export async function publishUlwCandidate(source: string, directory: string, api
     commit = created["sha"];
     await api(`${root}/git/refs`, "POST", { ref: `refs/heads/${branch}`, sha: commit });
   }
-  const pulls = await api(`${root}/pulls?state=all&head=${RELEASE_REPOSITORY.split("/")[0]}:${branch}&base=main`);
-  if (!Array.isArray(pulls) || pulls.length > 1) throw new Error("Ambiguous ULW pull request lookup");
-  if (pulls.length) {
-    const prior = pulls[0];
-    if (!object(prior) || typeof prior["html_url"] !== "string") throw new Error("Invalid existing ULW pull request");
-    if (prior["state"] === "open") await dispatchIfUnrun(root, branch, commit, api);
-    return prior["html_url"]; // A rejected/closed candidate is not reopened or retried every day.
-  }
   const pull = await api(`${root}/pulls`, "POST", {
     title: `chore(ulw): stage upstream ${candidate["commit"].slice(0, 12)}`,
     head: branch,
@@ -109,11 +110,10 @@ export async function publishUlwCandidate(source: string, directory: string, api
     draft: true,
     body: `Automatically prepared from Dori ${candidate["sourceCommit"]}.\n\nULW ${candidate["previous"]} → ${candidate["commit"]}. The current overlay applied without a Git three-way conflict and its new patch/tree/file hashes were verified. This is **not** a compatibility review or passing CI claim.\n\nThe existing CI workflow is dispatched on exact candidate ${commit}; all required checks and an independent review remain necessary before merge. Resolve any behavioral conflicts, update provenance as needed, then publish through the ordinary verified release process. No live install, consumer pointer, main ref, tag, release, or auto-merge setting was changed. Consumers only receive this through a separately reviewed compatible stable release.`,
   });
-  if (!object(pull) || typeof pull["html_url"] !== "string" || !object(pull["head"]) || pull["head"]["sha"] !== commit)
-    throw new Error("GitHub did not return the exact ULW pull request");
+  const createdPull = canonicalUlwPull(pull, branch, commit);
   // GITHUB_TOKEN-created PRs do not trigger pull_request workflows. Explicit workflow_dispatch does.
   await dispatchIfUnrun(root, branch, commit, api);
-  return pull["html_url"];
+  return createdPull.url;
 }
 
 async function dispatchIfUnrun(root: string, branch: string, commit: string, api: Api): Promise<void> {

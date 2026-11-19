@@ -79,6 +79,7 @@ export type MonitorSpec = {
   readonly argv: readonly string[];
   readonly filter: string;
   readonly cwd: string;
+  readonly restart?: "on-failure";
 };
 export type MonitorProcessIdentity = ProcessIdentity & { readonly name: string; readonly argv: readonly string[] };
 export type IntakeSpec = { readonly path: string; readonly monitor: string; readonly maxAgeMs: number };

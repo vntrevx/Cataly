@@ -41,6 +41,15 @@ test("holds an incomplete or duplicate required job instead of accepting partial
   }
 });
 
+test.each(["vntrevx/omp-dori", "other/Cataly", "vntrevx/Cataly-extra"])(
+  "holds successful-looking checks linked to a non-canonical repository: %s",
+  async (repository) => {
+    const f = githubFixture();
+    f.jobs[0]!["check_run_url"] = `https://api.github.com/repos/${repository}/check-runs/100`;
+    await expect(releaseGate(f.manifest, f.reads)).rejects.toThrow("did not succeed for the exact attempt");
+  },
+);
+
 test.each([
   { path: ".github/workflows/other.yml" },
   { event: "pull_request" },

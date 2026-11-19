@@ -5,7 +5,7 @@ import { shq } from "../src/delivery.ts";
 import { processStart } from "../src/release/process-cwd.ts";
 import { processFiles } from "../src/release/process-files.ts";
 import { bootId } from "../src/update/proc.ts";
-import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
+import { keptFor, processLineReader, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
 
 afterEach(removePruneFixtures);
 
@@ -30,7 +30,7 @@ const threadHolder = async (cwd: string, target: string, hold: "open" | "map") =
     stdin: "pipe",
     stdout: "pipe",
   });
-  expect(new TextDecoder().decode((await child.stdout.getReader().read()).value)).toBe("worker\n");
+  expect(await processLineReader(child.stdout)()).toBe("worker\n");
   // The leader is a zombie once it has left (a state in /proc, so polled for).
   while (readFileSync(`/proc/${child.pid}/stat`, "utf8").split(") ")[1]?.[0] !== "Z") await Bun.sleep(10);
   return child;

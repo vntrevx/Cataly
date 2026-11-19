@@ -34,6 +34,7 @@ import {
 import { Registry } from "../skills/dori-mode/scripts/src/registry.ts";
 import { type ReportKind, Reports, reportLine } from "../skills/dori-mode/scripts/src/reports.ts";
 import { selfSession } from "../src/runtime/registry.ts";
+import type { MonitorSpec } from "../src/update/deployment-types.ts";
 import { bootstrapMonitors, MONITOR_BOOTSTRAP_FLAG, recordedIntake } from "./bootstrap.ts";
 import { RuntimeHealthWriter } from "./deployment-health.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
@@ -174,13 +175,6 @@ const recordedGoal = (branch: readonly SessionEntry[]): PaneState["goal"] => {
   return goal;
 };
 
-type MonitorSpec = {
-  readonly name: string;
-  readonly argv: readonly string[];
-  readonly filter: string;
-  readonly cwd: string;
-};
-
 /**
  * Monitors the Dori session wants running, replayed from its `omp-dori:monitor` entries (start / stop). Monitor
  * processes die with omp; the record is what brings the Telegram poller back after herdr or `omp --resume`
@@ -196,7 +190,14 @@ const recordedMonitors = (branch: readonly SessionEntry[]): Map<string, MonitorS
       entry.data === null
     )
       continue;
-    const data = entry.data as { op?: unknown; name?: unknown; argv?: unknown; filter?: unknown; cwd?: unknown };
+    const data = entry.data as {
+      op?: unknown;
+      name?: unknown;
+      argv?: unknown;
+      filter?: unknown;
+      cwd?: unknown;
+      restart?: unknown;
+    };
     if (typeof data.name !== "string") continue;
     if (data.op === "stop") specs.delete(data.name);
     else if (
@@ -205,7 +206,13 @@ const recordedMonitors = (branch: readonly SessionEntry[]): Map<string, MonitorS
       typeof data.filter === "string" &&
       typeof data.cwd === "string"
     ) {
-      specs.set(data.name, { name: data.name, argv: data.argv.map(String), filter: data.filter, cwd: data.cwd });
+      specs.set(data.name, {
+        name: data.name,
+        argv: data.argv.map(String),
+        filter: data.filter,
+        cwd: data.cwd,
+        ...(data.restart === "on-failure" ? { restart: data.restart } : {}),
+      });
     }
   }
   return specs;
@@ -551,23 +558,24 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   const restoreMonitors = (ctx: DoriContext, branch: readonly SessionEntry[], managedStartup = false): void => {
     if (!session) return;
     const wanted = recordedMonitors(branch);
-    for (const running of monitors.list()) {
+    for (const running of monitors.specs()) {
       const spec = wanted.get(running.name);
       if (
         !spec ||
         JSON.stringify(spec.argv) !== JSON.stringify(running.argv) ||
         new RegExp(spec.filter).source !== running.filter ||
-        spec.cwd !== running.cwd
+        spec.cwd !== running.cwd ||
+        spec.restart !== running.restart
       )
         monitors.stop(running.name);
     }
-    const running = new Set(monitors.list().map((m) => m.name));
+    const running = new Set(monitors.specs().map((m) => m.name));
     const restored: string[] = [];
     const failed: string[] = [];
     for (const spec of wanted.values()) {
       if (running.has(spec.name)) continue;
       try {
-        monitors.start(spec.name, spec.argv, spec.filter, spec.cwd, session.id);
+        monitors.start(spec.name, spec.argv, spec.filter, spec.cwd, session.id, spec.restart);
         restored.push(spec.name);
       } catch (error) {
         failed.push(`${spec.name} (${errorText(error)})`);
@@ -624,6 +632,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
               argv: spec.argv,
               filter: spec.filter,
               cwd: spec.cwd,
+              ...(spec.restart ? { restart: spec.restart } : {}),
             });
           if (session?.intake) pi.appendEntry("omp-dori:intake", session.intake);
         }
@@ -694,7 +703,13 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
   });
 
   const z = pi.zod;
-  pi.registerTool<{ op: "start" | "stop" | "list"; name?: string; argv?: string[]; filter?: string }>({
+  pi.registerTool<{
+    op: "start" | "stop" | "list";
+    name?: string;
+    argv?: string[];
+    filter?: string;
+    restart?: "on-failure";
+  }>({
     name: "monitor",
     label: "Monitor",
     description: MONITOR_DESCRIPTION,
@@ -705,6 +720,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       name: z.string().optional().describe("monitor name (start, stop)"),
       argv: z.array(z.string()).optional().describe("command and arguments, run without a shell (start)"),
       filter: z.string().optional().describe("regular expression; matching output lines wake the session (start)"),
+      restart: z.enum(["on-failure"]).optional().describe("retry unexpected exits for this monitor only (start)"),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (role !== "dori" || ctx.agent.kind !== "main" || !session)
@@ -713,13 +729,14 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       if (params.op === "start") {
         if (!params.name || !params.argv || params.filter === undefined)
           throw new Error("start needs name, argv and filter");
-        const started = monitors.start(params.name, params.argv, params.filter, ctx.cwd, session.id);
+        const started = monitors.start(params.name, params.argv, params.filter, ctx.cwd, session.id, params.restart);
         pi.appendEntry(MONITOR_ENTRY, {
           op: "start",
           name: started.name,
           argv: started.argv,
           filter: started.filter,
           cwd: ctx.cwd,
+          ...(params.restart ? { restart: params.restart } : {}),
         });
         saveMonitorSpecs(recordedMonitors(ctx.sessionManager.getBranch()), ctx.sessionManager.getBranch());
         savePane(ctx);

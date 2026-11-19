@@ -19,7 +19,7 @@ import { cachePending } from "../src/release/native-cache-quarantine.ts";
 import { useHolds } from "../src/release/native-cache-uses.ts";
 import { bootId } from "../src/update/proc.ts";
 import { processCwds } from "../src/release/process-cwd.ts";
-import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
+import { keptFor, processLineReader, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
 import { script, setup } from "./install-setup.ts";
 import { nativeCacheFixture, overlayFixture, ownProcessCwds, ownProcessFiles } from "./source-bundle-setup.ts";
 
@@ -122,8 +122,7 @@ test("a lease and a working directory outlive a thread group's leader while its 
     "import ctypes,sys,threading\ndef work():\n  print('worker', flush=True); sys.stdin.readline()\n" +
     "print('leader', flush=True); sys.stdin.readline(); threading.Thread(target=work).start(); ctypes.CDLL(None).pthread_exit(None)\n";
   const child = Bun.spawn(["python3", "-c", code], { cwd: x.directory, stdin: "pipe", stdout: "pipe" });
-  const reader = child.stdout.getReader();
-  const line = async () => new TextDecoder().decode((await reader.read()).value);
+  const line = processLineReader(child.stdout);
   try {
     expect(await line()).toBe("leader\n");
     leaseNativeIdentity(c.home, x.identity, child.pid);

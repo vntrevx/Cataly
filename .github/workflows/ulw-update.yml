@@ -2,7 +2,8 @@ name: ULW update candidate
 
 on:
   schedule:
-    - cron: "17 3 * * *"
+    # 12:00 Asia/Seoul (KST, UTC+9). GitHub may delay scheduled runs.
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository == 'vntrevx/omp-dori'
+    if: github.repository == 'vntrevx/Cataly'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:

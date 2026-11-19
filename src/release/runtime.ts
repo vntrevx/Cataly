@@ -76,13 +76,13 @@ export function resolveConsumerOmpCommand(
   const doriHome = consumerReleaseHome(source);
   if (!doriHome) return configured;
   const paths = consumerPaths(home, doriHome);
-  const manifest = JSON.parse(readFileSync(join(paths.manifests, `${basename(source)}.json`), "utf8"));
-  if (manifest.requirements.omp !== "18.20.0") return configured;
   const first = configured[0] ?? "omp";
   const managed =
     first === join(paths.dori, "bin/omp") ||
     /^[a-f0-9]{40}-[a-f0-9]{16}\/scripts\/consumer\/omp$/.test(relative(paths.releases, first));
   if (first !== "omp" && !managed) return configured;
+  const manifest = JSON.parse(readFileSync(join(paths.manifests, `${basename(source)}.json`), "utf8"));
+  if (manifest.requirements.omp !== "18.20.0") return configured;
   assertNativeSource(source, home);
   return [
     join(source, "scripts/consumer/omp"),

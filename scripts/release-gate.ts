@@ -4,7 +4,7 @@ import { releaseVersion } from "../src/release/version.ts";
 import { object } from "../src/update/config.ts";
 import { githubApi, githubPages } from "./release-process.ts";
 
-export const RELEASE_REPOSITORY = "vntrevx/omp-dori";
+export const RELEASE_REPOSITORY = "vntrevx/Cataly";
 const REQUIRED = ["check", "e2e-herdr", "e2e-hc"];
 type Reads = { api: typeof githubApi; pages: typeof githubPages };
 
@@ -121,7 +121,7 @@ export async function releaseGate(
     const job = matches[0]!;
     const match =
       typeof job["check_run_url"] === "string"
-        ? /^https:\/\/api\.github\.com\/repos\/vntrevx\/omp-dori\/check-runs\/(\d+)$/.exec(job["check_run_url"])
+        ? /^https:\/\/api\.github\.com\/repos\/vntrevx\/Cataly\/check-runs\/(\d+)$/.exec(job["check_run_url"])
         : null;
     if (
       job["head_sha"] !== manifest.commit ||

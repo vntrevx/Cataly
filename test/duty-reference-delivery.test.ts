@@ -18,6 +18,7 @@ import { captureIo } from "./inbox-setup.ts";
 const MIN = 60_000;
 const MODES = ["agent prompt", "typed fallback"] as const;
 const EVIDENCE_CASES = MODES.flatMap((mode) => [" ", "  "].map((spaces) => [mode, spaces] as const));
+const WAITING_CASES = MODES.flatMap((mode) => ["current", "legacy"].map((schema) => [mode, schema] as const));
 
 // Use a real child process for every herdr call, including the failed prompt and subsequent typed fallback.
 async function referenceLane(mode: (typeof MODES)[number]) {
@@ -122,8 +123,10 @@ describe("full references through the herdr consumer", () => {
     }
   });
 
-  test.each(MODES)("full waiting target via %s before and after an upgrade", async (mode) => {
-    for (const legacy of [false, true]) {
+  test.each(WAITING_CASES)(
+    "full waiting target survives reporting, nudges, escalation, and audit via %s with %s records",
+    async (mode, schema) => {
+      const legacy = schema === "legacy";
       const s = await referenceLane(mode);
       const previous = process.env["DORI_PROMPTS_DIR"];
       try {
@@ -180,8 +183,8 @@ describe("full references through the herdr consumer", () => {
         else process.env["DORI_PROMPTS_DIR"] = previous;
         rmSync(s.d.store.root, { recursive: true });
       }
-    }
-  });
+    },
+  );
 
   test("a failed fallback Enter retains the exact target and queued identity, then submits without retyping", async () => {
     const s = await referenceLane("typed fallback");

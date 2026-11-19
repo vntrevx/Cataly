@@ -36,7 +36,7 @@ This distribution includes modified-copy patch excerpts for:
 - oh-my-pi (https://github.com/can1357/oh-my-pi), based on
   c308970263ae13744ea15ab67302e3dac840e266 / 18.20.0.
 - omp-ulw (https://github.com/dbc-hbin/omp-ulw), based on
-  33b375dc8d289d6fec944a8a5ee8f2db721a8c34.
+  6ec7ecd40b2b5667f37c9802999db1d12ebbc2ae.
 
 native-omp.lock/native-omp.patch and omp-ulw.overlay.lock/omp-ulw.patch bind
 those bases, patch digests, and resulting source identities. omp-ulw.lock

@@ -77,15 +77,14 @@ Consumers use the [verified release guide](docs/releases.md) and
 models and publication permissions. Consumer release management uses neither.
 Build fixed assets with `bun scripts/release.ts build --out DIST --prerelease`.
 The [exact-commit release procedure](docs/releases.md#building-and-publishing-releases)
-describes the publication gates, but those gates and the tag/scheduled workflows
-still require the repository identity `vntrevx/omp-dori`. They must be updated
-separately for `vntrevx/Cataly`: the renamed repository's tag and daily ULW jobs
-are currently skipped, and publication checks reject its new identity.
-This documentation change does not enable that automation.
+describes the publication gates. The tag/scheduled workflow guards, ULW publisher,
+and exact-commit release checks require the canonical identity `vntrevx/Cataly`;
+forks and the former repository name are not admitted as publication identities.
+The rename does not weaken the existing tag, commit, workflow, or check bindings.
 
 ULW preparation uses `bun scripts/update-ulw.ts --out /absolute/new-directory`.
-After the repository gates are updated, the daily workflow can propose a separate
-metadata-only draft and exact-head CI. It does not approve compatibility, merge
+The daily workflow checks at 03:00 UTC (12:00 KST, with possible GitHub scheduling
+delay) and can propose a separate metadata-only draft and exact-head CI. It does not approve compatibility, merge
 itself, publish a release, or update a user installation. Review conflicts and
 preserve notices and existing settings.
 

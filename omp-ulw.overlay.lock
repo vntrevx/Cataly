@@ -1,13 +1,13 @@
 {
   "version": 1,
   "repository": "https://github.com/dbc-hbin/omp-ulw.git",
-  "commit": "33b375dc8d289d6fec944a8a5ee8f2db721a8c34",
-  "patchSha256": "f419a9087fda0159e5493cd4fc005f7346deb193b75e300a651b5bda23c18145",
-  "resultTree": "9b0a020b9f46e8d7326ba7a3dbed70b45ee821f9",
+  "commit": "6ec7ecd40b2b5667f37c9802999db1d12ebbc2ae",
+  "patchSha256": "9d5bd547f8ad40266a255eb65a72a11d68a5aa74b006e25be227fc80063e093f",
+  "resultTree": "144a8cb3de8ed2c874b880479e3b164ae20e63f5",
   "files": [
     {
       "path": "CHANGELOG.md",
-      "sha256": "2860c9e741b8a3acadf20e76c7ba762295ec14452aa9944774cd9ce27ae8d565",
+      "sha256": "00bd404fd0d010fc24b2df7957880b79665293007723b8574ce7e4c795160f52",
       "executable": false
     },
     {
@@ -57,7 +57,7 @@
     },
     {
       "path": "presets.ts",
-      "sha256": "603167fc661adcf4665aa1093a2a33f6c0f10325754217930fb0f82e8bb44748",
+      "sha256": "cf2b8d8661c306ce8af972569e741ba71fa736abe6564e2d1038eb5274546f02",
       "executable": false
     },
     {
@@ -82,7 +82,7 @@
     },
     {
       "path": "tests/presets.test.ts",
-      "sha256": "f0cddd3adaac710b33b4b6beebe0939af4daf3663908d4110d557b75e682b615",
+      "sha256": "ffe424601e449a20454bf962f1e9b803545573df81d5d686acb4fa90747cb9a9",
       "executable": false
     },
     {

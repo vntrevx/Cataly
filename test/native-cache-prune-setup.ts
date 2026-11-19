@@ -16,6 +16,26 @@ export function removePruneFixtures(): void {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }
 
+/** A subprocess readiness line can be split across multiple pipe chunks. */
+export function processLineReader(stdout: ReadableStream<Uint8Array>): () => Promise<string> {
+  const reader = stdout.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  return async () => {
+    for (;;) {
+      const end = pending.indexOf("\n");
+      if (end !== -1) {
+        const line = pending.slice(0, end + 1);
+        pending = pending.slice(end + 1);
+        return line;
+      }
+      const { done, value } = await reader.read();
+      if (done) throw new Error("Subprocess exited before writing a complete readiness line");
+      pending += decoder.decode(value, { stream: true });
+    }
+  };
+}
+
 export type PruneFixture = {
   readonly root: string;
   readonly home: string;
@@ -34,7 +54,7 @@ export type PruneFixture = {
  * only the fixture's processes: the host's unreadable or privileged processes and its Dori writers (other
  * lanes' launches) stay out unless a test passes its own reader or process table.
  */
-export function pruneFixture(): PruneFixture {
+export function pruneFixture(files = ownProcessFiles): PruneFixture {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-native-prune-")));
   roots.push(root);
   const home = join(root, "home");
@@ -50,7 +70,7 @@ export function pruneFixture(): PruneFixture {
   const prune = (options: NativeCachePruneOptions = {}, more: readonly string[] = []): NativeCachePrune =>
     pruneNativeCache(home, [], [refs, ...more], {
       readCwds: ownProcessCwds,
-      files: ownProcessFiles,
+      files,
       table: () => "",
       graceMs: 0,
       ...options,

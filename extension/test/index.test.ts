@@ -236,7 +236,7 @@ describe("monitor restore", () => {
     const s = session("dori-r1");
     const first = await load({ session: s, flags: { "dori-role": "dori" } });
     await first.emit("session_start");
-    await monitorCall(first, tick);
+    await monitorCall(first, { ...tick, restart: "on-failure" });
     await first.emit("session_shutdown"); // omp exits: the monitor process dies with it
 
     // herdr restores the pane with `omp --resume`: a new process, no flag, nobody asks for the monitor again
@@ -248,6 +248,11 @@ describe("monitor restore", () => {
     });
     await until(() => resumed.messages.some((m) => m.content === "[tick] up"));
     expect(await monitorCall(resumed, { op: "list" })).toContain("tick (pid");
+    expect(s.entries.find((entry) => entry.customType === "omp-dori:monitor")?.data).toMatchObject({
+      op: "start",
+      name: "tick",
+      restart: "on-failure",
+    });
     await resumed.emit("session_shutdown");
   });
 
@@ -611,6 +616,41 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
     ).toEqual(["lane"]);
     expect(lane.userMessages).toEqual(["ulw fix it"]);
   });
+
+  test.each(["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.2-sol-ultrafast"])(
+    "native OMP loads the standalone %s preset without losing the retained host boundary",
+    async (id) => {
+      const { nativeComposition, SOL_MODEL } = await import("../../test/fixtures/omp-native-host/compose.ts");
+      const dori = join(import.meta.dir, "../index.ts");
+      const host = "intro\n⁂ Role\nHOST_ROLE\n⁂ Runtime\nrt\n⁂ Tool Policy\npolicy\n⁂ Workflow\nwf";
+      for (const { embedded, entries } of [
+        { embedded: true, entries: [dori] },
+        { embedded: false, entries: [dori, REAL_ULW] },
+        { embedded: false, entries: [REAL_ULW, dori] },
+      ]) {
+        useConfig(embedded ? REAL_ULW : "");
+        const base = [host, "Retained downstream context"];
+        const before = [...base];
+        const result = await nativeComposition(entries, base, {
+          role: "lane",
+          model: { ...SOL_MODEL, id, name: id },
+        });
+        if (!Array.isArray(result.first)) throw new Error("native OMP returned no GPT-6.2 prompt array");
+        const prompt = JSON.stringify(result.first);
+        expect(prompt).toContain("You are omp, a coding agent.");
+        expect(prompt).toContain("A follow-up question does not by itself authorize a change.");
+        expect(prompt.match(/<omp-model-preset>/g)).toHaveLength(1);
+        expect(prompt).not.toContain("HOST_ROLE");
+        expect(prompt).toContain("Retained downstream context");
+        // Dori's bookkeeping contract deliberately remains GPT-6.1 Sol only.
+        expect(prompt).not.toContain("<omp-dori-lane-bookkeeping>");
+        expect(result.first).toEqual(result.afterAll[0]);
+        expect(result.second).toEqual(result.first);
+        expect(result.afterAll[1]).toEqual(result.first);
+        expect(base).toEqual(before);
+      }
+    },
+  );
 
   test("native OMP composes Sol bookkeeping with the pinned preset and preserves excluded prompts", async () => {
     if (!process.env["DORI_TEST_OMP_ROOT"])

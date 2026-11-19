@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSourceBundle } from "../src/release/source-bundle.ts";
@@ -89,9 +89,12 @@ test("legacy unified patches are normalized without losing their authenticated o
 test("a conflicting new upstream holds without a candidate or changed source pins", async () => {
   const f = fixture();
   f.advance(true);
-  await expect(prepareUlwUpdate(f.source, f.output, f.remote)).rejects.toThrow("reviewed port");
+  await expect(prepareUlwUpdate(f.source, f.output, f.remote)).rejects.toThrow(
+    'reviewed port: automatic three-way application failed with conflicts in ["index.ts"]',
+  );
   expect(existsSync(f.output)).toBe(false);
   expect(ULW_UPDATE_FILES.map((file) => readFileSync(join(f.source, file)))).toEqual(f.original);
+  expect(readdirSync(f.root).filter((name) => name.startsWith(".ulw-update-"))).toEqual([]);
 });
 
 test("source lock tampering and uncommitted bound metadata are refused", async () => {
