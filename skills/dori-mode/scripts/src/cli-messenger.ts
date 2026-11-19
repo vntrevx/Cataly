@@ -6,6 +6,7 @@ import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudi
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
 import { ChannelPurposeError } from "./messenger/discord-channels.ts";
 import { discordPresence } from "./messenger/discord-presence.ts";
+import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
@@ -176,6 +177,35 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
   send,
   presence,
   inbound,
+  "inbound-abandon": async ({ key, positionals, strings, config }) => {
+    if (key !== "discord") die("inbound-abandon supports discord only");
+    const identity = positionals[1];
+    if (positionals.length !== 2 || !identity || !/^[1-9][0-9]{0,19}(?::[1-9][0-9]{0,19}){3}$/.test(identity))
+      return die("inbound-abandon needs discord and the exact bot:owner:channel:message source identity");
+    const reasons = strings("reason");
+    const reason = reasons[0];
+    if (reasons.length !== 1 || !reason?.trim()) return die("--reason needs one explicit operator abandonment reason");
+    const queue = discordInboundQueue(config.stateDir);
+    try {
+      const decision = queue.abandon(identity, reason);
+      console.log(
+        "ADMISSION_ABANDONED " +
+          JSON.stringify({
+            identity: decision.identity,
+            outcome: decision.outcome,
+            receipt: decision.receipt,
+            headFile: decision.headFile,
+            headPid: decision.headPid,
+            fingerprint: decision.fingerprint,
+            reason: decision.reason,
+            attemptedAt: decision.attemptedAt,
+            decidedAt: decision.decidedAt,
+          }),
+      );
+    } finally {
+      queue.close();
+    }
+  },
   thread: async (cli) => (cli.key === "discord" ? await threadDiscord(cli) : die("thread supports discord")),
   react: async (cli) => (cli.key === "discord" ? await reactDiscord(cli) : die("react supports discord")),
   channel: async (cli) => (cli.key === "discord" ? await channelDiscord(cli) : die("channel supports discord")),

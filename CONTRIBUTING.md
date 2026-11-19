@@ -170,6 +170,26 @@ Dori or lane roles, including direct dispatch, while ordinary sessions still
 reach the local provider. These tests neither use real provider credentials nor
 establish live TUI, messenger, provider, or external-user behavior.
 
+`bun test test/native-ingress.test.ts` uses the pinned host's public RPC client to
+launch its actual published CLI in a private HOME. The Dori extension and messenger
+CLI use real Bun IPC, transcript persistence, SQLite admission records, native tool
+approval, and persisted paused-goal state. A loopback OpenAI SSE provider supplies
+deterministic tool calls; a loopback Discord server records HTTP effects. A
+transparent monitor bridge can lose exactly one accepted dispatch ACK, allowing a
+process crash and session reconnect to prove recovery from the original receipt
+even after REST history disappears. The bridge never invents a native receipt.
+
+These cases also check head-absent cursor retention, ordered nonduplicate intake,
+explicit monitor stop, approval cancellation, and an unreadable send response that
+leaves the owner owe open after the remote effect. Only fixture-local monitor
+operations are automatically approved by the harness; write cancellation and bash
+approval use the real native UI request/response. Cancellation sends an explicit
+host UI dismissal with abort; pinned 18.20.0 does not dismiss tool approval on
+abort alone. A late approval must not authorize the cancelled write. External fetches are refused and
+no real credentials, accounts, provider billing, TUI, or messenger permissions are
+exercised. Failures print bounded `NATIVE_INGRESS_DIAGNOSTICS` with observed RPC,
+HTTP/IPC boundaries and native stderr before the isolated files are removed.
+
 ## Ready for review
 
 Use the [PR template](.github/pull_request_template.md). Keep one clear concern per

@@ -1,7 +1,9 @@
-import { Database } from "bun:sqlite";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { Message } from "./discord-inbound-api.ts";
+import { openDiscordQueue } from "./discord-inbound-database.ts";
 import { type DiscordInboundStore, fileDiscordInboundStore, isDiscordSnowflake } from "./discord-inbound-state.ts";
+import { discordRawFingerprint } from "./discord-source-fingerprint.ts";
+import { headAdmissionState, type HeadAdmissionStore } from "./head-admission-state.ts";
 import { MessengerError } from "./http.ts";
 
 export type DiscordInboundRecord = {
@@ -14,9 +16,13 @@ export type DiscordInboundRecord = {
   parent: string | null;
 };
 
-export type DiscordInboundQueue = {
+export type DiscordInboundQueue = Pick<
+  HeadAdmissionStore,
+  "unresolved" | "admission" | "attempt" | "receipt" | "abandon"
+> & {
   push(kind: "sync" | "message", data?: unknown, admittedAfter?: string, parent?: string): void;
   first(): DiscordInboundRecord | null;
+  has(channel: string, message: string): boolean;
   before(id: number): DiscordInboundRecord | null;
   nextOwner(channel: string, owner: string, through: string, after: string, row: number): DiscordInboundRecord | null;
   nextChannel(after: string): string | undefined;
@@ -25,6 +31,7 @@ export type DiscordInboundQueue = {
   /** Admission reads use seed=false so another still-pending older frame cannot be baselined away. */
   storeFor(channelId: string, seed?: boolean): DiscordInboundStore;
   remove(id: number): void;
+  commitReceipts(): void;
   close(): void;
 };
 
@@ -40,42 +47,10 @@ const storage = <T>(job: () => T): T => {
   }
 };
 
-const privateFile = (stat: Stats) => {
-  if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.nlink !== 1) {
-    throw new MessengerError("Discord inbound queue must be a private regular file owned by this user", 0);
-  }
-};
-
 /** Disk-backed FIFO: one decoded record and a bounded SQLite page cache, never one Promise per dispatch. */
-export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
+export const discordInboundQueue = (stateDir: string, nativeAdmission = false): DiscordInboundQueue =>
   storage(() => {
-    const dir = join(stateDir, "discord-inbound");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const stat = lstatSync(dir);
-    if (!stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
-      throw new MessengerError("Discord inbound queue directory must be private (0700) and owned by this user", 0);
-    }
-    const path = join(dir, "gateway.sqlite");
-    const existing = lstatSync(path, { throwIfNoEntry: false });
-    if (existing) privateFile(existing);
-    else {
-      // Closing an ordinary fd for an existing SQLite inode releases this process's other POSIX locks on it.
-      const fd = openSync(
-        path,
-        constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-        0o600,
-      );
-      try {
-        privateFile(fstatSync(fd));
-      } finally {
-        closeSync(fd);
-      }
-    }
-    for (const suffix of ["-wal", "-shm", "-journal"]) {
-      const sidecar = lstatSync(`${path}${suffix}`, { throwIfNoEntry: false });
-      if (sidecar) privateFile(sidecar);
-    }
-    const db = new Database(path);
+    const db = openDiscordQueue(stateDir);
     try {
       db.exec(
         "PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; " +
@@ -102,6 +77,15 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
             `CREATE INDEX IF NOT EXISTS pending_owner ON pending (${channelId}, ${author}, ${order}) WHERE kind = 'message'`,
         );
       })();
+      let admissions =
+        nativeAdmission || db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'admissions'").get()
+          ? headAdmissionState(db, storage)
+          : undefined;
+      const ledger = () => (admissions ??= headAdmissionState(db, storage));
+      const priorMessage = db.query<{ id: number; payload: string }, [string, number, string]>(
+        `SELECT id, payload FROM pending WHERE kind = 'message' AND ${channelId} = ? AND length(${message}) = ? AND ${message} = ? ORDER BY id LIMIT 1`,
+      );
+      const rememberParent = db.query("UPDATE pending SET thread_parent = ? WHERE id = ? AND thread_parent IS NULL");
       const fields = "id, kind, payload, admitted_after AS admittedAfter, thread_parent AS parent";
       const insert = db.query("INSERT INTO pending (kind, payload, admitted_after, thread_parent) VALUES (?, ?, ?, ?)");
       const first = db.query<DiscordInboundRecord, []>(`SELECT ${fields} FROM pending ORDER BY id LIMIT 1`);
@@ -133,13 +117,64 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
         `SELECT thread_parent AS parent FROM pending WHERE kind = 'message' AND ${channelId} = ? ` +
           "AND thread_parent IS NOT NULL ORDER BY id LIMIT 1",
       );
+      const commitReceipts = () =>
+        storage(() => {
+          const head = admissions;
+          if (!head) return;
+          head.assertClear();
+          for (let record = head.uncommittedReceipt(); record; record = head.uncommittedReceipt()) {
+            const source = JSON.parse(record.source) as { channel: string; message: string };
+            const store = fileDiscordInboundStore(stateDir, source.channel);
+            const current = store.load();
+            const cursor = current !== undefined && BigInt(current) > BigInt(source.message) ? current : source.message;
+            store.save(cursor);
+            head.pruneReceipts(source.channel, cursor);
+          }
+        });
       return {
+        commitReceipts,
+        unresolved: () => admissions?.unresolved() ?? null,
+        admission: (identity, fingerprint) => admissions?.admission(identity, fingerprint) ?? null,
+        attempt: (input) => ledger().attempt(input),
+        receipt: (identity, outcome, receipt) => ledger().receipt(identity, outcome, receipt),
+        abandon: (identity, reason) =>
+          storage(() => {
+            const decision = ledger().abandon(identity, reason);
+            commitReceipts();
+            return decision;
+          }),
+        has: (channel, message) => storage(() => priorMessage.get(channel, message.length, message) !== null),
         push: (kind, data, admittedAfter, parent) =>
           storage(() => {
             if (admittedAfter !== undefined && admittedAfter !== "0" && !isDiscordSnowflake(admittedAfter))
               throw new MessengerError("Discord inbound queue admission cursor is invalid", 0);
             if (parent !== undefined && !isDiscordSnowflake(parent))
               throw new MessengerError("Discord inbound queue thread parent is invalid", 0);
+            if (
+              admissions &&
+              kind === "message" &&
+              data !== null &&
+              typeof data === "object" &&
+              "id" in data &&
+              "channel_id" in data &&
+              isDiscordSnowflake(data.id) &&
+              isDiscordSnowflake(data.channel_id)
+            ) {
+              const previous = priorMessage.get(data.channel_id, data.id.length, data.id);
+              if (previous) {
+                if (
+                  !isDeepStrictEqual(JSON.parse(previous.payload), data) &&
+                  discordRawFingerprint(JSON.parse(previous.payload)) !== discordRawFingerprint(data as Message)
+                )
+                  throw new MessengerError(
+                    "Discord inbound source identity conflict; original queued record retained",
+                    0,
+                  );
+                // Scope proof can grow; the first payload, admission cursor and FIFO position do not change.
+                if (parent !== undefined) rememberParent.run(parent, previous.id);
+                return;
+              }
+            }
             insert.run(kind, JSON.stringify(data) ?? "null", admittedAfter ?? null, parent ?? null);
           }),
         first: () => storage(() => first.get()),
@@ -163,19 +198,31 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
           }),
         acknowledge: (channel, message) =>
           storage(() => {
+            admissions?.assertClear();
             acknowledge.run(channel, message.length, message);
           }),
         storeFor: (channelId, seed = true) =>
           storage(() => {
-            const store = fileDiscordInboundStore(stateDir, channelId);
+            const disk = fileDiscordInboundStore(stateDir, channelId);
+            const store: DiscordInboundStore = {
+              load: () => disk.load(),
+              save: (cursor) =>
+                storage(() => {
+                  admissions?.assertClear();
+                  disk.save(cursor);
+                  admissions?.pruneReceipts(channelId, cursor);
+                }),
+            };
             if (seed && store.load() === undefined) {
               const id = channel.get(channelId)?.message;
               if (isDiscordSnowflake(id)) store.save(String(BigInt(id) - 1n));
             }
             return store;
           }),
+
         remove: (id) =>
           storage(() => {
+            admissions?.assertClear();
             remove.run(id);
           }),
         close: () => storage(() => db.close()),

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Native Discord head admission records the original source, target process and attempt in the existing SQLite FIFO before dispatch, and requires an on-disk native receipt before cursor movement. Lost acknowledgements reconcile without redelivery; unresolved attempts fence all cursor and FIFO movement, including REST history changes and standalone restarts. Explicit `inbound-abandon` recovery requires a stopped original head and an operator reason, retains the source and audit receipt, and never resends. Native admission is not model completion or approval.
+
 - Reuse an already-published ULW candidate after unrelated main changes only after verifying its canonical PR, accepted parent and exact metadata-only tree. Preserve closed decisions and exact-head CI deduplication without rewriting branches or repeating Git object uploads.
 
 - Follow the canonical `vntrevx/Cataly` repository identity in the ULW/release workflow guards and their shared publisher/release checks. The exact repository, tag, commit, workflow and trusted check bindings remain enforced; forks and the former identity are refused.
@@ -195,3 +197,5 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+Add real native CLI ingress regressions for absent heads, ordered receipts, lost-ACK reconnect, preserved goal pause, tool approval cancellation, and ambiguous sends using isolated loopback providers and messengers (F69).

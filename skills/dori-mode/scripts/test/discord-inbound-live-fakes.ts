@@ -106,6 +106,7 @@ type QueuedScenario = {
   options?: DiscordInboundOptions;
   sync?: boolean;
   legacy?: boolean;
+  nativeAdmission?: boolean;
 };
 
 /** Real SQLite close/reopen and atomic cursors; optional faults wrap those same stores, never replace them. */
@@ -118,9 +119,10 @@ export const queuedWorld = ({
   options = { ownerId: "10", channelIds: ["20"] },
   sync = true,
   legacy = false,
+  nativeAdmission = false,
 }: QueuedScenario) => {
   const state = withState();
-  let queue = discordInboundQueue(state.dir);
+  let queue = discordInboundQueue(state.dir, nativeAdmission);
   for (const [channel, cursor] of Object.entries(cursors)) queue.storeFor(channel).save(cursor);
   if (sync) queue.push("sync");
   for (const message of messages)

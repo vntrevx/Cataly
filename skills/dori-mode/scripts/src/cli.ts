@@ -80,6 +80,8 @@ const USAGE = `dori <command> [options]
                                        Discord polls every 3 seconds by default; --loop MIN overrides the interval;
                                        --gateway delivers owner messages live with REST backfill and ignores --loop, including 0
                                        --context (Discord) adds INBOUND_CONTEXT: channel, thread, topic and recorded purposes
+  inbound-abandon discord BOT:OWNER:CHANNEL:MESSAGE --reason TEXT
+                                       explicit operator recovery after the original head stops; preserve the source and decision, never resend
   inbound-lag [--limit N]              receive-lag percentiles from state/telegram-lag.jsonl (the meter behind the INBOUND lines)`;
 
 const [command = "", ...rest] = process.argv.slice(2);
@@ -191,6 +193,7 @@ switch (command) {
   case "send":
   case "presence":
   case "inbound":
+  case "inbound-abandon":
   case "thread":
   case "react":
   case "channel":
