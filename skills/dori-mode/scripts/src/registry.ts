@@ -216,7 +216,7 @@ export class Registry {
       .filter((lane) => lane !== null);
   }
 
-  /** Like list(), but a lane file that cannot be read, parsed, or holds no lane key is returned in `unreadable` instead of throwing. */
+  /** Like list(), but unreadable records and keys not matching their filename are isolated in `unreadable`. */
   async scan(): Promise<{ lanes: Lane[]; unreadable: string[] }> {
     const lanes: Lane[] = [];
     const unreadable: string[] = [];
@@ -224,7 +224,7 @@ export class Registry {
       try {
         const lane: unknown = this.readNow(basename(f, ".json"));
         if (lane === null) continue;
-        if (typeof lane !== "object" || !("key" in lane) || typeof lane.key !== "string")
+        if (typeof lane !== "object" || !("key" in lane) || lane.key !== basename(f, ".json"))
           throw new Error("not a lane record");
         lanes.push(lane as Lane);
       } catch {
