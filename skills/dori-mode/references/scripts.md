@@ -91,8 +91,8 @@ requires a Codex account that advertises Ultrafast.
   To create the native goal before the first turn on external OMP 19, end that
   template with `"--goal", "{prompt}"` instead of just `"{prompt}"`. Keep
   OMP's `goal.enabled` on and do not pass a second positional prompt. This
-  setting is for fresh interactive lanes on the external runtime, not the
-  bundled OMP.
+  setting is for fresh interactive OMP 19 lanes, including the new bound
+  source runtime; do not copy it into a retained OMP 18 installation.
 - For `dori harness start`, set the external OMP configuration's
   `modelRoles.default` to `openai-codex/gpt-6.2-sol-ultrafast`. This OMP default
   also applies to other fresh sessions on that configuration that do not
