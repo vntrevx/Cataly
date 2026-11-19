@@ -951,22 +951,24 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
         }),
       ];
       const reports = new Reports(stateDir);
-      const novel = novelEvidence(
-        [
-          ...(reports.read(lane.key, { generation: lane.lifecycleEpoch })?.evidenced ?? []),
-          ...new Checkpoints(stateDir).read(lane.key),
-        ],
-        evidence,
-      );
+      let novel = 0;
       const line = reportLine(
-        await reports.report(lane.key, params.kind, params.text, Date.now(), lane.lifecycleEpoch, evidence),
+        await reports.report(lane.key, params.kind, params.text, Date.now(), lane.lifecycleEpoch, evidence, () => {
+          novel = novelEvidence(
+            [
+              ...(reports.read(lane.key, { generation: lane.lifecycleEpoch })?.evidenced ?? []),
+              ...new Checkpoints(reports.stateDir).read(lane.key),
+            ],
+            evidence,
+          ).length;
+        }),
       );
       const clock =
         evidence.length === 0
           ? "no evidence attached; the evidence clock did not move"
-          : novel.length === 0
+          : novel === 0
             ? "the same evidence was recorded before; the evidence clock did not move"
-            : `${novel.length} of ${evidence.length} evidence items are new; the evidence clock moved`;
+            : `${novel} of ${evidence.length} evidence items are new; the evidence clock moved`;
       return { content: [{ type: "text", text: `${line}\n${clock}` }] };
     },
   });

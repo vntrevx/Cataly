@@ -29,12 +29,12 @@ class DelayedReports extends Reports {
     super(stateDir);
   }
 
-  override append(event: Report): Promise<Report>;
-  override append(event: Activity): Promise<Activity>;
-  override append(event: LaneEvent): Promise<LaneEvent>;
-  override async append(event: LaneEvent): Promise<LaneEvent> {
+  override append(event: Report, beforeAppend?: () => void): Promise<Report>;
+  override append(event: Activity, beforeAppend?: () => void): Promise<Activity>;
+  override append(event: LaneEvent, beforeAppend?: () => void): Promise<LaneEvent>;
+  override async append(event: LaneEvent, beforeAppend?: () => void): Promise<LaneEvent> {
     await this.before(event);
-    return super.append(event);
+    return super.append(event, beforeAppend);
   }
 }
 

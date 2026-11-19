@@ -147,10 +147,10 @@ export class Reports {
     return progress;
   }
 
-  append(event: Report): Promise<Report>;
-  append(event: Activity): Promise<Activity>;
-  append(event: LaneEvent): Promise<LaneEvent>;
-  async append(event: LaneEvent): Promise<LaneEvent> {
+  append(event: Report, beforeAppend?: () => void): Promise<Report>;
+  append(event: Activity, beforeAppend?: () => void): Promise<Activity>;
+  append(event: LaneEvent, beforeAppend?: () => void): Promise<LaneEvent>;
+  async append(event: LaneEvent, beforeAppend?: () => void): Promise<LaneEvent> {
     const path = this.path(event.key);
     parseEvent(JSON.stringify(event), event.key);
     const dir = join(this.stateDir, "lanes", event.key);
@@ -158,6 +158,8 @@ export class Reports {
     // mkdir's mode applies only on creation; a directory made earlier with wider permissions is narrowed here.
     chmodSync(dir, 0o700);
     const commit = (): LaneEvent => {
+      // Inspect the accepted prefix synchronously under the same evidence-writer lock as this append.
+      beforeAppend?.();
       const recorded = event.evidenceRefs?.length
         ? { ...event, evidenceSequence: nextEvidenceSequence(this.stateDir, event.key) }
         : event;
@@ -175,6 +177,7 @@ export class Reports {
     now: number,
     generation?: string,
     evidenceRefs: readonly EvidenceRef[] = [],
+    beforeAppend?: () => void,
   ): Promise<Report> {
     const report: Report = {
       type: "report",
@@ -185,7 +188,7 @@ export class Reports {
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
       ...(generation === undefined ? {} : { generation }),
     };
-    return this.append(report);
+    return this.append(report, beforeAppend);
   }
 
   async observe(
