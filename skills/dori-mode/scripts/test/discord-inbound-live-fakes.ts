@@ -70,6 +70,8 @@ export const liveWorld = async (
   return {
     rest,
     intake,
+    queue,
+    dir: state.dir,
     live,
     sockets,
     logs,
@@ -100,6 +102,7 @@ type QueuedScenario = {
   messages: TestDiscordMessage[];
   cursors?: Record<string, string>;
   admissions?: Record<string, string>;
+  parents?: Record<string, string>;
   options?: DiscordInboundOptions;
   sync?: boolean;
   legacy?: boolean;
@@ -111,6 +114,7 @@ export const queuedWorld = ({
   messages,
   cursors = { "20": "102" },
   admissions = {},
+  parents = {},
   options = { ownerId: "10", channelIds: ["20"] },
   sync = true,
   legacy = false,
@@ -120,7 +124,12 @@ export const queuedWorld = ({
   for (const [channel, cursor] of Object.entries(cursors)) queue.storeFor(channel).save(cursor);
   if (sync) queue.push("sync");
   for (const message of messages)
-    queue.push("message", message, legacy ? undefined : (admissions[message.id] ?? cursors[message.channel_id]));
+    queue.push(
+      "message",
+      message,
+      legacy ? undefined : (admissions[message.id] ?? cursors[message.channel_id]),
+      parents[message.channel_id],
+    );
   queue.close();
   queue = discordInboundQueue(state.dir);
   const rest = discordRestWorld(history);

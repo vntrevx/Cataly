@@ -54,9 +54,16 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
     unrelated: [] as TestDiscordMessage[],
     /** Guild text channels, active threads and the owner DM, for scope=all discovery. */
     guilds: [] as { id: string; channels: string[]; threads: string[] }[],
+    /** Thread id to parent channel id; a thread listed under a guild without an entry has no known parent. */
+    threadParents: new Map<string, string>(),
+    /** Channel id to guild id, for channel metadata and thread-parent lookups. */
+    channelGuilds: new Map<string, string>(),
+    /** Channel id to category id: a text channel's `parent_id` names its category, not a thread parent. */
+    categoryParents: new Map<string, string>(),
     dm: undefined as string | undefined,
     denied: new Set<string>(),
     mixChannels: false,
+    aborted: [] as string[],
   };
   const requests: HttpRequest[] = [];
   const http: Http = async (request) => {
@@ -68,7 +75,23 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
     if (request.headers?.["Authorization"] !== "Bot unit-private-token") {
       return { status: 401, headers: {}, body: '{"diagnostic":"private authentication body"}' };
     }
-    await state.blocked.get(path);
+    const blocked = state.blocked.get(path);
+    if (blocked && request.signal) {
+      const signal = request.signal;
+      signal.throwIfAborted();
+      const gate = Promise.withResolvers<void>();
+      const abort = () => {
+        state.aborted.push(path);
+        gate.reject(signal.reason);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void blocked.then(gate.resolve, gate.reject);
+      try {
+        await gate.promise;
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    } else await blocked;
     if (state.unreachable.has(path)) throw new TypeError("private transport diagnostic");
     const response = state.responses.get(path + url.search) ?? state.responses.get(path);
     if (response !== undefined) return { status: 200, headers: {}, body: response };
@@ -87,8 +110,23 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
         type: 0,
       }));
     } else if (/^\/guilds\/\d+\/threads\/active$/.test(path)) {
+      const guild = state.guilds.find((guild) => path.includes(`/${guild.id}/`));
       body = {
-        threads: (state.guilds.find((guild) => path.includes(`/${guild.id}/`))?.threads ?? []).map((id) => ({ id })),
+        threads: (guild?.threads ?? []).map((id) => ({
+          id,
+          parent_id: state.threadParents.get(id) ?? "0",
+        })),
+      };
+    } else if (/^\/channels\/\d+$/.test(path)) {
+      const channel = path.split("/")[2] ?? "";
+      if (state.denied.has(channel)) return { status: 403, headers: {}, body: "{}" };
+      const guild = state.channelGuilds.get(channel) ?? state.guilds.find((g) => g.channels.includes(channel))?.id;
+      body = {
+        ...(guild === undefined ? {} : { guild_id: guild }),
+        type: state.threadParents.has(channel) ? 11 : 0,
+        ...((state.threadParents.get(channel) ?? state.categoryParents.get(channel)) === undefined
+          ? {}
+          : { parent_id: state.threadParents.get(channel) ?? state.categoryParents.get(channel) }),
       };
     } else if (/^\/channels\/\d+\/messages$/.test(path)) {
       const channel = path.split("/")[2] ?? "";

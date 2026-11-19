@@ -155,7 +155,7 @@ test("the original three-column database migrates additively and replays ambiguo
           .query<{ name: string }, []>("PRAGMA table_info(pending)")
           .all()
           .map((row) => row.name),
-      ).toEqual(["id", "kind", "payload", "admitted_after"]);
+      ).toEqual(["id", "kind", "payload", "admitted_after", "thread_parent"]);
       expect(
         migrated
           .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")

@@ -1,24 +1,23 @@
 import { discordGateway, type GatewayClock, type GatewaySocket } from "./discord-gateway.ts";
 import { type Emit, isTransient, type Message } from "./discord-inbound-api.ts";
 import type { DiscordInboundQueue } from "./discord-inbound-queue.ts";
+import { discordThreadAdmission, type ThreadIntake } from "./discord-inbound-thread-admission.ts";
 
 const GUILD_MESSAGES = 1 << 9;
 const DIRECT_MESSAGES = 1 << 12;
-const MESSAGE_CONTENT = 1 << 15; // Privileged: enable it for the bot in the Developer Portal.
+const MESSAGE_CONTENT = 1 << 15;
 
-type Intake = {
-  accepts(message: Message): boolean;
-  cursorFor(channel: string): string | undefined;
-  sync(emit: Emit, queue?: DiscordInboundQueue): Promise<void>;
-  accept(message: Message, emit: Emit, admittedAfter?: string | null): void | Promise<void>;
+type Intake = ThreadIntake & {
+  accepts(message: Message, parent?: string | null): boolean;
+  sync(emit: Emit, queue?: DiscordInboundQueue, scoped?: () => void): Promise<void>;
+  accept(message: Message, emit: Emit, after?: string | null, parent?: string | null): void | Promise<void>;
 };
 
 export type DiscordInboundLive = { done: Promise<void>; close(): void };
 
 /**
- * Gateway dispatches and backfills share one durable queue. Backfills merge already-known queued owners before
- * each newer delivery; a frame admitted during an awaited newer emit may be delivered late, never checkpointed
- * backwards. Cursor commits and exact-ID acknowledgements deduplicate completed work, not emit/crash windows.
+ * Scoped dispatches and backfills share the durable FIFO. Unknown thread scope is resolved in bounded RAM
+ * before payload admission; those candidates do not have the admitted queue's crash/deletion recovery guarantee.
  */
 export const discordInboundLive = (
   intake: Intake,
@@ -39,16 +38,16 @@ export const discordInboundLive = (
   let dead = false;
   let timer: unknown;
   let wake: (() => void) | undefined;
-  const pause = (ms: number) =>
-    new Promise<void>((resolve) => {
-      wake = resolve;
-      timer = clock.setTimeout(resolve, ms);
-    });
-  /** Dispatches queue behind this: delivering one before the gap is read would move the cursor past it. */
+  const pause = (ms: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    wake = resolve;
+    timer = clock.setTimeout(resolve, ms);
+    return promise;
+  };
   const backfill = async () => {
     for (let delay = 2_000; ; delay = Math.min(delay * 2, 30_000)) {
       try {
-        return await intake.sync(deliver, queue);
+        return await intake.sync(deliver, queue, metadata.flushKnown);
       } catch (error) {
         if (dead || !isTransient(error)) throw error;
         report(`DISCORD_GATEWAY_BACKFILL_RETRY discord retry_in=${delay / 1000}s`);
@@ -59,7 +58,7 @@ export const discordInboundLive = (
   };
   const fail = (error: unknown) => {
     failure = error;
-    dead = true; // Leave the failed record and every successor on disk, without advancing their cursors.
+    dead = true; // Preserve every committed record and its admission position.
     close();
   };
   const drain = () => {
@@ -69,18 +68,18 @@ export const discordInboundLive = (
       try {
         if (recover) {
           recover = false;
-          await backfill(); // A retained message prefix must not skip older REST gaps on restart.
+          await backfill();
         }
         for (let job = queue.first(); job && !dead; job = queue.first()) {
           if (job.kind === "sync") {
             await backfill();
             if (!dead) queue.remove(job.id);
           } else {
-            job = queue.before(job.id) ?? job; // Earlier known same-channel frames precede this delivery boundary.
+            job = queue.before(job.id) ?? job;
             const message = JSON.parse(job.payload) as Message;
-            await intake.accept(message, deliver, job.admittedAfter);
+            await intake.accept(message, deliver, job.admittedAfter, job.parent);
             if (!dead) {
-              if (intake.accepts(message)) queue.acknowledge(message.channel_id, message.id);
+              if (intake.accepts(message, job.parent)) queue.acknowledge(message.channel_id, message.id);
               else queue.remove(job.id);
             }
           }
@@ -92,35 +91,56 @@ export const discordInboundLive = (
       }
     })();
   };
-  const enqueue = (kind: "sync" | "message", data?: unknown) => {
+  const enqueue = (kind: "sync" | "message", data?: Message, after?: string, parent?: string) => {
     if (dead) return;
-    try {
-      const after = kind === "message" ? intake.cursorFor((data as Message).channel_id) : undefined;
-      queue.push(kind, data, after);
-      drain();
-    } catch (error) {
-      fail(error);
+    if (kind === "message" && data) {
+      after ??= intake.cursorFor(data.channel_id);
+      parent ??= intake.parentFor?.(data.channel_id);
     }
+    queue.push(kind, data, after, parent);
+    drain(); // Persist first; each caller owns propagation of a storage failure.
   };
+  const metadata = discordThreadAdmission(
+    intake,
+    clock,
+    (message, after, parent) => enqueue("message", message, after, parent),
+    report,
+    fail,
+  );
   const gateway = discordGateway(open, token, clock, report, {
     label: "DISCORD_GATEWAY",
     intents: GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT,
     online: false,
-    onReady: () => enqueue("sync"),
+    onReady: () => {
+      try {
+        enqueue("sync");
+      } catch (error) {
+        fail(error);
+      }
+    },
     onDispatch: (type, data) => {
-      if (type === "MESSAGE_CREATE" && intake.accepts(data as Message)) enqueue("message", data);
+      if (dead || type !== "MESSAGE_CREATE") return;
+      try {
+        const message = data as Message;
+        if (intake.accepts(message)) enqueue("message", message);
+        else metadata.push(message);
+      } catch (error) {
+        fail(error);
+      }
     },
   });
   const close = () => {
     admission.abort(cancelled);
     dead = true;
+    metadata.close();
     if (timer !== undefined) clock.clearTimeout(timer);
     wake?.();
     gateway.close();
   };
   const done = gateway.done.finally(async () => {
     close();
-    await running; // An in-flight REST read may finish delivery; pending records remain for the next start.
+    await metadata.done();
+    await running;
     if (failure !== undefined) throw failure;
   });
   drain();

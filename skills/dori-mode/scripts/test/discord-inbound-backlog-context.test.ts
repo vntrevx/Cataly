@@ -27,7 +27,6 @@ test("a queued backfill awaits context before checkpointing and draining live su
       ownerMessage("106", { author: { id: "11" } }),
       ownerMessage("107", { author: { id: "11" } }),
     ]);
-    rest.state.blocked.set("/channels/20", lookup.promise);
     rest.state.responses.set("/channels/20", JSON.stringify({ id: "20", type: 11, name: "task", parent_id: "30" }));
     rest.state.responses.set("/channels/30", JSON.stringify({ id: "30", type: 0, name: "dev", topic: "Project work" }));
     const purposes = new DiscordChannels(state.dir);
@@ -49,6 +48,7 @@ test("a queued backfill awaits context before checkpointing and draining live su
       },
       options,
     );
+    rest.state.blocked.set("/channels/20", lookup.promise);
     const socket = new FakeGateway("offline");
     const entered = Promise.withResolvers<void>();
     const attempts: string[] = [];

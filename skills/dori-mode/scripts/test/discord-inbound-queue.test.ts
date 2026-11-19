@@ -10,52 +10,61 @@ import { settle } from "./discord-inbound-live-fakes.ts";
 import { FakeGateway, gatewayTimers } from "./discord-presence-fakes.ts";
 import { withState } from "./fakes.ts";
 
-test("invalid and explicitly unwatched dispatches never enter the blocked disk queue", async () => {
-  const state = withState();
-  const queue = discordInboundQueue(state.dir);
-  const hold = Promise.withResolvers<void>();
-  const rest = discordRestWorld([]);
-  const cursor = memoryDiscordCursor("100");
-  const intake = await discordInbound(rest.discord, () => cursor.store, { ownerId: "10", channelIds: ["20"] });
-  rest.state.blocked.set("/channels/20/messages", hold.promise);
-  const socket = new FakeGateway("offline");
-  const live = discordInboundLive(
-    intake,
-    () => socket,
-    "offline",
-    gatewayTimers().clock,
-    () => {
-      throw new Error("unexpected emit");
-    },
-    () => {},
-    queue,
-  );
-  const pushes = spyOn(queue, "push");
-  try {
-    socket.hello();
-    socket.ready(1);
-    await settle();
-    pushes.mockClear();
-    for (let i = 1; i <= 2_000; i++)
-      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: i + 1, d: ownerMessage(String(i), { channel_id: "21" }) });
-    for (const d of [null, {}, { id: "bad", channel_id: "20" }, { id: "2001", channel_id: "bad" }])
-      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2002, d });
-    expect(pushes).toHaveBeenCalledTimes(0);
-    socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2003, d: ownerMessage("2001", { author: { id: "11" } }) });
-    expect(pushes).toHaveBeenCalledTimes(1);
-    expect(cursor.store.load()).toBe("100");
-    hold.resolve();
-    await settle();
-    expect(cursor.store.load()).toBe("2001");
-  } finally {
-    pushes.mockRestore();
-    hold.resolve();
-    live.close();
-    await live.done;
-    queue.close();
-    state.done();
-  }
-});
+for (const threads of [false, true])
+  test(`invalid and known-unwatched dispatches never enter the blocked disk queue (${threads ? "parent following" : "channel only"})`, async () => {
+    const state = withState();
+    const queue = discordInboundQueue(state.dir);
+    const hold = Promise.withResolvers<void>();
+    const rest = discordRestWorld([]);
+    const cursor = memoryDiscordCursor("100");
+    const intake = await discordInbound(rest.discord, () => cursor.store, {
+      ownerId: "10",
+      channelIds: ["20"],
+      threads,
+    });
+    if (threads) expect(await intake.resolveThread("21", new AbortController().signal)).toBeUndefined();
+    rest.state.blocked.set("/channels/20/messages", hold.promise);
+    const socket = new FakeGateway("offline");
+    const live = discordInboundLive(
+      intake,
+      () => socket,
+      "offline",
+      gatewayTimers().clock,
+      () => {
+        throw new Error("unexpected emit");
+      },
+      () => {},
+      queue,
+    );
+    const pushes = spyOn(queue, "push");
+    try {
+      socket.hello();
+      socket.ready(1);
+      await settle();
+      pushes.mockClear();
+      for (let i = 1; i <= 2_000; i++)
+        socket.receive({ op: 0, t: "MESSAGE_CREATE", s: i + 1, d: ownerMessage(String(i), { channel_id: "21" }) });
+      expect(rest.requests.filter((request) => new URL(request.url).pathname.endsWith("/channels/21"))).toHaveLength(
+        threads ? 1 : 0,
+      );
+      for (const d of [null, {}, { id: "bad", channel_id: "20" }, { id: "2001", channel_id: "bad" }])
+        socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2002, d });
+      expect(pushes).toHaveBeenCalledTimes(0);
+      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2003, d: ownerMessage("2001", { author: { id: "11" } }) });
+      expect(pushes).toHaveBeenCalledTimes(1);
+      expect(cursor.store.load()).toBe("100");
+      hold.resolve();
+      await settle();
+      expect(cursor.store.load()).toBe("2001");
+    } finally {
+      pushes.mockRestore();
+      hold.resolve();
+      live.close();
+      await live.done;
+      queue.close();
+      state.done();
+    }
+  });
 
 test("a rejected same-process consumer preserves the first queue's lock against other processes", async () => {
   const state = withState();

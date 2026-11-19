@@ -10,14 +10,17 @@ export type DiscordInboundRecord = {
   payload: string;
   /** Null denotes a legacy row or a channel without an admission cursor, not a delivery receipt. */
   admittedAfter: string | null;
+  /** Established thread scope at admission; null for explicit/scope-all and legacy rows. */
+  parent: string | null;
 };
 
 export type DiscordInboundQueue = {
-  push(kind: "sync" | "message", data?: unknown, admittedAfter?: string): void;
+  push(kind: "sync" | "message", data?: unknown, admittedAfter?: string, parent?: string): void;
   first(): DiscordInboundRecord | null;
   before(id: number): DiscordInboundRecord | null;
   nextOwner(channel: string, owner: string, through: string, after: string, row: number): DiscordInboundRecord | null;
   nextChannel(after: string): string | undefined;
+  parentFor(channel: string): string | undefined;
   acknowledge(channel: string, message: string): void;
   /** Admission reads use seed=false so another still-pending older frame cannot be baselined away. */
   storeFor(channelId: string, seed?: boolean): DiscordInboundStore;
@@ -92,13 +95,15 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
         const columns = db.query<{ name: string }, []>("PRAGMA table_info(pending)").all();
         if (!columns.some((column) => column.name === "admitted_after"))
           db.exec("ALTER TABLE pending ADD COLUMN admitted_after TEXT");
+        if (!columns.some((column) => column.name === "thread_parent"))
+          db.exec("ALTER TABLE pending ADD COLUMN thread_parent TEXT");
         db.exec(
           `CREATE INDEX IF NOT EXISTS pending_channel ON pending (${channelId}, ${order}) WHERE kind = 'message'; ` +
             `CREATE INDEX IF NOT EXISTS pending_owner ON pending (${channelId}, ${author}, ${order}) WHERE kind = 'message'`,
         );
       })();
-      const fields = "id, kind, payload, admitted_after AS admittedAfter";
-      const insert = db.query("INSERT INTO pending (kind, payload, admitted_after) VALUES (?, ?, ?)");
+      const fields = "id, kind, payload, admitted_after AS admittedAfter, thread_parent AS parent";
+      const insert = db.query("INSERT INTO pending (kind, payload, admitted_after, thread_parent) VALUES (?, ?, ?, ?)");
       const first = db.query<DiscordInboundRecord, []>(`SELECT ${fields} FROM pending ORDER BY id LIMIT 1`);
       const before = db.query<DiscordInboundRecord, [number, number]>(
         `SELECT ${fields} FROM pending WHERE kind = 'message' ` +
@@ -124,12 +129,18 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
         `SELECT ${channelId} AS channel FROM pending WHERE kind = 'message' AND ${channelId} > ? ` +
           `ORDER BY ${channelId} LIMIT 1`,
       );
+      const parent = db.query<{ parent: unknown }, [string]>(
+        `SELECT thread_parent AS parent FROM pending WHERE kind = 'message' AND ${channelId} = ? ` +
+          "AND thread_parent IS NOT NULL ORDER BY id LIMIT 1",
+      );
       return {
-        push: (kind, data, admittedAfter) =>
+        push: (kind, data, admittedAfter, parent) =>
           storage(() => {
             if (admittedAfter !== undefined && admittedAfter !== "0" && !isDiscordSnowflake(admittedAfter))
               throw new MessengerError("Discord inbound queue admission cursor is invalid", 0);
-            insert.run(kind, JSON.stringify(data) ?? "null", admittedAfter ?? null);
+            if (parent !== undefined && !isDiscordSnowflake(parent))
+              throw new MessengerError("Discord inbound queue thread parent is invalid", 0);
+            insert.run(kind, JSON.stringify(data) ?? "null", admittedAfter ?? null, parent ?? null);
           }),
         first: () => storage(() => first.get()),
         before: (id) => storage(() => before.get(id, id)),
@@ -140,6 +151,14 @@ export const discordInboundQueue = (stateDir: string): DiscordInboundQueue =>
             const value = nextChannel.get(after)?.channel;
             if (value === undefined) return undefined;
             if (!isDiscordSnowflake(value)) throw new MessengerError("Discord inbound queue channel ID is invalid", 0);
+            return value;
+          }),
+        parentFor: (channel) =>
+          storage(() => {
+            const value = parent.get(channel)?.parent;
+            if (value === undefined) return undefined;
+            if (!isDiscordSnowflake(value))
+              throw new MessengerError("Discord inbound queue thread parent is invalid", 0);
             return value;
           }),
         acknowledge: (channel, message) =>

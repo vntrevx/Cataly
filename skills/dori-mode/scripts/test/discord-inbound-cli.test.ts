@@ -71,7 +71,7 @@ test("public Discord intake defaults to three seconds and honors --loop in minut
     expect(JSON.parse(receipt?.slice("DISCORD_INBOUND_QA ".length) ?? "null")).toEqual({
       delays: [milliseconds, milliseconds],
       polls: 2,
-      requests: 7,
+      requests: 8, // Existing quiet probes plus the default-on configured-channel metadata read.
     });
   }
 });
@@ -99,6 +99,7 @@ test("invalid owner, authentication, permission and content-intent setup never a
     { DORI_TEST_DISCORD_CASE: "intent" },
     { DORI_DISCORD_SCOPE: "everything" },
     { DORI_DISCORD_CHANNEL_IDS: "20,abc" },
+    { DORI_DISCORD_THREADS: "sometimes" },
   ] as const) {
     const { out, err, code, cursor } = await inboundCli(["--loop", "0"], environment);
     expect({ code, out, cursor }).toEqual({ code: 1, out: "", cursor: undefined });
@@ -141,3 +142,18 @@ test("--context ends each group with where it was posted and the purposes record
   const plain = await inboundCli(["--loop", "0"], { DORI_TEST_DISCORD_CASE: "context-denied" }, purposes);
   expect(plain.out.trim().split("\n").slice(1)).toEqual([message]);
 });
+
+for (const threads of [undefined, "on", "off"] as const) {
+  test(`public thread setting ${threads ?? "unset"} retains owner output and explicit cursor`, async () => {
+    const result = await inboundCli(["--loop", "0"], threads === undefined ? {} : { DORI_DISCORD_THREADS: threads });
+    expect({ code: result.code, err: result.err, cursor: result.cursor }).toEqual({
+      code: 0,
+      err: "",
+      cursor: "102",
+    });
+    expect(result.out.trim().split("\n")).toEqual([
+      "INBOUND_READY discord owner=10 channel=20 bot=99",
+      'INBOUND discord 20 101 from=owner ref=- "first owner text"',
+    ]);
+  });
+}

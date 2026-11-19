@@ -57,6 +57,7 @@ for (const change of ["deleted", "newer"] as const) {
         let body: unknown;
         if (url.pathname.endsWith("/users/@me")) body = { id: "99", bot: true };
         else if (url.pathname.endsWith("/applications/@me")) body = { flags: 1 << 18 };
+        else if (url.pathname.endsWith("/channels/20")) body = { id: "20", type: 0 };
         else {
           const limit = url.searchParams.get("limit");
           if (!url.pathname.endsWith("/channels/20/messages") || !limit) throw new Error("unexpected route");

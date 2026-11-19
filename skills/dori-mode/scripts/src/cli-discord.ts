@@ -51,8 +51,8 @@ const idList = (value: string | undefined): string[] =>
     .filter((id) => id !== "");
 
 /**
- * Channels come from DORI_DISCORD_CHANNEL_ID, DORI_DISCORD_CHANNEL_IDS (comma separated) and DORI_DISCORD_SCOPE=all.
- * `context` adds an INBOUND_CONTEXT record (channel, thread, topic, recorded purposes) to each message's group.
+ * Configured parents follow active threads unless DORI_DISCORD_THREADS=off; scope all keeps its own discovery.
+ * `context` adds the channel, thread, topic and recorded purposes to each single stdout group.
  */
 export const discordInboundCommand = async (
   stateDir: string,
@@ -65,6 +65,10 @@ export const discordInboundCommand = async (
   const scope = env["DORI_DISCORD_SCOPE"]?.trim();
   if (scope !== undefined && scope !== "" && scope !== "all") die("DORI_DISCORD_SCOPE must be all or unset");
   const all = scope === "all";
+  const setting = env["DORI_DISCORD_THREADS"]?.trim().toLowerCase();
+  if (setting !== undefined && setting !== "" && setting !== "off" && setting !== "on")
+    die("DORI_DISCORD_THREADS must be on, off or unset");
+  const threads = setting !== "off";
   const channelIds = ["DORI_DISCORD_CHANNEL_ID", "DORI_DISCORD_CHANNEL_IDS"].flatMap((name) =>
     idList(env[name]).map((id) => discordInboundEnv(name, id)),
   );
@@ -79,6 +83,7 @@ export const discordInboundCommand = async (
       ownerId,
       channelIds: [...new Set(channelIds)],
       all,
+      threads,
     });
     const watching = all ? "all" : intake.channels().join(",");
     const where = context ? inboundContext(discord, new DiscordChannels(stateDir), realClock.now) : undefined;

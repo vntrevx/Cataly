@@ -5,6 +5,7 @@ export type HttpRequest = {
   readonly url: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string | FormData | Uint8Array<ArrayBuffer>;
+  readonly signal?: AbortSignal;
 };
 export type HttpResponse = {
   readonly status: number;
@@ -18,6 +19,7 @@ export const fetchHttp: Http = async (req) => {
     method: req.method,
     ...(req.headers === undefined ? {} : { headers: req.headers }),
     ...(req.body === undefined ? {} : { body: req.body }),
+    ...(req.signal === undefined ? {} : { signal: req.signal }),
   });
   const headers: Record<string, string> = {};
   res.headers.forEach((v, k) => {
@@ -56,13 +58,35 @@ export const withBackoff = async (
 ): Promise<HttpResponse> => {
   let last: HttpResponse | undefined;
   for (let attempt = 0; attempt < policy.attempts; attempt++) {
+    req.signal?.throwIfAborted();
     last = await http(req);
+    req.signal?.throwIfAborted();
     if (last.status !== 429 && last.status < 500) return last;
     const header = Number(last.headers["retry-after"]);
     const fromBody = retryAfterFromBody?.(last.body);
     const waitS = Number.isFinite(header) && header > 0 ? header : fromBody;
     const waitMs = waitS !== undefined ? waitS * 1000 : Math.min(policy.maxMs, policy.baseMs * 2 ** attempt);
-    if (attempt < policy.attempts - 1) await clock.sleep(Math.min(policy.maxMs, waitMs));
+    if (attempt < policy.attempts - 1) {
+      const ms = Math.min(policy.maxMs, waitMs);
+      if (!req.signal) await clock.sleep(ms);
+      else {
+        const signal = req.signal;
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(resolve, ms);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+        try {
+          await promise;
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+        }
+      }
+    }
   }
   return last as HttpResponse;
 };

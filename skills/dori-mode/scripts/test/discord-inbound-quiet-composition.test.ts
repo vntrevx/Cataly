@@ -21,6 +21,7 @@ test("a deleted probe head keeps batched context delivery ahead of disk FIFO suc
     queue.storeFor("20").save("100");
     const history = [ignored("101"), ownerMessage("102"), ignored("103"), ignored("104"), ownerMessage("105")];
     const limits: string[] = [];
+    let channelReads = 0;
     const discord = new Discord(
       async (request) => {
         const url = new URL(request.url);
@@ -38,7 +39,7 @@ test("a deleted probe head keeps batched context delivery ahead of disk FIFO suc
             body = [...history].reverse();
           }
         } else if (url.pathname.endsWith("/channels/20")) {
-          await lookup.promise;
+          if (++channelReads > 1) await lookup.promise; // Startup scope metadata is separate from awaited context.
           body = { id: "20", type: 11, name: "task", parent_id: "30" };
         } else if (url.pathname.endsWith("/channels/30")) body = { id: "30", type: 0, name: "dev" };
         else throw new Error("unexpected REST endpoint");

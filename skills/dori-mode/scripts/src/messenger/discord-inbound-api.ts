@@ -46,9 +46,16 @@ export type DiscordInbound = {
  * that resolves. Live intake supplies its lifecycle signal; callbacks that ignore it retain in-flight completion.
  */
 export type Emit = (message: DiscordInbound, signal?: AbortSignal) => unknown;
-export type Request = <T>(path: string, body?: Record<string, unknown>) => Promise<T>;
+export type Request = <T>(path: string, body?: Record<string, unknown>, signal?: AbortSignal) => Promise<T>;
 
 const REQUEST_FAILED = "Discord inbound request failed; check the connection and Discord API availability";
+
+/** Compares two Discord snowflakes without losing precision above 2^53. */
+export const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
+
+/** A discovered target's lost access, which is skipped rather than fatal. */
+export const unavailable = (error: unknown): boolean =>
+  error instanceof MessengerError && (error.status === 403 || error.status === 404);
 
 /** A locally detected response fault; retrying it must not hold the live queue indefinitely. */
 export const inboundProtocolError = (message: string): MessengerError =>
@@ -65,10 +72,12 @@ export const isTransient = (error: unknown): boolean =>
 /** Maps Discord failures to actionable errors that never echo a response body. */
 export const inboundRequest =
   (discord: Discord): Request =>
-  async <T>(path: string, body?: Record<string, unknown>): Promise<T> => {
+  async <T>(path: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<T> => {
     try {
-      return await discord.call<T>(body ? "POST" : "GET", path, body);
+      return await discord.call<T>(body ? "POST" : "GET", path, body, signal);
     } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof SyntaxError) throw inboundProtocolError("Discord inbound response is invalid");
       const status = error instanceof MessengerError ? error.status : 0;
       let message = REQUEST_FAILED;

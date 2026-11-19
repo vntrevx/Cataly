@@ -1,5 +1,5 @@
 import type { Clock } from "../run.ts";
-import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { DEFAULT_RETRY, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 import { DISCORD_LIMIT, splitForDiscord } from "./split.ts";
 
 const retryAfter = (body: string): number | undefined => {
@@ -23,18 +23,46 @@ export type DcChannel = {
 /** Forum and media channels contain posts, each represented by a thread. */
 export const isForumType = (type: number): boolean => type === 15 || type === 16;
 
+/**
+ * An environment-supplied REST API prefix may target only loopback HTTP.
+ * Credentials and query/fragment components are not usable API prefixes.
+ */
+export function discordApiBase(value: string | undefined): string {
+  const fallback = "https://discord.com/api/v10";
+  if (value === undefined || value === "") return fallback;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new MessengerError("DORI_DISCORD_API_BASE is not a URL", 0);
+  }
+  if (
+    url.protocol !== "http:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    url.href !== url.origin + url.pathname
+  )
+    throw new MessengerError(
+      "DORI_DISCORD_API_BASE must use a loopback http origin without credentials, query or fragment",
+      0,
+    );
+  return url.href.replace(/\/+$/, "");
+}
+
 export class Discord {
   constructor(
     private readonly http: Http,
     private readonly clock: Clock,
     private readonly botToken: string,
-    private readonly base = "https://discord.com/api/v10",
+    private readonly base = discordApiBase(process.env["DORI_DISCORD_API_BASE"]),
   ) {}
 
   async call<T = unknown>(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const res = await withBackoff(
       this.http,
@@ -44,8 +72,10 @@ export class Discord {
         url: `${this.base}${path}`,
         headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
+        ...(signal === undefined ? {} : { signal }),
       },
-      undefined,
+      // Cancellable live metadata owns its existing 2s–30s retry outside this single HTTP attempt.
+      signal === undefined ? undefined : { ...DEFAULT_RETRY, attempts: 1 },
       retryAfter,
     );
     if (res.status >= 300)
