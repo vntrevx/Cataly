@@ -209,8 +209,10 @@ test("the activation callback holds a newly prepared release before switching ei
   const before = await installBundle(f.paths, f.release("one").bundle, undefined);
   const pointer = readlinkSync(f.paths.live);
   await expect(
-    installBundle(f.paths, f.release("two").bundle, before, () => {
-      throw new Error("late actor holds activation");
+    installBundle(f.paths, f.release("two").bundle, before, {
+      beforeActivate: () => {
+        throw new Error("late actor holds activation");
+      },
     }),
   ).rejects.toThrow("late actor");
   expect(readlinkSync(f.paths.live)).toBe(pointer);

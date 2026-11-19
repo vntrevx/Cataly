@@ -102,8 +102,10 @@ export function resolveConsumerOmpCommand(
 }
 
 /** Selected process argv is one command, never shell syntax or a partial executable override. */
-export function processOmpCommand(): readonly string[] | undefined {
-  const raw = process.env["DORI_AGENT_ARGV"];
+export function processOmpCommand(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): readonly string[] | undefined {
+  const raw = env["DORI_AGENT_ARGV"];
   if (raw === undefined) return undefined;
   const selected: unknown = JSON.parse(raw);
   if (
@@ -117,21 +119,29 @@ export function processOmpCommand(): readonly string[] | undefined {
 }
 
 /** Selected argv replaces only literal OMP and the marked installation's lexical/canonical defaults. */
-export function resolveProcessOmpCommand(configured: readonly string[], configFile: string): readonly string[] {
-  const selected = processOmpCommand();
+export function resolveProcessOmpCommand(
+  configured: readonly string[],
+  configFile: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): readonly string[] {
+  const selected = processOmpCommand(env);
   const installation = resolve(dirname(configFile));
   const installed =
     selected !== undefined &&
     (existsSync(join(installation, ".omp-dori")) || existsSync(join(installation, "releases/consumer-owner.json"))) &&
     (configured[0] === join(installation, "bin/omp") || configured[0] === join(realpathSync(installation), "bin/omp"));
   if (selected && (configured[0] === "omp" || installed)) return [...selected, ...configured.slice(1)];
-  const legacy = configured[0] === "omp" ? process.env["DORI_AGENT_CMD"] : undefined;
+  const legacy = configured[0] === "omp" ? env["DORI_AGENT_CMD"] : undefined;
   return legacy ? [legacy, ...configured.slice(1)] : configured;
 }
 
 /** A managed process selects its prepared default, while an explicit external dependency remains a user choice. */
-export function resolveProcessOmpUlwPath(configured: string, home: string): string {
-  const selected = process.env["DORI_OMP_ULW_PATH"];
+export function resolveProcessOmpUlwPath(
+  configured: string,
+  home: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const selected = env["DORI_OMP_ULW_PATH"];
   if (!selected) return configured;
   const managed = /^omp-ulw-[a-f0-9]{40}(?:-[a-f0-9]{64})?(?:\/index\.ts)?$/.test(
     relative(consumerPaths(home).dependencies, configured),

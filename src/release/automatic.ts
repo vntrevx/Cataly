@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { captureSetupFile } from "../setup-files.ts";
 import { underProcess } from "../update/deployment-process.ts";
 import { acquireBundle, type VerifiedBundle } from "./bundle.ts";
 import {
@@ -66,6 +67,7 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
     if (releasePath(paths, observed.current) !== source) return verifyAutomaticInstallation(paths, observed);
     state = readAutomaticState(paths);
     if (!state.enabled || now < state.nextCheck) return source;
+    const snapshot = captureSetupFile(paths.config);
     const config = automaticConfig(paths);
     const attempted: AutomaticState = { version: 1, enabled: true, lastAttempt: now, nextCheck: now + DAY };
     const finish = (outcome: NonNullable<AutomaticState["outcome"]>, detail?: string, available?: string): void => {
@@ -111,13 +113,11 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       if (installed.current.requirements.omp === "18.20.0" && manifest.requirements.omp !== "18.20.0")
         throw new Error("Automatic updates cannot downgrade the bound native protocol");
       preflightAutomaticInstallation(paths);
-      const after = await installBundle(
-        paths,
-        candidate,
-        installed,
-        () => preflightAutomaticInstallation(paths),
-        options.launchOwner,
-      );
+      const after = await installBundle(paths, candidate, installed, {
+        config: snapshot,
+        beforeActivate: () => preflightAutomaticInstallation(paths),
+        ...(options.launchOwner === undefined ? {} : { launchOwner: options.launchOwner }),
+      });
       finish("installed", undefined, manifest.tag);
       return verifyRelease(paths, after.current);
     } catch (error) {

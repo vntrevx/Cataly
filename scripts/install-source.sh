@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs an OMP Dori source checkout: skill CLI, harness sources, extension, and source-selected omp-ulw.
 # DORI_NO_PULL=1 (or true, yes) installs an existing checkout without updating it.
+# --preview shows only configuration changes, without updating checkouts, dependencies or references.
 # DORI_INSTALL_MODE=primary installs into ~/.dori; DORI_INSTALL_MODE=side installs next to another Dori, in
 # OMP_DORI_HOME (default ~/.omp-dori), without changing ~/.dori, the dori command or the dori-mode skill.
 # Without DORI_INSTALL_MODE, a ~/.dori owned by another Dori is never changed: a terminal is asked, anything else stops.
@@ -12,6 +13,11 @@
 set -euo pipefail
 
 fail() { echo "$1" >&2; exit 1; }
+preview=0
+if [ "$#" -gt 0 ]; then
+  [ "$#" -eq 1 ] && [ "$1" = --preview ] || fail "Usage: scripts/install-source.sh [--preview]"
+  preview=1
+fi
 absolute() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
 at_least() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | { read -r first; printf '%s\n' "$first"; })" = "$1" ]; }
 
@@ -117,6 +123,11 @@ ulw="$(absolute "${OMP_ULW_SRC:-$base/omp-ulw}")"
 skills="$(absolute "${SKILLS_DIR:-$HOME/.agents/skills}")"
 extensions="$(absolute "${OMP_EXTENSIONS_DIR:-$HOME/.omp/agent/extensions}")"
 bin_dir="$(absolute "${OMP_DORI_BIN_DIR:-${BUN_INSTALL:-$HOME/.bun}/bin}")"
+config="$base/config.json"
+configuration_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/source-configuration.ts"
+configuration() { BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 bun "$configuration_helper" "$1" "$base" "$src" "$mode"; }
+# Capture before toolchain/checkout/dependency preparation; the receipt contains metadata, never file content.
+setup_snapshot="$(configuration capture)"
 
 # Resolve the install mode before checking every wrapper it writes. File identity follows symlinks,
 # including aliased parents, and catches hard links without trusting an existing wrapper's source.
@@ -240,6 +251,12 @@ if [ -z "${DORI_SRC:-}" ] && [ -e "$src/.git" ] && ! is_omp_dori "$src"; then
   fail "$src is a checkout of $(git -C "$src" remote get-url origin 2>/dev/null || echo 'another repository'), not omp-dori; nothing was changed. Move it aside, set DORI_SRC, or install with DORI_INSTALL_MODE=side."
 fi
 
+if [ "$preview" = 1 ]; then
+  configuration preview
+  exit 0
+fi
+
+(umask 077; mkdir -p "$base")
 if [ ! -e "$src/.git" ]; then
   (umask 077; git clone --quiet --depth 1 "$repo" "$src")
 elif [[ "${DORI_NO_PULL:-}" =~ ^(1|true|yes)$ ]]; then
@@ -294,7 +311,6 @@ elif [ -z "$ulw_explicit" ]; then
   if [ "$ulw_ref" = lock ]; then
     selected="$(bun "$src/scripts/source-dependencies.ts" ulw "$src" "$HOME")"
     [ ! -e "$ulw" ] || [ -L "$ulw" ] || fail "$ulw is an existing checkout; preserve it and move it aside before selecting the bound overlay."
-    mkdir -p "$base"
     ln -sfn "$selected" "$ulw"
     ulw_bound=1
   else
@@ -344,7 +360,6 @@ if [ "$mode" = primary ]; then
     fail "dori command was not installed; move $bin_dir/dori aside or choose another OMP_DORI_BIN_DIR."
 fi
 
-mkdir -p "$base"
 if [ "$mode" = side ] && [ -n "$ulw_explicit" ]; then
   if [ "$ulw" -ef "$base/omp-ulw" ]; then
     [ ! -L "$base/.omp-dori-ulw" ] || rm "$base/.omp-dori-ulw"
@@ -352,27 +367,7 @@ if [ "$mode" = side ] && [ -n "$ulw_explicit" ]; then
     link "$ulw" "$base/.omp-dori-ulw" || fail "omp-ulw checkout choice was not saved"
   fi
 fi
-config="$base/config.json"
-created=""
-[ -f "$config" ] || { cp "$src/skills/dori-mode/references/config.example.json" "$config" && created=1; }
-CONFIG="$config" CREATED="$created" SIDE_MODE="$mode" STATE_DIR="$base/state" bun -e '
-  import { realpathSync } from "node:fs";
-  import { dirname, join } from "node:path";
-  const path = process.env.CONFIG;
-  const config = await Bun.file(path).json();
-  let changed = false;
-  if (process.env.CREATED && process.env.SIDE_MODE === "side") config.stateDir = process.env.STATE_DIR;
-  if (!config.agentCommand || config.agentCommand[0] === "omp") {
-    const rest = Array.isArray(config.agentCommand) ? config.agentCommand.slice(1) : ["--dori-role", "lane", "--model", "{model}", "{prompt}"];
-    config.agentCommand = [join(realpathSync(dirname(path)), "bin/omp"), ...rest];
-    changed = true;
-  }
-  // OMP loads this source dependency as an extension, so the Dori extension must not import it again.
-  if (config.ompUlwPath !== "") {
-    config.ompUlwPath = "";
-    changed = true;
-  }
-  if (changed) await Bun.write(path, JSON.stringify(config, null, 2) + "\n");'
+setup_snapshot="$(DORI_SETUP_SNAPSHOT="$setup_snapshot" configuration publish-json)"
 printf '%s\n' "$mode" > "$base/.omp-dori"
 
 command -v herdr >/dev/null || command -v hc >/dev/null || echo "Install herdr or hc before launching sessions." >&2
@@ -394,6 +389,7 @@ if [ "$mode" = primary ]; then
   chmod 755 "$base/bin/omp"
 fi
 if [ "$mode" = primary ]; then
+  DORI_SETUP_SNAPSHOT="$setup_snapshot" configuration readback
   cat <<EOF
 Installed.
   Skill:     $skills/dori-mode
@@ -422,51 +418,9 @@ for part in references scripts assets; do
   [ -e "$src/skills/dori-mode/$part" ] && ln -sfn "$src/skills/dori-mode/$part" "$skill/$part"
 done
 # Only the generated skills keys and update.auto below belong to this installer; other keys belong to the owner.
-quoted_skills="$(bun -e 'console.log(JSON.stringify(process.argv[1]))' "$base/skills")"
-# OMP self-update replaces the first omp on PATH, which env.sh makes this wrapper; a replaced wrapper drops the
-# omp-dori extension and the lead exits on --dori-role. The managed deployment keeps the same per-process fence.
-generated_omp_yml="$(mktemp "$base/.omp.yml.XXXXXX")"
-cat > "$generated_omp_yml" <<EOF
-# Generated by scripts/install-source.sh for omp-dori omp sessions; skills paths and update.auto are managed.
-skills:
-  ignoredSkills:
-    - dori-mode
-  customDirectories:
-    - $quoted_skills
-update:
-  auto: false
-EOF
-OMP_YML="$base/omp.yml" OMP_YML_GENERATED="$generated_omp_yml" bun -e '
-  import { chmodSync, renameSync, statSync, writeFileSync } from "node:fs";
-  const path = process.env.OMP_YML;
-  const generatedPath = process.env.OMP_YML_GENERATED;
-  const mapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  const previousFile = Bun.file(path);
-  const previousExists = await previousFile.exists();
-  const previous = previousExists ? Bun.YAML.parse(await previousFile.text()) : {};
-  const keptSkills = previous?.skills ?? {};
-  const keptUpdate = previous?.update ?? {};
-  if (!mapping(previous) || !mapping(keptSkills) || !mapping(keptUpdate)) {
-    console.error(`${path} is not a YAML mapping of mappings; its keys were kept and nothing else was written there.`);
-    process.exit(1);
-  }
-  const generated = await Bun.file(generatedPath).text();
-  const header = [];
-  for (const line of generated.split("\n")) {
-    if (!line.startsWith("#")) break;
-    header.push(`${line}\n`);
-  }
-  const generatedConfig = Bun.YAML.parse(generated);
-  // Refresh the generated leaves without discarding other owner values in either group.
-  const merged = {
-    ...generatedConfig, ...previous,
-    skills: { ...keptSkills, ...generatedConfig.skills },
-    update: { ...keptUpdate, ...generatedConfig.update },
-  };
-  writeFileSync(generatedPath, previousExists ? header.join("") + `${Bun.YAML.stringify(merged, null, 2)}\n` : generated);
-  if (previousExists) chmodSync(generatedPath, statSync(path).mode & 0o777);
-  renameSync(generatedPath, path);
-' || { rm -f "$generated_omp_yml"; fail "kept $base/omp.yml as it was; make it a YAML mapping and install again."; }
+if ! setup_snapshot="$(DORI_SETUP_SNAPSHOT="$setup_snapshot" configuration publish-yaml)"; then
+  fail "Configuration setup held for $base/omp.yml; inspect the file and rerun --preview before retrying."
+fi
 {
   printf 'export DORI_HOME=%q\n' "$base"
   printf 'export DORI_CONFIG=%q\n' "$config"
@@ -489,6 +443,7 @@ printf 'case "${1:-}" in\n  omp) shift; exec %q "$@" ;;\n  hc) shift; exec hc "$
 mkdir -p "$bin_dir"
 link "$base/bin/omp-dori" "$bin_dir/omp-dori" || echo "Run $base/bin/omp-dori directly." >&2
 
+DORI_SETUP_SNAPSHOT="$setup_snapshot" configuration readback
 cat <<EOF
 Installed next to the Dori in $primary_home, which was not changed.
   Home:       $base (config.json, state, generated skill, omp.yml and wrappers)

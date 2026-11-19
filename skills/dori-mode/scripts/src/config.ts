@@ -179,8 +179,8 @@ const checkSupervision = (value: unknown): void => {
     throw new ConfigError("invalid supervision gitActivity: expected true or false");
 };
 
-export const loadConfig = async (path = configPath(), home = homedir()): Promise<DoriConfig> => {
-  const selectedHome = process.env["DORI_HOME"];
+export const loadConfig = async (path = configPath(), home = homedir(), env = process.env): Promise<DoriConfig> => {
+  const selectedHome = env["DORI_HOME"];
   const base = {
     ...defaultConfig(home),
     ...(selectedHome && path === join(selectedHome, "config.json")
@@ -228,21 +228,21 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
         throw new ConfigError(`invalid supervision lanes.${key}.${name}: expected a nonnegative number or null`);
     }
   }
-  const command = resolveProcessOmpCommand(merged.agentCommand, path);
+  const command = resolveProcessOmpCommand(merged.agentCommand, path, env);
   return {
     ...merged,
     agentCommand:
-      command === merged.agentCommand || process.env["DORI_AGENT_ARGV"] === undefined
+      command === merged.agentCommand || env["DORI_AGENT_ARGV"] === undefined
         ? resolveConsumerOmpCommand(command, { home })
         : command,
-    stateDir: expandHome(process.env["DORI_STATE_DIR"] ?? merged.stateDir, home),
+    stateDir: expandHome(env["DORI_STATE_DIR"] ?? merged.stateDir, home),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
-    ompUlwPath: resolveConsumerOmpUlwPath(resolveProcessOmpUlwPath(expandHome(merged.ompUlwPath, home), home), {
+    ompUlwPath: resolveConsumerOmpUlwPath(resolveProcessOmpUlwPath(expandHome(merged.ompUlwPath, home), home, env), {
       home,
       useDefault: raw.ompUlwPath === undefined,
     }),
-    leadPane: process.env["DORI_LEAD_PANE"] ?? merged.leadPane,
+    leadPane: env["DORI_LEAD_PANE"] ?? merged.leadPane,
   };
 };
 

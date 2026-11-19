@@ -56,7 +56,10 @@ installation homes, and published asset names have not been renamed.
 Install git, Bun 1.4.4+, and herdr or hc first; see the
 [source prerequisites](docs/releases.md#current-source-bundle).
 
-Use a separate checkout, not a running installation or a frozen consumer release:
+Use a separate checkout, not a running installation or a frozen consumer release.
+To inspect configuration changes first, add `--preview` to the final command below;
+review its paths and hashes, then run it without that flag to install. The preview
+does not update the checkout, prepare dependencies, or change installation files:
 
 ```bash
 git clone https://github.com/vntrevx/Cataly.git "$HOME/src/Cataly" || exit 1

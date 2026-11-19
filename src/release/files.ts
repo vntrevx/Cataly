@@ -83,7 +83,9 @@ export function owned(path: string): void {
   if (stat && process.getuid !== undefined && stat.uid !== process.getuid())
     throw new Error(`Different owner: ${path}`);
   if (stat && (stat.mode & 0o022) !== 0 && !stat.isSymbolicLink())
-    throw new Error(`Group/world-writable installation path: ${path}`);
+    throw new Error(
+      `Group/world-writable installation path: ${path}; remove write permissions with chmod go-w, then retry`,
+    );
 }
 
 export function regularFile(path: string): boolean {
@@ -96,8 +98,8 @@ export function regularFile(path: string): boolean {
 }
 
 /** Hash every byte through one descriptor without allocating a whole-file Buffer. */
-export function fileDigest(path: string): string {
-  const fd = openSync(path, "r");
+export function fileDigest(input: string | number): string {
+  const fd = typeof input === "number" ? input : openSync(input, "r");
   try {
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(1024 * 1024);
@@ -107,7 +109,7 @@ export function fileDigest(path: string): string {
       hash.update(buffer.subarray(0, count));
     }
   } finally {
-    closeSync(fd);
+    if (typeof input === "string") closeSync(fd);
   }
 }
 
