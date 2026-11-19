@@ -135,8 +135,8 @@ export class Supervision {
       timer.seconds >= (this.options.hungAfterMinutes ?? 20) * 60 &&
       now - activeAt >= (this.options.staleAfterMinutes ?? 20) * 60_000;
     const progress = this.reports.read(lane.key);
-    const hung = provedHung || (!advanced && previous?.hung === true && progress?.state === "stalled");
     const terminal = progress?.state === "done" || progress?.state === "halted";
+    const hung = provedHung || (!advanced && previous?.hung === true && !terminal && progress?.state !== "blocked");
     const unavailable = (["tokens", "costUsd"] as const)
       .filter((name) => typeof limits[name] === "number" && usage[name] === null)
       .map((name) => `${name} ceiling cannot be checked: usage unavailable`);

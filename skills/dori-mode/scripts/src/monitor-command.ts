@@ -77,7 +77,11 @@ const CLOSES_BODY: Record<string, true> = { fi: true, done: true, esac: true };
  * Read command identity and the words that may name a lane from the same parse. Lane words retain the existing
  * argv/whitespace view except for the command's own words; Dori identity comes only from executable position.
  */
-const commandWords = (command: unknown, cwd: unknown): { lanes: readonly unknown[]; dori: boolean } => {
+const commandWords = (
+  command: unknown,
+  cwd: unknown,
+  possible = false,
+): { lanes: readonly unknown[]; dori: boolean } => {
   const line = typeof command === "string" ? command : undefined;
   const raw: readonly unknown[] = line?.split(/\s+/).filter(Boolean) ?? (Array.isArray(command) ? command : []);
   // The whitespace-split word each character of the line is in.
@@ -95,9 +99,10 @@ const commandWords = (command: unknown, cwd: unknown): { lanes: readonly unknown
         quotedSubstitutions(word).map((s) => read(word.slice(s.from, s.to), (i) => baseAt(from + s.from + i)));
       return { word: passed.text, baseAt: at, after, scope, script: () => read(passed.text, at), substitutions };
     });
-  // A relative entry is the skill CLI only when it is in every directory the command may run in.
+  // Monitor ownership needs certainty; evidence refuses a CLI in any possible execution directory.
   const isDori = (word: string, dirs: Dirs): boolean =>
-    DORI_NAMES[basename(word)] === true || within(dirs, word).every((path) => SKILL_SOURCE.test(path ?? word));
+    DORI_NAMES[basename(word)] === true ||
+    within(dirs, word)[possible ? "some" : "every"]((path) => SKILL_SOURCE.test(path ?? word));
   const own = new Set<number>();
   let dori = false;
 
@@ -229,5 +234,6 @@ const commandWords = (command: unknown, cwd: unknown): { lanes: readonly unknown
 
 export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] => commandWords(command, cwd).lanes;
 
-/** Whether a command invokes Dori, after its shell syntax and supported launcher prefixes are interpreted. */
-export const hasDoriCommand = (command: unknown, cwd: unknown): boolean => commandWords(command, cwd).dori;
+/** Whether a command invokes Dori, or may invoke it when possible is true, after shell/launcher interpretation. */
+export const hasDoriCommand = (command: unknown, cwd: unknown, possible = false): boolean =>
+  commandWords(command, cwd, possible).dori;

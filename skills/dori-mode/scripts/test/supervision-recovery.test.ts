@@ -35,6 +35,31 @@ for (const failedDelivery of [false, true]) {
     for (let window = 0; window < 8; window++) expect((await f.sweep()).result.alerts).toEqual([]);
     expect(attempts).toBe(failedDelivery ? 2 : 1);
   });
+
+  test(`a report without new evidence preserves confirmed hung and ${failedDelivery ? "retries" : "deduplicates"} its alert`, async () => {
+    let attempts = 0;
+    const f = coverageFixture(state, () => {
+      if (++attempts === 1 && failedDelivery) throw new Error("delivery unavailable");
+    });
+    for (let window = 0; window < 7; window++) await f.sweep();
+    if (failedDelivery) await expect(f.sweep()).rejects.toThrow("alert delivery failed");
+    else await f.sweep();
+    const before = f.observation().lastEvidenceAt;
+    const source = f.paths[0];
+    if (!source) throw new Error("fixture needs its first candidate");
+    for (const refs of [[], [fileEvidence(source, f.repo)]]) {
+      const reportedAt = f.clock.at + 1;
+      f.reports.report(f.lane.key, "milestone", "still working", reportedAt, refs);
+      const result = (await f.sweep()).result;
+      expect(result.state).toBe("stalled");
+      expect(result.heldHung).toBe(true);
+      expect(result.lastEvidenceAt).toBe(before);
+      expect(result.lastReportAt).toBe(new Date(reportedAt).toISOString());
+      expect(attempts).toBe(failedDelivery ? 2 : 1);
+    }
+    for (let window = 0; window < 8; window++) expect((await f.sweep()).result.alerts).toEqual([]);
+    expect(attempts).toBe(failedDelivery ? 2 : 1);
+  });
 }
 
 test("one unreadable file cannot starve the rest of its window or the final window", async () => {

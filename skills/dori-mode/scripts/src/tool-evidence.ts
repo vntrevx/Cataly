@@ -95,7 +95,7 @@ const coordinates = (
   if (!command) return undefined;
   const own = typeof args["cwd"] === "string" && args["cwd"] !== "";
   const dir = !own ? session : typeof details?.["cwd"] === "string" ? details["cwd"] : undefined;
-  if (hasDoriCommand(args["command"], dir)) return COORDINATES;
+  if (hasDoriCommand(args["command"], dir, true)) return COORDINATES;
   return dir === undefined ? UNSEEN : undefined;
 };
 // Eval can finish while a nested native job is still running. Its public cell/status metadata, not output text,

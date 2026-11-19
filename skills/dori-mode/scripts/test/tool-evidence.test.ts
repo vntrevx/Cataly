@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { EvidenceError } from "../src/evidence.ts";
+import { hasDoriCommand } from "../src/monitor-command.ts";
 import { toolEvidence } from "../src/tool-evidence.ts";
 
 // The session cwd each call was called in: a work directory, and the skill's scripts directory, where `bun src/cli.ts`
@@ -173,6 +174,20 @@ describe("a command is read in the directory it started in", () => {
       result("c1", "bash", CHECKPOINT_JSON, { details: { cwd: join(SCRIPTS, "..") } }),
     ];
     expect(() => toolEvidence(explicit, "c1", undefined)).toThrow("coordinates");
+  });
+
+  test.each(["true &&", "false ||"])("a possible CLI directory after %s cannot establish work", (prefix) => {
+    const command = `${prefix} cd skills/dori-mode/scripts; ${CHECKPOINT}`;
+    const branch = [call("conditional", "bash", { command }), result("conditional", "bash", CHECKPOINT_JSON)];
+    const root = join(SCRIPTS, "../../..");
+    expect(hasDoriCommand(command, root)).toBe(false);
+    expect(hasDoriCommand(command, root, true)).toBe(true);
+    expect(() => toolEvidence(branch, "conditional", root)).toThrow("coordinates");
+    const work = [
+      call("work", "bash", { command: `${prefix} cd app; bun src/cli.ts test` }),
+      result("work", "bash", "12 pass"),
+    ];
+    expect(toolEvidence(work, "work", CWD).kind).toBe("tool");
   });
 
   test("a command whose session cwd this process did not see is refused; other tools need none", () => {
