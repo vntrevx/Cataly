@@ -1,9 +1,10 @@
 /** dori send, presence, inbound, thread, react and transcribe: the messengers. */
-import { existsSync } from "node:fs";
+import { constants, copyFileSync, existsSync } from "node:fs";
 
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
-import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
+import { channelDiscord, reactDiscord, sendDiscord, threadDiscord } from "./cli-discord-ops.ts";
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
+import { discordAttachment } from "./messenger/discord-attachment.ts";
 import { ChannelPurposeError } from "./messenger/discord-channels.ts";
 import { discordPresence } from "./messenger/discord-presence.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
@@ -15,7 +16,7 @@ import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/tel
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
 import { ThreadLedger } from "./messenger/thread-ledger.ts";
-import { transcribe, TranscriptionError } from "./messenger/voice.ts";
+import { transcribe, TranscriptionError, withLocalFile } from "./messenger/voice.ts";
 import { realClock, run } from "./run.ts";
 
 /** Messenger errors are one line, never a stack. */
@@ -147,7 +148,9 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
 const inbound: Command = async ({ key, loopMinutes, config, values }) => {
   const minutes = loopMinutes();
   const context = values["context"] === true;
+  const attachmentRefs = values["attachment-refs"] === true;
   if (context && key !== "discord") die("--context is supported for discord only");
+  if (attachmentRefs && key !== "discord") die("--attachment-refs is supported for discord only");
   if (key === "telegram") return await telegramInbound(config.stateDir, minutes);
   if (key === "discord")
     return await discordInboundCommand(
@@ -155,6 +158,7 @@ const inbound: Command = async ({ key, loopMinutes, config, values }) => {
       values["gateway"] === true,
       values["loop"] === undefined ? 3 / 60 : minutes,
       context,
+      attachmentRefs,
     );
   if (key !== "slack") die("inbound supports slack, telegram or discord");
   const auth = slackAuth(envSlackToken() ?? die(NO_SLACK_TOKEN));
@@ -208,7 +212,31 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
     );
   },
   transcribe: async ({ key, config }) => {
-    const source = key ?? die("transcribe needs an audio file path");
-    console.log(await withLocalAudio(source, (file) => transcribe(run, config.hooks.transcribe, file)));
+    const source = key ?? die("transcribe needs an audio file path, URL or attachment reference");
+    const input = source.startsWith("discord-file:") ? discordAttachment(source) : source;
+    console.log(
+      await withLocalFile(input, config.transcribeMaxBytes, (file) => transcribe(run, config.hooks.transcribe, file)),
+    );
+  },
+  download: async ({ key, need, opt }) => {
+    const source = discordAttachment(key ?? die("download needs a Discord attachment reference"));
+    const out = need("out");
+    console.log(
+      await withLocalFile(
+        source,
+        Number(opt("max-bytes") ?? 26214400),
+        async (file) => {
+          try {
+            copyFileSync(file, out, constants.COPYFILE_EXCL);
+          } catch {
+            throw new TranscriptionError(
+              "download: could not create output; choose a writable, nonexistent --out path",
+            );
+          }
+          return `DOWNLOADED ${JSON.stringify(out)}`;
+        },
+        false,
+      ),
+    );
   },
 };

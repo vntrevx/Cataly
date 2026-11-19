@@ -16,12 +16,14 @@ export type Message = {
   /** Present on replies, or null when Discord could not load the target (for example, after deletion). */
   referenced_message?: { id?: string; author?: { id?: string }; content?: string } | null;
 };
-/** One owner attachment, retaining Discord field names and the exact expiring signed CDN URL. */
+/** Existing attachment fields stay intact; a usable original-route reference is additive. */
 type InboundAttachment = {
   filename: string;
   content_type?: string;
   size: number;
   url: string;
+  id?: string;
+  ref?: string;
   /** Set by the message's IS_VOICE_MESSAGE flag. */
   voice?: true;
   duration_secs?: number;
@@ -120,7 +122,7 @@ export const isOwnerMessage = (message: Message, ownerId: string, botId: string)
   !message.webhook_id &&
   (message.type === 0 || message.type === 19);
 
-export const toInbound = (message: Message): DiscordInbound => {
+export const toInbound = (message: Message, botId: string): DiscordInbound => {
   if (typeof message.content !== "string") {
     throw new MessengerError(
       "Discord inbound owner message content is unavailable; enable Message Content Intent",
@@ -143,31 +145,47 @@ export const toInbound = (message: Message): DiscordInbound => {
             text: typeof replied.content === "string" ? replied.content : "",
           }
         : null,
-    attachments: toAttachments(message),
+    attachments: toAttachments(message, botId),
   };
 };
 
 const IS_VOICE_MESSAGE = 1 << 13;
 
-const toAttachments = (message: Message): InboundAttachment[] => {
+const toAttachments = (message: Message, botId: string): InboundAttachment[] => {
   const list = message.attachments === undefined ? [] : message.attachments;
   if (!Array.isArray(list)) throw inboundProtocolError("Discord inbound attachment list is invalid");
   const voice = typeof message.flags === "number" && (message.flags & IS_VOICE_MESSAGE) !== 0;
+  const counts = new Map<string, number>();
+  for (const value of list) {
+    const id = value && typeof value === "object" && !Array.isArray(value) ? (value as { id?: unknown }).id : undefined;
+    if (isDiscordSnowflake(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
   return list.map((value: unknown) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw inboundProtocolError("Discord inbound attachment is invalid");
     }
-    const { filename, content_type, size, url, duration_secs } = value as Record<string, unknown>;
-    if (typeof filename !== "string" || typeof url !== "string" || !Number.isSafeInteger(size)) {
+    const { id, filename, content_type, size, url, duration_secs } = value as Record<string, unknown>;
+    if (
+      typeof filename !== "string" ||
+      typeof url !== "string" ||
+      typeof size !== "number" ||
+      !Number.isSafeInteger(size)
+    ) {
       throw inboundProtocolError("Discord inbound attachment is invalid");
     }
     return {
       filename,
       ...(typeof content_type === "string" ? { content_type } : {}),
-      size: size as number,
+      size,
       url,
       ...(voice ? { voice: true as const } : {}),
       ...(typeof duration_secs === "number" ? { duration_secs } : {}),
+      ...(isDiscordSnowflake(id) && counts.get(id) === 1 && size >= 0
+        ? {
+            id,
+            ref: `discord-file:${botId}:${message.author!.id}:${message.channel_id}:${message.id}:${id}`,
+          }
+        : {}),
     };
   });
 };

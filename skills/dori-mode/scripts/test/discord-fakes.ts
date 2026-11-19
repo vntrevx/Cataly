@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { audioSamples } from "./audio-samples.ts";
 import { withState } from "./fakes.ts";
 
 export const ids = {
@@ -17,16 +18,42 @@ export const ids = {
 export type DiscordRoute = {
   readonly body?: unknown;
   readonly raw?: string;
+  readonly base64?: string;
+  readonly headers?: Record<string, string>;
+  readonly chunks?: readonly string[];
+  readonly streamFailureAfter?: number;
   readonly status?: number;
+  /** A 3xx answer naming its target; the recorder honours `redirect: "error" | "manual" | "follow"`. */
+  readonly location?: string;
+  /** Response metadata substitution: the reported final URL and redirected flag. */
+  readonly url?: string;
+  readonly redirected?: boolean;
   readonly failure?: "fetch" | "body";
   readonly sequence?: readonly DiscordRoute[];
 };
 type RecordedRequest = { readonly key: string; readonly body: Record<string, unknown> | null };
+type NetworkTrace = {
+  readonly href: string;
+  readonly redirect: string | null;
+  readonly credentials: string | null;
+  readonly authorization: boolean;
+  readonly signal: boolean;
+};
 type AudioReceipt = {
   readonly file: string;
   readonly content: string;
+  readonly base64: string;
   readonly fileMode: number;
   readonly dirMode: number;
+};
+export type DiscordResult = {
+  code: number;
+  out: string;
+  err: string;
+  requests: RecordedRequest[];
+  keys: string[];
+  audio: AudioReceipt[];
+  network: NetworkTrace[];
 };
 type DiscordCli = {
   readonly done: () => void;
@@ -38,16 +65,10 @@ type DiscordCli = {
       readonly routes?: Record<string, DiscordRoute>;
       readonly environment?: Record<string, string | undefined>;
       readonly hook?: readonly string[] | null;
+      readonly transcribeMaxBytes?: unknown;
       readonly stdin?: string;
     },
-  ) => Promise<{
-    code: number;
-    out: string;
-    err: string;
-    requests: RecordedRequest[];
-    keys: string[];
-    audio: AudioReceipt[];
-  }>;
+  ) => Promise<DiscordResult>;
 };
 
 const tags = [
@@ -75,14 +96,15 @@ const routes: Record<string, DiscordRoute> = {
   [`DELETE /channels/${ids.thread}/messages/${ids.message}/reactions/%F0%9F%91%80/@me`]: { status: 204 },
   [`PUT /channels/${ids.text}/messages/${ids.message}/reactions/party%3A123/@me`]: { status: 204 },
   [`DELETE /channels/${ids.text}/messages/${ids.message}/reactions/party%3A123/@me`]: { status: 204 },
-  "GET /audio/voice.ogg?token=private": { raw: "audio bytes" },
+  "GET /audio/voice.ogg?token=private": { base64: audioSamples.ogg, headers: { "content-type": "audio/ogg" } },
 };
 
 const audioHook = `const fs = require("node:fs");
 const path = require("node:path");
 const file = process.argv.at(-1);
-const content = fs.readFileSync(file, "utf8");
-fs.appendFileSync(process.env.DORI_TEST_AUDIO_LOG, JSON.stringify({file, content,
+const bytes = fs.readFileSync(file);
+const content = bytes.toString("utf8");
+fs.appendFileSync(process.env.DORI_TEST_AUDIO_LOG, JSON.stringify({file, content, base64: bytes.toString("base64"),
   fileMode: fs.statSync(file).mode & 0o777, dirMode: fs.statSync(path.dirname(file)).mode & 0o777}) + "\\n");
 if (process.env.DORI_TEST_TRANSCRIBE === "fail") { console.error("synthetic hook failure"); process.exit(7); }
 if (process.env.DORI_TEST_TRANSCRIBE !== "empty") process.stdout.write(content);`;
@@ -92,6 +114,7 @@ const discordCli = (): DiscordCli => {
   const state = withState();
   const log = join(state.dir, "fetch.jsonl");
   const audioLog = join(state.dir, "audio.jsonl");
+  const networkLog = join(state.dir, "network.jsonl");
   const routeFile = join(state.dir, "routes.json");
   const config = join(state.dir, "config.json");
   const tmp = join(state.dir, "tmp");
@@ -105,12 +128,14 @@ const discordCli = (): DiscordCli => {
     invoke: async (args, options = {}) => {
       rmSync(log, { force: true });
       rmSync(audioLog, { force: true });
+      rmSync(networkLog, { force: true });
       writeFileSync(routeFile, JSON.stringify({ ...routes, ...options.routes }));
       writeFileSync(
         config,
         JSON.stringify({
           stateDir: state.dir,
           defaultCwd: state.dir,
+          transcribeMaxBytes: options.transcribeMaxBytes,
           hooks: {
             transcribe:
               options.hook === null ? undefined : (options.hook ?? [process.execPath, "-e", audioHook, "{file}"]),
@@ -136,6 +161,7 @@ const discordCli = (): DiscordCli => {
             DORI_DISCORD_TOKEN: "synthetic-ops-token",
             DORI_TEST_FETCH_LOG: log,
             DORI_TEST_AUDIO_LOG: audioLog,
+            DORI_TEST_NETWORK_LOG: networkLog,
             DORI_TEST_DISCORD_ROUTES: routeFile,
             ...options.environment,
           },
@@ -162,7 +188,21 @@ const discordCli = (): DiscordCli => {
             .split("\n")
             .map((line) => JSON.parse(line) as AudioReceipt)
         : [];
-      return { code, out: out.trim(), err: err.trim(), requests, keys: requests.map((request) => request.key), audio };
+      const network: NetworkTrace[] = existsSync(networkLog)
+        ? readFileSync(networkLog, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as NetworkTrace)
+        : [];
+      return {
+        code,
+        out: out.trim(),
+        err: err.trim(),
+        requests,
+        keys: requests.map((request) => request.key),
+        audio,
+        network,
+      };
     },
   };
 };

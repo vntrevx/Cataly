@@ -71,8 +71,10 @@ const USAGE = `dori <command> [options]
   channel discord set <channel> --purpose T | clear <channel> | list
                                        the operator's purpose note per channel or thread, shown by inbound --context
   presence <slack|discord>             keep the account shown as online until stopped
-  transcribe <audio-file|url>           run hooks.transcribe and print the text; HTTP(S) downloads are private and temporary
-  inbound slack|telegram|discord [--loop MIN] [--gateway] [--context]
+  transcribe <audio-file|url|ref>       run hooks.transcribe; URLs and attachment refs use private temporary files
+  download <discord-file:...> --out FILE [--max-bytes N]
+                                       download an original owner attachment without exposing its signed URL
+  inbound slack|telegram|discord [--loop MIN] [--gateway] [--context] [--attachment-refs]
                                        print INBOUND lines: Slack unread thread replies / Telegram owner DMs, edits and media + configured topic
                                        the Dori posted in (any helper), DMs and channels with unread mentions
                                        Discord requires DORI_DISCORD_TOKEN, DORI_DISCORD_OWNER_ID and configured channel IDs
@@ -81,6 +83,7 @@ const USAGE = `dori <command> [options]
                                        Discord polls every 3 seconds by default; --loop MIN overrides the interval;
                                        --gateway delivers owner messages live with REST backfill and ignores --loop, including 0
                                        --context (Discord) adds INBOUND_CONTEXT: channel, thread, topic and recorded purposes
+                                       --attachment-refs (Discord) omits signed URLs; default URL fields stay compatible
   inbound-lag [--limit N]              receive-lag percentiles from state/telegram-lag.jsonl (the meter behind the INBOUND lines)`;
 
 const [command = "", ...rest] = process.argv.slice(2);
@@ -122,11 +125,14 @@ const flags = parseArgs({
     loop: { type: "string" },
     gateway: { type: "boolean" },
     context: { type: "boolean" },
+    "attachment-refs": { type: "boolean" },
     purpose: { type: "string" },
     to: { type: "string" },
     text: { type: "string" },
     edit: { type: "string" },
     "text-file": { type: "string" },
+    out: { type: "string" },
+    "max-bytes": { type: "string" },
     reply: { type: "string" },
     tag: { type: "string", multiple: true },
     archive: { type: "boolean" },
@@ -197,6 +203,7 @@ switch (command) {
   case "channel":
   case "inbound-lag":
   case "transcribe":
+  case "download":
     commands = (await import("./cli-messenger.ts")).messengerCommands;
     break;
   case "decision":

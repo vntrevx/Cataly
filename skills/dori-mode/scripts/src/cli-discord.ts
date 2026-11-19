@@ -8,7 +8,7 @@ import { discordInbound, formatDiscordInbound, formatInboundContext } from "./me
 import type { Emit } from "./messenger/discord-inbound-api.ts";
 import { discordInboundLive } from "./messenger/discord-inbound-live.ts";
 import { discordInboundQueue } from "./messenger/discord-inbound-queue.ts";
-import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
+import { discordInboundOptions } from "./messenger/discord-inbound-env.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { recordOwes } from "./owes.ts";
 import { realClock } from "./run.ts";
@@ -45,12 +45,6 @@ export const untilStopped = async (gateway: { done: Promise<void>; close(): void
   }
 };
 
-const idList = (value: string | undefined): string[] =>
-  (value ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter((id) => id !== "");
-
 /**
  * Configured parents follow active threads unless DORI_DISCORD_THREADS=off; scope all keeps its own discovery.
  * `context` adds the channel, thread, topic and recorded purposes to each single stdout group.
@@ -60,41 +54,26 @@ export const discordInboundCommand = async (
   gateway: boolean,
   pollMinutes: number,
   context = false,
+  attachmentRefs = false,
 ) => {
   const env = process.env;
-  const ownerId = discordInboundEnv("DORI_DISCORD_OWNER_ID", env["DORI_DISCORD_OWNER_ID"]);
-  const scope = env["DORI_DISCORD_SCOPE"]?.trim();
-  if (scope !== undefined && scope !== "" && scope !== "all") die("DORI_DISCORD_SCOPE must be all or unset");
-  const all = scope === "all";
-  const setting = env["DORI_DISCORD_THREADS"]?.trim().toLowerCase();
-  if (setting !== undefined && setting !== "" && setting !== "off" && setting !== "on")
-    die("DORI_DISCORD_THREADS must be on, off or unset");
-  const threads = setting !== "off";
-  const channelIds = ["DORI_DISCORD_CHANNEL_ID", "DORI_DISCORD_CHANNEL_IDS"].flatMap((name) =>
-    idList(env[name]).map((id) => discordInboundEnv(name, id)),
-  );
-  if (!all && channelIds.length === 0) discordInboundEnv("DORI_DISCORD_CHANNEL_ID", env["DORI_DISCORD_CHANNEL_ID"]);
+  const options = discordInboundOptions(env);
+  const { ownerId, all } = options;
   const token = env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
   const queue = discordInboundQueue(stateDir);
   try {
     if (!gateway && queue.first())
       die("Discord inbound has pending Gateway work; restart with --gateway before REST mode");
     const discord = new Discord(fetchHttp, realClock, token);
-    const intake = await discordInbound(discord, queue.storeFor, {
-      ownerId,
-      channelIds: [...new Set(channelIds)],
-      all,
-      threads,
-    });
+    const intake = await discordInbound(discord, queue.storeFor, options);
     const watching = all ? "all" : intake.channels().join(",");
     const where = context ? inboundContext(discord, new DiscordChannels(stateDir), realClock.now) : undefined;
     // Context and the owner line remain one stdout group, after the owe is published.
     const emit: Emit = async (message, signal) => {
       signal?.throwIfAborted();
+      const line = formatDiscordInbound(message, attachmentRefs);
       if (routeDiscordAskReply(stateDir, message, ownerId)) return;
-      const text = where
-        ? `${formatDiscordInbound(message)}\n${formatInboundContext(message, await where(message.channel))}`
-        : formatDiscordInbound(message);
+      const text = where ? `${line}\n${formatInboundContext(message, await where(message.channel))}` : line;
       await recordOwes(stateDir, text, Date.now(), signal);
       signal?.throwIfAborted();
       console.log(text);

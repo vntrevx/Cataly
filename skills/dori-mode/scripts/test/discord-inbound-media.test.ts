@@ -12,7 +12,7 @@ import { liveWorld } from "./discord-inbound-live-fakes.ts";
 
 const options = { ownerId: "10", channelIds: ["20"] };
 const cdn = (name: string) => `https://cdn.discordapp.com/attachments/20/1/${name}?ex=1&is=2&hm=3`;
-/** Discord attachment fields that are not carried (id, proxy_url, waveform) remain fixture input only. */
+/** Legacy URL values stay exact; unique attachment IDs also yield optional references. */
 const attachment = (filename: string, patch: Record<string, unknown> = {}) => ({
   id: "500",
   filename,
@@ -45,12 +45,12 @@ const media: TestDiscordMessage[] = [
 ];
 const expected = [
   'INBOUND discord 20 101 from=owner ref=- ""',
-  `INBOUND_ATTACHMENT discord 20 101 {"filename":"song.mp3","content_type":"audio/mpeg","size":1234,"url":"${cdn("song.mp3")}"}`,
+  `INBOUND_ATTACHMENT discord 20 101 {"filename":"song.mp3","content_type":"audio/mpeg","size":1234,"url":"${cdn("song.mp3")}","id":"500","ref":"discord-file:99:10:20:101:500"}`,
   'INBOUND discord 20 102 from=owner ref=- "two files"',
   `INBOUND_ATTACHMENT discord 20 102 {"filename":"a.png","content_type":"image/png","size":1234,"url":"${cdn("a.png")}"}`,
   `INBOUND_ATTACHMENT discord 20 102 {"filename":"notes","size":1234,"url":"${cdn("notes")}"}`,
   'INBOUND discord 20 103 from=owner ref=- ""',
-  `INBOUND_ATTACHMENT discord 20 103 {"filename":"voice-message.ogg","content_type":"audio/ogg","size":1234,"url":"${cdn("voice-message.ogg")}","voice":true,"duration_secs":3.5}`,
+  `INBOUND_ATTACHMENT discord 20 103 {"filename":"voice-message.ogg","content_type":"audio/ogg","size":1234,"url":"${cdn("voice-message.ogg")}","voice":true,"duration_secs":3.5,"id":"500","ref":"discord-file:99:10:20:103:500"}`,
   'INBOUND discord 20 104 from=owner ref=90 "this one"',
   'INBOUND_REPLY discord 20 104 {"id":"90","author":"99","text":"bot said \\"hi\\""}',
   'INBOUND discord 20 105 from=owner ref=91 "gone"',
@@ -62,10 +62,10 @@ test("only a reply's reference is ref=: a forward names a message but answers no
     message_reference: { type: 1, message_id: "92" },
     referenced_message: { id: "92", author: { id: "99" }, content: "the question" },
   });
-  expect(formatDiscordInbound(toInbound(forward))).toBe('INBOUND discord 20 107 from=owner ref=- ""');
-  expect(toInbound(ownerMessage("108", { type: 19, message_reference: { type: 0, message_id: "92" } })).reference).toBe(
-    "92",
-  );
+  expect(formatDiscordInbound(toInbound(forward, "99"))).toBe('INBOUND discord 20 107 from=owner ref=- ""');
+  expect(
+    toInbound(ownerMessage("108", { type: 19, message_reference: { type: 0, message_id: "92" } }), "99").reference,
+  ).toBe("92");
 });
 
 /** Capture one emit per owner message, before its cursor commit. */

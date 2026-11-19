@@ -1,41 +1,15 @@
-/** Discord send/thread/react operations and URL audio staging for the existing transcription hook. */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+/** Discord send/thread/react operations. */
 import { type Command, die, messageText } from "./cli-context.ts";
 import { type DcChannel, Discord, isForumType } from "./messenger/discord.ts";
 import { DiscordChannels, purposeText } from "./messenger/discord-channels.ts";
 import { discordInboundEnv } from "./messenger/discord-inbound-state.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { DISCORD_LIMIT } from "./messenger/split.ts";
-import { TranscriptionError } from "./messenger/voice.ts";
 import { recordMark, recordSent } from "./owes.ts";
 import { realClock } from "./run.ts";
 
 const client = () =>
   new Discord(fetchHttp, realClock, process.env["DORI_DISCORD_TOKEN"] ?? die("DORI_DISCORD_TOKEN is not set"));
-
-/** Local paths pass through; downloaded audio belongs only to this invocation and is always removed. */
-export const withLocalAudio = async (source: string, use: (file: string) => Promise<string>): Promise<string> => {
-  if (!/^https?:\/\//i.test(source)) return await use(source);
-  const dir = mkdtempSync(join(tmpdir(), "dori-audio-"));
-  try {
-    let file: string;
-    try {
-      const url = new URL(source);
-      const response = await fetch(url);
-      if (!response.ok) throw new TranscriptionError(`transcribe: GET ${url.pathname} answered ${response.status}`);
-      file = join(dir, basename(url.pathname) || "audio");
-      writeFileSync(file, new Uint8Array(await response.arrayBuffer()), { mode: 0o600, flag: "wx" });
-    } catch (error) {
-      if (error instanceof TranscriptionError) throw error;
-      throw new TranscriptionError("transcribe: could not download audio");
-    }
-    return await use(file);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-};
 
 /** An exact channel ID, or a unique channel name in the explicitly selected guild. */
 const channelOf = async (dc: Discord, raw: string): Promise<DcChannel> => {

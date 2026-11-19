@@ -205,3 +205,7 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+- Unreleased: Stream URL transcription within configurable `transcribeMaxBytes` (default 25 MiB), abort overflow immediately, and verify audio container signatures against MIME before invoking the hook. Compatibility change: raw PCM, unsupported URL formats and MIME mismatches are rejected with a one-line remedy; local file paths remain unchanged.
+
+- Unreleased (source only): Add original-route Discord attachment references and bounded `dori download`, keep existing signed `url` fields by default, and make URL omission an explicit `inbound discord --attachment-refs` opt-in. Reference downloads verify bot/owner/scope/message/file identity and exact size, reject unsafe CDN paths and redirects, and never echo URL credentials.

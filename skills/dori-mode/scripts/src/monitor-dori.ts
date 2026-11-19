@@ -14,6 +14,7 @@ export const DORI_COMMANDS: Record<string, true> = {
   close: true,
   "dead-panes": true,
   decision: true,
+  download: true,
   freshness: true,
   guard: true,
   harness: true,
@@ -81,6 +82,8 @@ export const DORI_VALUE_OPTIONS: Record<string, true> = {
   worklog: true,
   "ignore-author": true,
   self: true,
+  out: true,
+  "max-bytes": true,
 };
 const MESSENGER_COMMANDS: Record<string, true> = {
   send: true,
