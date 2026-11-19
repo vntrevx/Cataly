@@ -197,3 +197,5 @@ CI coverage for macOS/hc is distinct from supported live consumer behavior. A so
 The terminal-admission integration group uses a test-local 20-second budget for two distinct real Git/fsync candidate lifecycles. Runtime command deadlines, assertion coverage and the default budget of unrelated tests are unchanged.
 
 The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, public dependency pin and third-party notices remain unchanged.
+
+- Unreleased (source only): Telegram inbound now verifies bot identity and an empty webhook before readiness or polling; startup rejection and interruption leave the cursor and existing webhook untouched.

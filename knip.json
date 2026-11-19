@@ -20,7 +20,8 @@
         "skills/dori-mode/scripts/test/record-discord-inbound.ts",
         "skills/dori-mode/scripts/test/record-discord-gateway.ts",
         "skills/dori-mode/scripts/test/record-fetch.ts",
-        "skills/dori-mode/scripts/test/record-discord.ts"
+        "skills/dori-mode/scripts/test/record-discord.ts",
+        "skills/dori-mode/scripts/test/record-telegram-startup.ts"
       ],
       "project": [
         "src/**/*.ts",

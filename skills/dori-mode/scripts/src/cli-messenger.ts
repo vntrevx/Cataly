@@ -111,6 +111,25 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   let reactWarned = false;
   const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
   const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
+  // Authentication and transport readiness must finish before advertising or consuming inbound work.
+  const identity = await tg.call<{ id?: unknown; is_bot?: unknown }>("getMe", {}).catch(() => {
+    throw new MessengerError("Telegram inbound bot identity could not be verified; check token and API access", 0);
+  });
+  if (
+    !identity ||
+    identity.is_bot !== true ||
+    typeof identity.id !== "number" ||
+    !Number.isSafeInteger(identity.id) ||
+    identity.id <= 0
+  )
+    throw new MessengerError("Telegram getMe returned an invalid bot identity", 0);
+  const webhook = await tg.call<{ url?: unknown }>("getWebhookInfo", {}).catch(() => {
+    throw new MessengerError("Telegram inbound webhook status could not be verified; check API access", 0);
+  });
+  if (typeof webhook?.url !== "string")
+    throw new MessengerError("Telegram getWebhookInfo returned an invalid webhook status", 0);
+  if (webhook.url !== "")
+    throw new MessengerError("Telegram inbound refused an active webhook; use a polling bot (webhook unchanged)", 409);
   console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
   // The INBOUND line stays exactly as monitors parse it; receive lag goes to its own jsonl.
   const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
