@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Routine monitor readiness/heartbeat acknowledgements, pending report notices and confirmed nudges are retained for the next turn without waking Dori. Other output, mixed batches, process exits and output preservation warnings still wake; session ownership, filters and byte limits are unchanged.
+
 - Reuse an already-published ULW candidate after unrelated main changes only after verifying its canonical PR, accepted parent and exact metadata-only tree. Preserve closed decisions and exact-head CI deduplication without rewriting branches or repeating Git object uploads.
 
 - Follow the canonical `vntrevx/Cataly` repository identity in the ULW/release workflow guards and their shared publisher/release checks. The exact repository, tag, commit, workflow and trusted check bindings remain enforced; forks and the former identity are refused.
@@ -22,6 +24,8 @@
 - Discord backfill reconciles durably queued owners with older REST gaps before newer delivery or filtered checkpoints, preserving requests absent from REST. Indexed one-record reads keep queued backlog out of application arrays. Admission metadata and exact-ID acknowledgements preserve late frames without regressing cursors; ordering is qualified at each delivery selection. Emit/checkpoint crashes, late acknowledgement crashes and conservative legacy-row recovery can repeat requests. Existing queue ownership, privacy and storage limits remain in force; migration indexes consume database budget and temporary construction space.
 
 - Discord REST intake batches filtered-message cursor writes into the next successful owner checkpoint or one trailing checkpoint. Owner emits still checkpoint individually, live Gateway delivery is unchanged, and failures never commit past an undelivered owner message.
+
+- Bound native OMP binds custom-message delivery and model starts to their owning transcript across `/new` and nested session switches, including asynchronous normalization and preflight. Unique generations prevent abandoned target reuse after rollback; external messages wait for relevant rollback decisions without making transition callbacks wait on themselves. Same-session delivery remains intact. CI runs the ownership regressions against the actual bound native source.
 
 - Linux host sampling now reads load and memory directly from `/proc`, avoiding two `cat` children and three failed macOS command attempts per sample. Disk and session sampling, unknown-value behavior, and non-Linux probes are unchanged.
 

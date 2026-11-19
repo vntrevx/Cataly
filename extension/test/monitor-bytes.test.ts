@@ -5,8 +5,12 @@ import { Monitors } from "../monitor";
 import { until } from "./fake-pi";
 
 const messages: string[] = [];
+const wakes: boolean[] = [];
 const monitors = new Monitors(
-  (text) => messages.push(text),
+  (text, delivery) => {
+    messages.push(text);
+    wakes.push(delivery.wake);
+  },
   () => "s1",
   10,
 );
@@ -19,11 +23,24 @@ afterEach(() => {
   monitors.stopAll();
   for (const path of files()) fs.rmSync(dirname(path), { recursive: true, force: true });
   messages.length = 0;
+  wakes.length = 0;
 });
 // These integration tests read real child pipes; fake clocks cannot drive their I/O or lifetime.
 const start = (code: string, filter = ".", name = "bytes") =>
   monitors.start(name, [process.execPath, "-e", code], filter, "/", "s1");
 const exited = () => until(() => messages.join("\n").includes("monitor exited"));
+
+test.each([65536, 65537])("wakes for preserved notices at %d raw bytes", async (size) => {
+  const line = "PRESENCE_ACK ".padEnd(size, "x");
+  start(`console.log("PRESENCE_ACK ".padEnd(${size}, "x"));setInterval(()=>{},1000)`);
+  await until(() => messages.join("\n").includes(size === 65536 ? "message saved" : "oversized line saved"));
+  expect(files()).toHaveLength(1);
+  const expected = size === 65536 ? `[bytes] ${line}` : `${line}\n`;
+  expect(fs.readFileSync(files()[0]!, "utf8")).toBe(expected);
+  expect(wakes.length).toBeGreaterThan(0);
+  expect(wakes.every((wake) => wake === true)).toBe(true);
+  expect(messages.every((text) => Buffer.byteLength(text) <= 65536)).toBe(true);
+});
 
 test("preserves split UTF-8, CRLF, empty lines, and an unterminated final line", async () => {
   start(
@@ -85,6 +102,7 @@ test("reports and stops on a spool failure instead of dropping output or bufferi
     expect(messages.join("\n")).toContain("fixture storage unavailable");
     expect(messages.join("\n")).toContain("may be incomplete");
     expect(monitors.list()).toEqual([]);
+    expect(wakes).toEqual([true]);
   } finally {
     failure.mockRestore();
   }

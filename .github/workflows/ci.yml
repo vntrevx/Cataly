@@ -46,7 +46,7 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: skills/dori-mode/scripts
       - run: bun run ci
-      - name: Verify latest ULW code-mode and task bridge on the actual bound native source
+      - name: Verify bound native session ownership and ULW code-mode bridges
         timeout-minutes: 20
         run: |
           set -euo pipefail
@@ -56,6 +56,12 @@ jobs:
           bun scripts/source-dependencies.ts assert-native "$GITHUB_WORKSPACE" "$smoke/home"
           version=$(HOME="$smoke/home" "$native/bin/omp" --version)
           test "$version" = '18.20.0'
+          (
+            cd "$native/source"
+            env -i HOME="$smoke/home" LANG=C.UTF-8 \
+              PATH="$native/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \
+              bun test --timeout 15000 packages/coding-agent/test/agent-session-next-turn-ownership.test.ts
+          )
           for check in code-mode-host-check code-mode-task-host-check; do
             env -i HOME="$smoke/home" LANG=C.UTF-8 \
               PATH="$native/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \

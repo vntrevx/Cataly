@@ -241,7 +241,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       if (delivery.isCurrent())
         pi.sendMessage(
           { customType: "dori-monitor", content, display: true },
-          { triggerTurn: true, deliverAs: "aside" },
+          { triggerTurn: delivery.wake, deliverAs: delivery.wake ? "aside" : "nextTurn" },
         );
     },
     () => (role === "dori" ? session?.id : undefined),
@@ -617,7 +617,7 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       op: z.enum(["start", "stop", "list"]).describe("start a monitor, stop one, or list running monitors"),
       name: z.string().optional().describe("monitor name (start, stop)"),
       argv: z.array(z.string()).optional().describe("command and arguments, run without a shell (start)"),
-      filter: z.string().optional().describe("regular expression; matching output lines wake the session (start)"),
+      filter: z.string().optional().describe("regular expression selecting delivered output lines (start)"),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (role !== "dori" || ctx.agent.kind !== "main" || !session)
