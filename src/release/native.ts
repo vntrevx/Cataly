@@ -12,11 +12,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { shq } from "../delivery.ts";
 import { command } from "../update/deployment-process.ts";
 import { digest } from "../update/source.ts";
 import { fileDigest, owned, readJson, realDirectory, regularFile, saveJson } from "./files.ts";
+import { bindOfficialNativeAddon } from "./native-addon.ts";
 import { leaseNativeIdentity, nativeStagePrefix } from "./native-cache-lease.ts";
 import { assertNativeExport } from "./native-export.ts";
 import { assertSourceBundle, bundleEnv, readSourceBundle } from "./source-bundle.ts";
@@ -125,13 +126,6 @@ export function assertNativeSource(
   return receipt;
 }
 
-async function probe(loader: string, cwd: string, home: string, bun: string, natives: string): Promise<string> {
-  const code = `const m = await import(process.argv[1]); const b = m.loadNative();
-if (typeof b.__piNativesBuildVersion !== "function" || b.__piNativesBuildVersion() !== "18.20.0") throw new Error("official native addon version differs");
-const s = m.nativeAddonStatus(); if (!s || s.version !== "18.20.0" || s.stale) throw new Error("native addon identity unavailable"); console.log(s.path);`;
-  return command([bun, "-e", code, loader], cwd, { ...bundleEnv(home, bun), PI_NATIVES_DIR: natives }, 60_000);
-}
-
 /** Frozen official addon reuse changes no Rust code and makes no compiled-binary equivalence claim. */
 export async function provisionNativeSource(
   source: string,
@@ -199,26 +193,7 @@ export async function provisionNativeSource(
       bundleEnv(home, bun),
       300_000,
     );
-    const official = await probe(
-      join(addon, "node_modules/@oh-my-pi/pi-natives/native/loader-state.js"),
-      stage,
-      home,
-      bun,
-      natives,
-    );
-    if (
-      !regularFile(official) ||
-      !realpathSync(official).startsWith(`${realpathSync(join(addon, "node_modules"))}/`) ||
-      !official.endsWith(".node")
-    )
-      throw new Error("Official native package resolved an addon outside its frozen install");
-    const target = join(checkout, "packages/natives/native", basename(official));
-    copyFileSync(official, target);
-    if (
-      resolve(await probe(join(checkout, "packages/natives/native/loader-state.js"), stage, home, bun, natives)) !==
-      target
-    )
-      throw new Error("Bound source did not load the exact version-matched official addon");
+    const target = await bindOfficialNativeAddon(stage, checkout, home, bun, bundle.lock.nativeVersion!);
     symlinkSync(bun, join(stage, "bin/bun"));
     const launcher = nativeLauncher(source, home, directory, bun);
     writeFileSync(join(stage, "bin/omp"), launcher, { mode: 0o700 });
@@ -234,7 +209,7 @@ export async function provisionNativeSource(
       bun,
       bunHash: fileDigest(bun),
       addonLockHash: digest(readFileSync(join(source, "native-addon/bun.lock"))),
-      addon: join(directory, "source/packages/natives/native", basename(official)),
+      addon: join(directory, "source/packages/natives/native", basename(target)),
       addonHash: fileDigest(target),
     };
     assertSourceBundle(checkout, bundle, home);

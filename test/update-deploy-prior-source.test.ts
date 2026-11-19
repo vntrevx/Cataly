@@ -30,7 +30,7 @@ async function conversion(sameOverlay: boolean) {
   ownReleaseRoot(config);
   const release = join(config.releaseRoot, "releases/new");
   const ulw = overlayFixture(release, join(root, "ulw-upstream"));
-  overlayFixture(release, join(root, "native-upstream"), true);
+  overlayFixture(release, join(root, "native-upstream"), true, "reviewed-overlay", "18.20.0");
   mkdirSync(join(release, "extension"));
   writeFileSync(join(release, "extension/index.ts"), "export const generation = 'new';\n");
   await provisionSourceOverlay(release, config.home, undefined, ulw.checkout);

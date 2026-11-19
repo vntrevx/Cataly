@@ -75,7 +75,7 @@ async function installReferences(
 ): Promise<void> {
   // Preflight the entire set before the first link/config creation. Existing custom files stay untouched.
   preflightInstallation(paths);
-  const native = manifest.requirements.omp === "18.20.0" ? await provisionNativeSource(source, paths.home) : undefined;
+  const native = manifest.requirements.omp !== "18.18.8" ? await provisionNativeSource(source, paths.home) : undefined;
   const gate = await waitLaunchGate(paths);
   try {
     assertNoConsumerLaunches(paths, launchOwner);

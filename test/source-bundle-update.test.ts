@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSourceBundle } from "../src/release/source-bundle.ts";
+import { assertSourceBundle, readSourceBundle } from "../src/release/source-bundle.ts";
 import { prepareUlwUpdate, ULW_UPDATE_FILES } from "../src/release/source-bundle-update.ts";
 import { checkoutSourceBundle } from "../src/release/source-checkout.ts";
 import { digest } from "../src/update/source.ts";
@@ -120,3 +129,49 @@ test("rewritten or unreachable upstream is held rather than treated as an automa
   await expect(prepareUlwUpdate(f.source, f.output, join(f.root, "missing"))).rejects.toThrow();
   expect(ULW_UPDATE_FILES.map((file) => readFileSync(join(f.source, file)))).toEqual(f.original);
 });
+
+test.each(["clean", "unstaged-content", "unstaged-mode"] as const)(
+  "native metadata generation admits only the exact reviewed index: %s",
+  (change) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "native-update-")));
+    roots.push(root);
+    const source = join(root, "source");
+    const checkout = join(root, "checkout");
+    const f = overlayFixture(source, checkout, true);
+    f.put("packages/coding-agent/package.json", '{"version":"18.22.2"}\n');
+    fixtureGit(checkout, "add", ".");
+    fixtureGit(checkout, "commit", "--quiet", "-m", "Native version fixture");
+    const commit = fixtureGit(checkout, "rev-parse", "HEAD");
+    f.put("index.ts", 'export const selected = "new-reviewed-overlay";\n');
+    fixtureGit(checkout, "add", "index.ts");
+    const before = ["native-omp.lock", "native-omp.patch"].map((file) => readFileSync(join(source, file)));
+    if (change === "unstaged-content") f.put("index.ts", 'export const selected = "unreviewed";\n');
+    if (change === "unstaged-mode") chmodSync(join(checkout, "index.ts"), 0o755);
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        join(import.meta.dir, "../scripts/update-native-omp.ts"),
+        "--checkout",
+        checkout,
+        "--source",
+        source,
+        "--commit",
+        commit,
+        "--version",
+        "18.22.2",
+      ],
+      { env: { PATH: process.env["PATH"], HOME: root }, stdout: "pipe", stderr: "pipe" },
+    );
+    if (change === "clean") {
+      expect(result.exitCode).toBe(0);
+      const bundle = readSourceBundle(source, true);
+      expect(bundle.lock.commit).toBe(commit);
+      expect(bundle.lock.nativeVersion).toBe("18.22.2");
+      expect(() => assertSourceBundle(checkout, bundle, root)).not.toThrow();
+    } else {
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toContain("Bound source");
+      expect(["native-omp.lock", "native-omp.patch"].map((file) => readFileSync(join(source, file)))).toEqual(before);
+    }
+  },
+);

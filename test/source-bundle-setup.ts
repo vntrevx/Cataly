@@ -44,7 +44,13 @@ export function fixtureGit(cwd: string, ...argv: string[]): string {
 }
 
 /** Real Git patches, index trees and file bytes; no network or native binary is needed for identity regressions. */
-export function overlayFixture(source: string, checkout: string, native = false, selected = "reviewed-overlay") {
+export function overlayFixture(
+  source: string,
+  checkout: string,
+  native = false,
+  selected = "reviewed-overlay",
+  nativeVersion: "18.20.0" | "18.22.2" = "18.22.2",
+) {
   mkdirSync(source, { recursive: true, mode: 0o700 });
   mkdirSync(checkout, { recursive: true, mode: 0o700 });
   const put = (path: string, text: string, executable = false) => {
@@ -63,8 +69,8 @@ export function overlayFixture(source: string, checkout: string, native = false,
   put("index.ts", 'export const selected = "base";\n');
   put("presets.ts", "export {};\n");
   if (native) {
-    put("packages/coding-agent/scripts/omp", '#!/bin/sh\nprintf "18.20.0\\n"\n', true);
-    put("packages/coding-agent/src/cli.ts", 'export const version = "18.20.0";\n');
+    put("packages/coding-agent/scripts/omp", `#!/bin/sh\nprintf "${nativeVersion}\\n"\n`, true);
+    put("packages/coding-agent/src/cli.ts", `export const version = "${nativeVersion}";\n`);
     put("packages/natives/native/loader-state.js", "export {};\n");
     const hash = digest(NATIVE_VIEWER_FIXTURE);
     put(
@@ -90,7 +96,7 @@ export function overlayFixture(source: string, checkout: string, native = false,
     patchSha256: digest(patch),
     resultTree: fixtureGit(checkout, "write-tree"),
     files: [{ path: "index.ts", sha256: digest(readFileSync(join(checkout, "index.ts"))), executable: false }],
-    ...(native ? { nativeVersion: "18.20.0" as const, launcher: "packages/coding-agent/scripts/omp" } : {}),
+    ...(native ? { nativeVersion, launcher: "packages/coding-agent/scripts/omp" } : {}),
   };
   const name = native ? "native-omp" : "omp-ulw.overlay";
   writeFileSync(join(source, `${name}.lock`), `${JSON.stringify(lock)}\n`, { mode: 0o600 });

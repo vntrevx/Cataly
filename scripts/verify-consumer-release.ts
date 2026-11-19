@@ -174,7 +174,7 @@ try {
       runtime,
     ]);
     const native = await run("native-version", [join(side, "bin/omp"), "--version"]);
-    assert.match(native.stdout, /\b18\.20\.0\b/);
+    assert.equal(native.stdout.trim(), expected.requirements.omp);
     assert(readFileSync(join(side, "config.json")).equals(config), "Selected runtime/config bytes changed");
     assert(readFileSync(join(side, "releases/consumer-owner.json")).equals(owner), "Consumer ownership changed");
     unchangedPrimary();

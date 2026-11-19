@@ -17,7 +17,7 @@ export type SourceBundle = {
   readonly patchSha256: string;
   readonly resultTree: string;
   readonly files: readonly SourceEntry[];
-  readonly nativeVersion?: "18.20.0";
+  readonly nativeVersion?: "18.20.0" | "18.22.2";
   readonly launcher?: string;
 };
 export type BoundBundle = { readonly lock: SourceBundle; readonly patch: string; readonly identity: string };
@@ -57,7 +57,7 @@ export function readSourceBundle(source: string, native = false): BoundBundle {
       (native ? "https://github.com/can1357/oh-my-pi.git" : "https://github.com/dbc-hbin/omp-ulw.git") ||
     !Array.isArray(value.files) ||
     !value.files.length ||
-    (native && (value.nativeVersion !== "18.20.0" || !safe(value.launcher)))
+    (native && ((value.nativeVersion !== "18.20.0" && value.nativeVersion !== "18.22.2") || !safe(value.launcher)))
   )
     throw new Error(`Invalid source bundle lock: ${path}`);
   let previous = "";

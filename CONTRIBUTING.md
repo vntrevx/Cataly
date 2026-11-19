@@ -147,7 +147,7 @@ hc E2E file is a failure, not a skip.
 
 ### Native and provider boundaries
 
-The root and extension suites require the genuine OMP 18.20.0 host fixture,
+The root and extension suites require the genuine OMP 18.22.2 host fixture,
 including its published declarations. A same-version foreign host, raw checkout
 without `dist/types`, or stock-version stamp is not a substitute. The guarded
 `with the real omp-ulw` tests must execute, not be skipped in the full gate.
@@ -161,7 +161,7 @@ it is not the current default overlay.
 
 Linux `check` also executes the bound ULW code-mode and task-host checks against
 the guarded bound native source. Keep the upstream assertions, including the
-documented 18.20.2 accounting behavior: a failure on the selected 18.20.0 host
+documented 18.20.2 accounting behavior: a failure on the selected 18.22.2 host
 holds the pin or release rather than relaxing the test.
 
 Required-source regressions exercise genuine SDK print/RPC initialization against

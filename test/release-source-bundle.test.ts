@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { extractArchive, readArchive } from "../src/release/archive.ts";
+import { automaticUpdate } from "../src/release/automatic.ts";
+import { readAutomaticState } from "../src/release/automatic-state.ts";
 import { saveJson } from "../src/release/files.ts";
 import { installBundle, rollbackRelease } from "../src/release/install.ts";
 import { validateReleaseManifest } from "../src/release/manifest.ts";
@@ -20,9 +22,10 @@ import {
   resolveProcessOmpUlwPath,
 } from "../src/release/runtime.ts";
 import { readSourceBundle } from "../src/release/source-bundle.ts";
-import { releasePath } from "../src/release/state.ts";
+import { loadInstalled, recoverInstalled, releasePath } from "../src/release/state.ts";
 import { sourceManifest } from "../src/update/source.ts";
 import { archive, type ConsumerFixture, fixture, withArchive } from "./release-consumer-setup.ts";
+import { boundRelease } from "./release-native-recovery-setup.ts";
 import { fixtureGit, nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 
 function bundledRelease(f: ConsumerFixture, selected: string, nativeSource?: string) {
@@ -58,7 +61,10 @@ function bundledRelease(f: ConsumerFixture, selected: string, nativeSource?: str
     validateReleaseManifest({
       ...original.bundle.manifest,
       source: publicSource,
-      requirements: { ...original.bundle.manifest.requirements, omp: "18.20.0" },
+      requirements: {
+        ...original.bundle.manifest.requirements,
+        omp: readSourceBundle(source, true).lock.nativeVersion,
+      },
       ompUlw: { repository: ulw.lock.repository, commit: ulw.commit },
     }),
     bytes,
@@ -74,6 +80,76 @@ function bundledRelease(f: ConsumerFixture, selected: string, nativeSource?: str
   });
   return { source, dependency, bundle: { manifest, files: readArchive(bytes, manifest) } };
 }
+
+test.each([false, true])(
+  "automatic 18.20.0 to 18.22.2 upgrade and explicit rollback retain their bound native protocols (side=%s)",
+  async (side) => {
+    const f = fixture(side, true);
+    const retained = boundRelease(f, "retained", undefined, "18.20.0");
+    const one = await installBundle(f.paths, retained.bundle, undefined);
+    const config = readFileSync(f.paths.config);
+    const next = boundRelease(f, "current");
+    const candidate = { ...next.bundle, manifest: { ...next.bundle.manifest, prerelease: false } };
+    const source = await automaticUpdate(f.paths, {
+      now: 42,
+      acquire: async () => candidate,
+      checkTools: () => {},
+    });
+    expect(source).toBe(releasePath(f.paths, candidate.manifest));
+    expect(readAutomaticState(f.paths).outcome).toBe("installed");
+    const current = loadInstalled(f.paths)!;
+    expect(current.current.requirements.omp).toBe("18.22.2");
+    expect(current.previous?.requirements.omp).toBe("18.20.0");
+    for (const manifest of [current.current, one.current]) {
+      const sourceRoot = releasePath(f.paths, manifest);
+      expect(resolveConsumerOmpCommand(["omp"], { home: f.paths.home, sourceRoot })[0]).toBe(
+        join(sourceRoot, "scripts/consumer/omp"),
+      );
+      expect(resolveConsumerOmpUlwPath("", { home: f.paths.home, sourceRoot, useDefault: true })).toContain(
+        `omp-ulw-${manifest.ompUlw.commit}-`,
+      );
+    }
+    const rolled = await rollbackRelease(f.paths, current);
+    expect(rolled.current).toEqual(one.current);
+    expect(rolled.previous?.requirements.omp).toBe("18.22.2");
+    expect(readlinkSync(f.paths.live)).toBe(releasePath(f.paths, one.current));
+    expect(recoverInstalled(f.paths)).toEqual(rolled);
+    expect(readFileSync(f.paths.config)).toEqual(config);
+    expect(readAutomaticState(f.paths)).toMatchObject({ enabled: false, outcome: "rollback" });
+  },
+);
+
+test.each(["18.20.0", "18.22.2"] as const)(
+  "automatic updates cannot replace bound native %s with the legacy independent-native protocol",
+  async (nativeVersion) => {
+    const f = fixture(false, true);
+    const first = boundRelease(f, "bound", undefined, nativeVersion);
+    const one = await installBundle(f.paths, first.bundle, undefined);
+    const legacy = f.release("legacy").bundle;
+    const candidate = { ...legacy, manifest: { ...legacy.manifest, prerelease: false } };
+    expect(await automaticUpdate(f.paths, { now: 42, acquire: async () => candidate, checkTools: () => {} })).toBe(
+      releasePath(f.paths, one.current),
+    );
+    expect(readAutomaticState(f.paths)).toMatchObject({
+      outcome: "failed",
+      detail: "Automatic updates cannot downgrade the bound native protocol",
+    });
+    expect(loadInstalled(f.paths)).toEqual(one);
+  },
+);
+
+test("a declared current native version cannot admit a retained release's older lock", async () => {
+  const f = fixture();
+  const old = boundRelease(f, "retained", undefined, "18.20.0");
+  const manifest = validateReleaseManifest({
+    ...old.bundle.manifest,
+    requirements: { ...old.bundle.manifest.requirements, omp: "18.22.2" },
+  });
+  await expect(installBundle(f.paths, { ...old.bundle, manifest }, undefined)).rejects.toThrow(
+    "declared native or ULW identity",
+  );
+  expect(existsSync(f.paths.live)).toBe(false);
+});
 
 test("consumer install, update and reuse select each loaded release's bound overlay without rewriting config", async () => {
   const f = fixture();

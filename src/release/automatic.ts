@@ -108,7 +108,7 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       )
         throw new Error("Available release does not support this installation profile");
       // Do not remove the bound launcher by automatically selecting the legacy native protocol.
-      if (installed.current.requirements.omp === "18.20.0" && manifest.requirements.omp !== "18.20.0")
+      if (installed.current.requirements.omp !== "18.18.8" && manifest.requirements.omp === "18.18.8")
         throw new Error("Automatic updates cannot downgrade the bound native protocol");
       preflightAutomaticInstallation(paths);
       const after = await installBundle(

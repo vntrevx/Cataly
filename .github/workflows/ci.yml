@@ -40,7 +40,7 @@ jobs:
       - name: Bind exact native OMP test host
         run: |
           host="$GITHUB_WORKSPACE/test/fixtures/omp-native-host/node_modules/@oh-my-pi/pi-coding-agent"
-          bun -e 'const p = await Bun.file(process.argv[1] + "/package.json").json(); if (p.version !== "18.20.0") throw new Error("unexpected native OMP fixture version: " + p.version)' "$host"
+          bun -e 'const p = await Bun.file(process.argv[1] + "/package.json").json(); if (p.version !== "18.22.2") throw new Error("unexpected native OMP fixture version: " + p.version)' "$host"
           printf 'DORI_TEST_OMP_ROOT=%s\n' "$host" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
@@ -55,7 +55,7 @@ jobs:
           native=$(bun scripts/source-dependencies.ts native "$GITHUB_WORKSPACE" "$smoke/home")
           bun scripts/source-dependencies.ts assert-native "$GITHUB_WORKSPACE" "$smoke/home"
           version=$(HOME="$smoke/home" "$native/bin/omp" --version)
-          test "$version" = '18.20.0'
+          test "$version" = '18.22.2'
           for check in code-mode-host-check code-mode-task-host-check; do
             env -i HOME="$smoke/home" LANG=C.UTF-8 \
               PATH="$native/bin:$(dirname "$(command -v bun)"):/usr/bin:/bin" \

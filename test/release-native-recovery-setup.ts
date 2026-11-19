@@ -9,7 +9,12 @@ import { sourceManifest } from "../src/update/source.ts";
 import { archive, type ConsumerFixture, fixture, withArchive } from "./release-consumer-setup.ts";
 import { nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 
-export function boundRelease(f: ConsumerFixture, selected: string, nativeSource?: string) {
+export function boundRelease(
+  f: ConsumerFixture,
+  selected: string,
+  nativeSource?: string,
+  nativeVersion: "18.20.0" | "18.22.2" = "18.22.2",
+) {
   const original = f.release(selected);
   const source = join(f.root, `bound-${selected}`);
   extractArchive(original.bundle.files, original.bundle.manifest, source);
@@ -19,7 +24,7 @@ export function boundRelease(f: ConsumerFixture, selected: string, nativeSource?
     for (const path of ["native-omp.lock", "native-omp.patch", "native-addon/package.json", "native-addon/bun.lock"])
       copyFileSync(join(nativeSource, path), join(source, path));
   } else {
-    const native = overlayFixture(source, join(f.root, `native-${selected}`), true);
+    const native = overlayFixture(source, join(f.root, `native-${selected}`), true, selected, nativeVersion);
     nativeCacheFixture(source, f.paths.home, native.checkout);
   }
   mkdirSync(join(source, "scripts/consumer"), { recursive: true, mode: 0o700 });
@@ -41,7 +46,10 @@ export function boundRelease(f: ConsumerFixture, selected: string, nativeSource?
     validateReleaseManifest({
       ...original.bundle.manifest,
       source: publicSource,
-      requirements: { ...original.bundle.manifest.requirements, omp: "18.20.0" },
+      requirements: {
+        ...original.bundle.manifest.requirements,
+        omp: readSourceBundle(source, true).lock.nativeVersion,
+      },
       ompUlw: { repository: ulw.lock.repository, commit: ulw.commit },
     }),
     bytes,
@@ -79,9 +87,9 @@ export function blockStatePublication(paths: ConsumerPaths, root: string, target
 
 export async function activationFixture(legacy: boolean) {
   const f = fixture();
-  const first = legacy ? { source: undefined, bundle: f.release("legacy").bundle } : boundRelease(f, "first");
+  const first = legacy ? f.release("legacy") : boundRelease(f, "first", undefined, "18.20.0");
   const one = await installBundle(f.paths, first.bundle, undefined);
-  const second = boundRelease(f, "second", first.source);
+  const second = boundRelease(f, "second");
   const before = await installBundle(f.paths, second.bundle, one);
   const after = { version: 1 as const, current: one.current, previous: before.current };
   return { f, before, after, bundle: second.bundle };
@@ -96,7 +104,7 @@ const { home, before, after, phase } = JSON.parse(process.argv[1]);
 const paths = consumerPaths(home);
 const omp = join(paths.dori, "bin/omp");
 const target = releasePath(paths, after.current);
-const native = after.current.requirements.omp === "18.20.0" ? join(target, "scripts/consumer/omp") : undefined;
+const native = after.current.requirements.omp !== "18.18.8" ? join(target, "scripts/consumer/omp") : undefined;
 activateRelease({
   ...paths,
   get dori() {

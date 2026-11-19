@@ -64,7 +64,7 @@ cd "$HOME/src/Cataly" || exit 1
 DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
 ```
 
-소스 설치기는 프로젝트에 묶인 수정 OMP 18.20.0과 ULW 오버레이를 준비합니다.
+소스 설치기는 프로젝트에 묶인 수정 OMP 18.22.2와 ULW 오버레이를 준비합니다.
 `PATH`에 있는 기본 배포판 `omp`는 이를 대체할 수 없습니다. Side 모드는
 기본적으로 `~/.omp-dori`를 사용하며 자체 래퍼와 설정을 유지하고, 주 설치인
 `~/.dori`는 건드리지 않습니다. 설치는 에이전트, 메신저 수신기나 서비스를 시작하지 않습니다.

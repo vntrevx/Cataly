@@ -4,6 +4,7 @@
     ".": {
       "entry": [
         "scripts/update-supervisor.ts",
+        "scripts/update-native-omp.ts",
         "scripts/source-dependencies.ts",
         "scripts/verify-consumer-release.ts",
         "scripts/consumer-smoke-harness.ts",

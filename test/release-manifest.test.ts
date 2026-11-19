@@ -8,6 +8,23 @@ test("accepts the existing public SourceManifest identity including executable f
   expect(sameManifest(validateReleaseManifest(expected).source, expected.source)).toBe(true);
 });
 
+test.each(["18.20.1", "18.22.1", "18.22.3", "19.0.0"])("rejects unsupported native requirement %s", (omp) => {
+  const manifest = releaseFixture();
+  expect(() => validateReleaseManifest({ ...manifest, requirements: { ...manifest.requirements, omp } })).toThrow(
+    "supported runtime",
+  );
+});
+
+test.each(["18.20.0", "18.22.2"])("native %s manifests cannot silently use the older no-lock protocol", (omp) => {
+  const old = releaseFixture();
+  expect(validateReleaseManifest(old).requirements.omp).toBe("18.18.8");
+  expect(() => validateReleaseManifest({ ...old, requirements: { ...old.requirements, omp } })).toThrow(
+    "source bundle is incomplete",
+  );
+  const files = [{ path: "native-omp.lock", sha256: digest("{}"), executable: false }];
+  expect(() => validateReleaseManifest(releaseFixture(files))).toThrow("older no-lock release protocol");
+});
+
 test.each([
   "../token",
   "/etc/passwd",

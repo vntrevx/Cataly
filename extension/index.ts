@@ -653,11 +653,16 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
     agentStatus = "working";
     savePane(ctx);
   });
-  pi.on("agent_end", (_event, ctx) => {
+  const settleMain = (_event: unknown, ctx: DoriContext): void => {
     if (ctx.agent.kind !== "main" || !role) return;
     agentStatus = "idle";
     savePane(ctx);
+  };
+  pi.on("agent_end", (event, ctx) => {
+    if (typeof event === "object" && event !== null && "willContinue" in event && event.willContinue === true) return;
+    settleMain(event, ctx);
   });
+  pi.on("session_clear", settleMain);
 
   /**
    * Recent Discord obligations request bounded continuations until both send and exact-message mark exist.

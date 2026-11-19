@@ -1,23 +1,23 @@
 {
   "version": 1,
   "repository": "https://github.com/can1357/oh-my-pi.git",
-  "commit": "c308970263ae13744ea15ab67302e3dac840e266",
-  "patchSha256": "17fdb4623061f5990de0117853e51318965ebad2c16281686923c1301897f49a",
-  "resultTree": "d7dcc8fb7cbafd530efca0e852ce25305e130f83",
+  "commit": "e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63",
+  "patchSha256": "d48c6877b30fceb1e631dad17b2b1e75cf0a98639f6e509051dbebd6b447bf37",
+  "resultTree": "7f4e6b6df13ed1354e357ee55b1992b789d3a385",
   "files": [
     {
       "path": "docs/context-files.md",
-      "sha256": "ba26705f3597f83edeca77124154c5441254d1c35ac0e84ff695139f7d4502ad",
+      "sha256": "1c57fd4953e0c518b7101fcf901b68ec93572a44f982c1382dd8055ed7f6956e",
       "executable": false
     },
     {
       "path": "docs/tools/eval.md",
-      "sha256": "1eb71fe2289c35f5e6f7666381c261e4fc37000520d100a3a46279ac789ffff0",
+      "sha256": "54f191b73d89ddd23519b78b6b5c4fa2b0bc8e565bb799b4e56e62e47b4a03d1",
       "executable": false
     },
     {
       "path": "docs/tools/grep.md",
-      "sha256": "f16b0e2fab2889f29b70a925e8a934478589586dee1b38fcb1995a30757706f4",
+      "sha256": "1f199f2ed2a074686108cb7529dace342a0bb54f50cce25afa1f9da13d78ef07",
       "executable": false
     },
     {
@@ -27,37 +27,12 @@
     },
     {
       "path": "docs/tools/wait.md",
-      "sha256": "4973f55f76758298b6f59af43cd6fdb2fedcd5dca9c152edb968571ecebae1b1",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/CHANGELOG.md",
-      "sha256": "565e0c646c81e0516a21be83b87447a042a82adbd95f8505160d8ffaeabaf62b",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/src/eval/executor-base.ts",
-      "sha256": "d707f860b17b2a69195737811587edd0602dc709977f69371a6a3d4bca4d7235",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/src/eval/js/context-manager.ts",
-      "sha256": "4f10f563bf10baef6bd8837defd2ac0f52a71e29fa84659e6fba32e1e281de68",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/src/eval/kernel-session-registry.ts",
-      "sha256": "8ba1bfac765fcce4561044664377c24f804624ffcc96cdfa346d3a0a6c93ecf9",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/src/eval/py/executor.ts",
-      "sha256": "31b81a9763a5e306c92ac4ed3566076c307b297515fd23246f84b1aef198609a",
+      "sha256": "6053d9a2d5771aafc05bb5f92c85cc4cfd751fe40d8a335f429f94433905c6eb",
       "executable": false
     },
     {
       "path": "packages/coding-agent/src/export/html/viewer.generated.json",
-      "sha256": "45d67916890322c45e43d504fe98269d7c1d276fe2787a25a27f2357bd96e438",
+      "sha256": "b035464b5f2da89f67430e730c7e633da34697d4d564f5a1d8f83ed9b8baa061",
       "executable": false
     },
     {
@@ -66,33 +41,23 @@
       "executable": false
     },
     {
-      "path": "packages/coding-agent/src/prompts/tools/wait.md",
-      "sha256": "51330bb75cd535cf19b1983caf06e5abf8580c21873dbf2e57bf437dbd0b3965",
-      "executable": false
-    },
-    {
       "path": "packages/coding-agent/src/sdk.ts",
-      "sha256": "85600de4f7568f82c298465a632247cf47323bdc8f5b0adb72dabe4d6fea8e8d",
+      "sha256": "a70e11b5afbd19b61e07c220c0032b561e063734007fc5525dd95084a150e804",
       "executable": false
     },
     {
       "path": "packages/coding-agent/src/session/agent-session.ts",
-      "sha256": "b63bef1feb20d63da6c6617e180814d9ac17529165e685d74ff3637c8a932b59",
+      "sha256": "d4fb7c3c783b9b7c26fc35a0de08423cf4a5be6935b740571e94d7bc4b3d62da",
       "executable": false
     },
     {
       "path": "packages/coding-agent/src/session/eval-runner.ts",
-      "sha256": "32fc9ee881ea189c20d4f5aa3385012ba46b7b5231f3295dba2729248e48624b",
+      "sha256": "eb29d4154f7e1ec0dc980e4ecb9e1050d2d229908a93fd47d6ed713d71716b77",
       "executable": false
     },
     {
       "path": "packages/coding-agent/src/tools/grep.ts",
-      "sha256": "c58a87d0d345bd7ec2a02d0ac1e474d0e6d481028c940c66902484aef81ea604",
-      "executable": false
-    },
-    {
-      "path": "packages/coding-agent/src/tools/settings.ts",
-      "sha256": "5f091d4f9622f9f3fe1df26cf2cd42c3a967a91a8f40a68de7849a9575160a62",
+      "sha256": "56f84546371e9e5cf8fa3668bf0480f8a55b1b66c1c6c8af708b5ccfb2dff8b1",
       "executable": false
     },
     {
@@ -101,18 +66,13 @@
       "executable": false
     },
     {
-      "path": "packages/coding-agent/src/tools/wait.ts",
-      "sha256": "0a4adbd7628f91bbf33f4d097e1f644adc8a19a443d84d0c0e9e8f035e3420ad",
-      "executable": false
-    },
-    {
       "path": "packages/coding-agent/test/agent-session-context-file-reload.test.ts",
-      "sha256": "8c911c7e82e90c38b2ff90b871082a2935738c6b697f415a4c5835c72fe105a3",
+      "sha256": "cfaf0e5fd4a7efc2afafacbf7dfed9c50ddd4cfdba62ab4e420be1f6d9535ab9",
       "executable": false
     },
     {
       "path": "packages/coding-agent/test/agent-session-python-cleanup.test.ts",
-      "sha256": "a79ab3c60eb5ba30d96c720734d255e29fad5e44d8f232dcdca6facdc8181199",
+      "sha256": "5f695b980ab87b0bca0dd5807ebc6e18271f1df3290787bc51f9fcee8ed6b919",
       "executable": false
     },
     {
@@ -127,7 +87,7 @@
     },
     {
       "path": "packages/coding-agent/test/tools/grep-pagination.test.ts",
-      "sha256": "421e63441078693c775671a6e433eea6e53e69d4c5f599b4339e1afa2b1cdd54",
+      "sha256": "327d0fd56e32bac769cf13917e13554f5eda47381337b5eb8045bae4ea90fe0e",
       "executable": false
     },
     {
@@ -137,17 +97,12 @@
     },
     {
       "path": "packages/coding-agent/test/tools/todo.test.ts",
-      "sha256": "57994c815b30da9c877d34ccfaf2c6d623138eb597e893d447f9de5592964c0d",
+      "sha256": "08de392a5fc9c1f5ef3660bb02b67b2588f4c7176acd95f41fab272332daf6a7",
       "executable": false
     },
     {
       "path": "packages/coding-agent/test/tools/wait.test.ts",
       "sha256": "a00879d6c89980352fa723168bd0b40805eac72b0f4a14545c53ec7cd08a84d8",
-      "executable": false
-    },
-    {
-      "path": "packages/collab-web/CHANGELOG.md",
-      "sha256": "23e97241b1d5587c569f579ea1df921daa76fe596c41968dc50ca930a9ef00fe",
       "executable": false
     },
     {
@@ -161,11 +116,6 @@
       "executable": false
     },
     {
-      "path": "packages/tui/CHANGELOG.md",
-      "sha256": "16543cca9808d83ec1ca313fadeaad27218d43e88206f8e5e982eb6d4b96ebca",
-      "executable": false
-    },
-    {
       "path": "packages/tui/src/tools/todo.ts",
       "sha256": "86960a0826768a01e222b09cb7cc629bef9834caae05198dcce4c112a1a4e5b8",
       "executable": false
@@ -176,6 +126,6 @@
       "executable": false
     }
   ],
-  "nativeVersion": "18.20.0",
+  "nativeVersion": "18.22.2",
   "launcher": "packages/coding-agent/scripts/omp"
 }

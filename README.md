@@ -64,7 +64,7 @@ cd "$HOME/src/Cataly" || exit 1
 DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
 ```
 
-The source installer prepares the bound, patched OMP 18.20.0 and ULW overlay;
+The source installer prepares the bound, patched OMP 18.22.2 and ULW overlay;
 a stock `omp` on `PATH` is not a substitute. Side mode defaults to `~/.omp-dori`,
 keeps its own wrappers and configuration, and leaves the primary `~/.dori`
 installation alone. Installation starts no agent, messenger receiver, or service.

@@ -6,9 +6,7 @@ import { isOmpArgv } from "../src/runtime/omp-argv.ts";
 import { assertNativeSource, nativeDirectory } from "../src/release/native.ts";
 import { assertSourceBundle, readSourceBundle } from "../src/release/source-bundle.ts";
 import { provisionSourceOverlay } from "../src/release/source-checkout.ts";
-import { validateReleaseManifest } from "../src/release/manifest.ts";
 import { carryDoriPin, digest, sourceManifest } from "../src/update/source.ts";
-import { releaseFixture } from "./release-producer-setup.ts";
 import { fixtureGit, nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 import { setup } from "./install-setup.ts";
 
@@ -16,14 +14,17 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function fixture(native = false) {
+function fixture(native = false, nativeVersion: "18.20.0" | "18.22.2" = "18.22.2") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-source-bundle-")));
   roots.push(root);
-  return { root, ...overlayFixture(join(root, "bundle"), join(root, "upstream"), native) };
+  return {
+    root,
+    ...overlayFixture(join(root, "bundle"), join(root, "upstream"), native, "reviewed-overlay", nativeVersion),
+  };
 }
 
-test("the same upstream version and launcher bytes cannot satisfy a bound patched native source", () => {
-  const f = fixture(true);
+test.each(["18.20.0", "18.22.2"] as const)("native %s still requires its exact patched source identity", (version) => {
+  const f = fixture(true, version);
   const home = join(f.root, "home");
   const receipt = nativeCacheFixture(f.source, home, f.checkout);
   expect(assertNativeSource(f.source, home).identity).toBe(receipt.identity);
@@ -31,8 +32,14 @@ test("the same upstream version and launcher bytes cannot satisfy a bound patche
   const launcher = readFileSync(receipt.omp);
   fixtureGit(join(receipt.directory, "source"), "restore", "--source=HEAD", "--staged", "--worktree", "index.ts");
   expect(readFileSync(receipt.omp)).toEqual(launcher);
-  expect(readFileSync(join(receipt.directory, "source/packages/coding-agent/src/cli.ts"), "utf8")).toContain("18.20.0");
+  expect(readFileSync(join(receipt.directory, "source/packages/coding-agent/src/cli.ts"), "utf8")).toContain(version);
   expect(() => assertNativeSource(f.source, home)).toThrow("source checkout differs");
+});
+
+test.each(["18.18.8", "18.22.1", "18.22.3", "19.0.0"])("unsupported native lock %s is rejected", (nativeVersion) => {
+  const f = fixture(true);
+  writeFileSync(join(f.source, "native-omp.lock"), JSON.stringify({ ...f.lock, nativeVersion }));
+  expect(() => readSourceBundle(f.source, true)).toThrow("Invalid source bundle lock");
 });
 
 test("a version-only stock cache receipt cannot stand in for a source bundle", () => {
@@ -40,7 +47,7 @@ test("a version-only stock cache receipt cannot stand in for a source bundle", (
   const home = join(f.root, "home");
   const directory = nativeDirectory(f.source, home);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  writeFileSync(join(directory, "receipt.json"), JSON.stringify({ version: 1, nativeVersion: "18.20.0" }), {
+  writeFileSync(join(directory, "receipt.json"), JSON.stringify({ version: 1, nativeVersion: "18.22.2" }), {
     mode: 0o600,
   });
   expect(() => assertNativeSource(f.source, home)).toThrow("receipt differs");
@@ -80,16 +87,6 @@ test("a changed patch digest, malformed bound patch and partial install fail wit
   const target = join(f.root, "installed");
   await expect(provisionSourceOverlay(f.source, f.root, target, f.checkout)).rejects.toThrow();
   await expect(provisionSourceOverlay(f.source, f.root, target, f.checkout)).rejects.toThrow("Partial ULW preparation");
-});
-
-test("new release manifests cannot silently use the older no-lock protocol", () => {
-  const old = releaseFixture();
-  expect(validateReleaseManifest(old).requirements.omp).toBe("18.18.8");
-  expect(() => validateReleaseManifest({ ...old, requirements: { ...old.requirements, omp: "18.20.0" } })).toThrow(
-    "source bundle is incomplete",
-  );
-  const files = [{ path: "native-omp.lock", sha256: digest("{}"), executable: false }];
-  expect(() => validateReleaseManifest(releaseFixture(files))).toThrow("older no-lock release protocol");
 });
 
 test.each(["primary", "side"])(
