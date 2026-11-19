@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import ts from "typescript";
 import { checkTestFixtures } from "../scripts/check-test-fixtures.ts";
 
 const source = resolve(import.meta.dir, "..");
@@ -26,6 +27,22 @@ function fixture() {
     env: { DORI_TEST_OMP_ROOT: nativeHost, DORI_TEST_COMPAT_ULW_ENTRY: compat },
   };
 }
+
+test.each([
+  ["@oh-my-pi/pi-coding-agent", "index.d.ts"],
+  ["@oh-my-pi/pi-coding-agent/extensibility/extensions/loader", "extensibility/extensions/loader.d.ts"],
+] as const)(
+  "extension type import %s resolves from the exact CI host, not an optional peer install",
+  (specifier, declaration) => {
+    const configFile = join(source, "extension/tsconfig.json");
+    const raw = ts.readConfigFile(configFile, ts.sys.readFile);
+    expect(raw.error).toBeUndefined();
+    const config = ts.parseJsonConfigFileContent(raw.config, ts.sys, dirname(configFile));
+    expect(config.errors).toEqual([]);
+    const resolved = ts.resolveModuleName(specifier, join(source, "extension/lane-policy.ts"), config.options, ts.sys);
+    expect(resolved.resolvedModule?.resolvedFileName).toBe(join(nativeHost, "dist/types", declaration));
+  },
+);
 
 test("the prerequisite check accepts files and the actual exact native host without executing fixture code", async () => {
   const f = fixture();

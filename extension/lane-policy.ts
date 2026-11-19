@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { ExtensionAPI, FileEntry } from "@oh-my-pi/pi-coding-agent";
 import type { DoriApi, DoriContext } from "./index.ts";
 import type { DoriRole } from "../skills/dori-mode/scripts/src/lane-state.ts";
 import { checkPolicyCommand } from "../skills/dori-mode/scripts/src/lane-policy-actions.ts";
@@ -66,7 +66,7 @@ export const lanePolicyHook = (
         if (loaded.invalidHeader || loaded.entries[0]?.type !== "session")
           throw new PolicyError("invalid parent session transcript");
         const index = new pi.pi.SessionEntryIndex();
-        index.rebuild(loaded.entries.filter((entry) => entry.type !== "session"));
+        index.rebuild(loaded.entries.filter((entry: FileEntry) => entry.type !== "session"));
         const branch = index.pathTo();
         const inherited = { role: recordedRole(branch), binding: recordedBinding(branch) };
         if (loaded.malformedRecords && inherited.binding !== undefined)
