@@ -146,6 +146,15 @@ posix(
     copyFileSync(Bun.which("sleep")!, image);
     const child = Bun.spawn([image, "60"], { stdout: "ignore", stderr: "ignore" });
     try {
+      // macOS kills a copied binary renamed while its exec is still loading it; rename only once exec has settled
+      // (two successive readings name the copied image with one start time).
+      let settled = processIdentity(child.pid);
+      for (;;) {
+        await Bun.sleep(1);
+        const next = processIdentity(child.pid);
+        if (settled && next?.startTicks === settled.startTicks && next.executable === image) break;
+        settled = next;
+      }
       const identity = processIdentity(child.pid)!;
       expect(identity).toBeDefined();
       expect(identity.executable).toBe(image);
