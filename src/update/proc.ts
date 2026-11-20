@@ -36,6 +36,11 @@ export function procCmdline(pid: number): string {
   return platform.cmdline(pid);
 }
 
+/** The initial environment as Linux's environ file holds it: each `NAME=value` followed by a NUL. */
+export function procEnviron(pid: number): string {
+  return platform.environ(pid);
+}
+
 /** A path that opens, stats and resolves to the process's executable image. */
 export function procExe(pid: number): string {
   return platform.exePath(pid);

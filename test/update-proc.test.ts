@@ -3,7 +3,15 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processIdentity, sameProcess, underProcess } from "../src/update/deployment-process.ts";
-import { bootId, procChildren, procCmdline, procCwd, procExeTarget, procStat } from "../src/update/proc.ts";
+import {
+  bootId,
+  procChildren,
+  procCmdline,
+  procCwd,
+  procEnviron,
+  procExeTarget,
+  procStat,
+} from "../src/update/proc.ts";
 
 const darwin = test.skipIf(process.platform !== "darwin");
 const children: Bun.Subprocess[] = [];
@@ -79,5 +87,24 @@ darwin(
     expect(sameProcess(identity!)).toBe(false);
     expect(processIdentity(shell.pid)).toBeUndefined();
     expect(() => procCmdline(shell.pid)).toThrow();
+  },
+);
+
+test.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
+  "a process's own environment is read apart from its arguments",
+  async () => {
+    // Given a Bun child (macOS hides platform binaries' environments) with its own HOME and an argument like an entry.
+    const child = Bun.spawn([process.execPath, "-e", 'console.log("up"); await Bun.stdin.text()', "HOME=/arg"], {
+      env: { HOME: "/tmp/proc-env-home", PATH: process.env["PATH"] },
+      stdin: "pipe",
+      stdout: "pipe",
+    });
+    children.push(child);
+    await child.stdout.getReader().read();
+    // Then the environment holds its HOME, and the argument stays in the arguments.
+    const entries = procEnviron(child.pid).split("\0");
+    expect(entries).toContain("HOME=/tmp/proc-env-home");
+    expect(entries).not.toContain("HOME=/arg");
+    expect(procCmdline(child.pid).split("\0")).toContain("HOME=/arg");
   },
 );

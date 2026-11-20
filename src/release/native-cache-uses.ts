@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { platform } from "../platform/index.ts";
+import { procEnviron } from "../update/proc.ts";
 import { nativeStage, readLeases } from "./native-cache-lease.ts";
 import { processCwds, processIsKernelThread, processStart } from "./process-cwd.ts";
 import { type ProcessFiles, processFiles, usesDirectory } from "./process-files.ts";
@@ -62,14 +63,15 @@ function entersAny(pid: string, uid: number): boolean {
 
 /**
  * Whether a writer works on the cache under `homes`: by the home it names (relative to its working directory), else by
- * its environment's HOME. Only a home that resolves to another existing directory rules it out.
+ * its environment's HOME (`procEnviron`: macOS cannot read another user's or a platform binary's, which then counts).
+ * Only a home that resolves to another existing directory rules it out.
  */
 function writesHere(pid: string, args: string, named: string, homes: readonly string[]): boolean {
   if (homes.some((home) => args.includes(home))) return true;
-  if (!platform.procfs && !isAbsolute(named)) return true;
+  if (!platform.procfs && named !== "env" && !isAbsolute(named)) return true;
   try {
     let home: string | undefined;
-    if (named === "env") home = /(?:^|\0)HOME=([^\0]*)/.exec(readFileSync(`/proc/${pid}/environ`, "latin1"))?.[1];
+    if (named === "env") home = /(?:^|\0)HOME=([^\0]*)/.exec(procEnviron(Number(pid)))?.[1];
     else if (named) home = isAbsolute(named) ? named : resolve(readlinkSync(`/proc/${pid}/cwd`), named);
     return home === undefined || homes.includes(realpathSync(home));
   } catch {

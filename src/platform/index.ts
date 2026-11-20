@@ -36,6 +36,7 @@ function unsupported(os: string): PlatformAdapter {
     memFreePct: memoryFreePct,
     procStat: noReader,
     cmdline: noReader,
+    environ: noReader,
     exePath: noReader,
     procExeLink: noReader,
     cwdPath: noReader,

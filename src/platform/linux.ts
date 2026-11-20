@@ -106,6 +106,7 @@ export function linuxAdapter(root = PROC, libc: () => PidfdLibc = libcPidfd): Pl
     },
 
     cmdline: (pid) => readFileSync(join(root, String(pid), "cmdline"), "utf8"),
+    environ: (pid) => readFileSync(join(root, String(pid), "environ"), "latin1"),
     exePath: (pid) => join(root, String(pid), "exe"),
     // The exe link's target is the identity token: a replaced image keeps the path it was started from.
     procExeLink: (pid) => readlinkSync(join(root, String(pid), "exe")),

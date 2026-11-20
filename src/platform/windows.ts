@@ -23,6 +23,10 @@ export const windows: PlatformAdapter = {
     return noReader();
   },
 
+  environ(_pid: number): string {
+    return noReader();
+  },
+
   exePath(_pid: number): string {
     return noReader();
   },
