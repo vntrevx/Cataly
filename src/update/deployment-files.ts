@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
+  fchmodSync,
+  fchownSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -10,6 +12,7 @@ import {
   readlinkSync,
   readdirSync,
   renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -42,18 +45,39 @@ function preserveLink(path: string, backup: string): void {
   }
 }
 
-export function saveDeploymentJson(path: string, value: unknown): void {
+export function saveDeploymentText(
+  path: string,
+  text: string | Buffer,
+  options: {
+    readonly beforePublish?: () => void;
+    readonly createOnly?: boolean;
+    readonly mode?: number;
+    readonly gid?: number;
+  } = {},
+): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${randomUUID()}.tmp`;
-  const fd = openSync(tmp, "wx", 0o600);
   try {
-    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
-    fsyncSync(fd);
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeFileSync(fd, text);
+      if (options.gid !== undefined) fchownSync(fd, -1, options.gid);
+      if (options.mode !== undefined) fchmodSync(fd, options.mode);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    options.beforePublish?.();
+    if (options.createOnly) linkSync(tmp, path);
+    else renameSync(tmp, path);
+    syncDirectory(dirname(path));
   } finally {
-    closeSync(fd);
+    rmSync(tmp, { force: true });
   }
-  renameSync(tmp, path);
-  syncDirectory(dirname(path));
+}
+
+export function saveDeploymentJson(path: string, value: unknown): void {
+  saveDeploymentText(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function ownReleaseRoot(config: DeploymentConfig): void {

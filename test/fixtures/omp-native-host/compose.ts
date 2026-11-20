@@ -208,17 +208,17 @@ export const nativeComposition = async (
     const first = await runner.emitBeforeAgentStart(prompt, undefined, promptBase);
     const second = await runner.emitBeforeAgentStart(prompt, undefined, promptBase);
     let postCompaction;
+    let compactionMessages: ReadonlyArray<ReturnType<typeof session.buildSessionContext>["messages"]> = [];
     if (options.compact) {
       // Exercise the native persisted-entry and extension hook boundary, not a summary-model request.
-      const retained = session.appendMessage({
-        role: "user",
-        content: "Retained fixture request",
-        timestamp: Date.now(),
-      });
+      session.appendMessage({ role: "user", content: "History-only role instruction", timestamp: 1 });
+      const beforeMessages = session.buildSessionContext().messages;
+      const retained = session.appendMessage({ role: "user", content: "Retained fixture request", timestamp: Date.now() });
       const id = session.appendCompaction("Local fixture summary", undefined, retained, 100);
       const entry = session.getEntries().find((value) => value.id === id);
       if (entry?.type !== "compaction") throw new Error("native compaction entry is absent");
       await runner.emit({ type: "session_compact", compactionEntry: entry, fromExtension: false });
+      compactionMessages = [beforeMessages, session.buildSessionContext().messages];
       postCompaction = await runner.emitBeforeAgentStart("Continue the existing work.", undefined, promptBase);
     }
     if (options.command && !options.command.beforePrompt) await invokeCommand();
@@ -235,6 +235,7 @@ export const nativeComposition = async (
       beforeDori,
       afterAll,
       userMessages,
+      compactionMessages,
       entries: session.getBranch(),
     };
   } finally {

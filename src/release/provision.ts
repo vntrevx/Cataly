@@ -117,6 +117,16 @@ async function git(args: readonly string[], cwd: string, home: string): Promise<
   return stdout.trim();
 }
 
+export function dependencyPlan(paths: ConsumerPaths, manifest: ReleaseManifest, source?: string) {
+  const { commit, repository } = manifest.ompUlw;
+  const bundle = manifest.requirements.omp === "18.20.0" ? readSourceBundle(source!, false) : undefined;
+  if (bundle && (bundle.lock.commit !== commit || bundle.lock.repository !== repository))
+    throw new Error("Release overlay differs from its upstream dependency pin");
+  const dependency = join(paths.dependencies, `omp-ulw-${commit}${bundle ? `-${bundle.identity}` : ""}`);
+  const expected = { version: 1, repository, commit, ...(bundle ? { identity: bundle.identity } : {}) };
+  return { bundle, directory: dependency, expected };
+}
+
 /** Existing dependency checkouts are never reset, fetched into, or otherwise modified. */
 export async function provisionDependency(
   paths: ConsumerPaths,
@@ -124,12 +134,8 @@ export async function provisionDependency(
   source?: string,
 ): Promise<string> {
   const { commit, repository } = manifest.ompUlw;
-  const bundle = manifest.requirements.omp === "18.20.0" ? readSourceBundle(source!, false) : undefined;
-  if (bundle && (bundle.lock.commit !== commit || bundle.lock.repository !== repository))
-    throw new Error("Release overlay differs from its upstream dependency pin");
-  const dependency = join(paths.dependencies, `omp-ulw-${commit}${bundle ? `-${bundle.identity}` : ""}`);
+  const { bundle, directory: dependency, expected } = dependencyPlan(paths, manifest, source);
   const receipt = `${dependency}.json`;
-  const expected = { version: 1, repository, commit, ...(bundle ? { identity: bundle.identity } : {}) };
   const verify = async () => {
     realDirectory(dependency);
     owned(dependency);

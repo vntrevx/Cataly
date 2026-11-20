@@ -145,6 +145,10 @@ hc). The default source installer prepares the pinned, patched **OMP 18.20.0**
 and **omp-ulw** overlay; a stock `omp` is not a substitute. No preinstalled OMP
 or Cargo is needed for this default setup.
 
+To inspect configuration changes first, add `--preview` to the final command below;
+review its paths and hashes, then run it without that flag to install. The preview
+does not update the checkout, prepare dependencies, or change installation files.
+
 ```bash
 git clone https://github.com/vntrevx/Cataly.git "$HOME/src/Cataly" || exit 1
 cd "$HOME/src/Cataly" || exit 1

@@ -13,9 +13,9 @@ import { boundRelease } from "./release-native-recovery-setup.ts";
 // POSIX-only: release installation refuses non-private directories by POSIX mode bits.
 const posix = test.skipIf(process.platform === "win32");
 
-posix(
-  "physical consumers normalize raw managed defaults without changing selected argv or owner overrides",
-  async () => {
+posix.each(["normalization", "recovery"] as const)(
+  "physical consumer readback and commands preserve owner choices (%s)",
+  async (scenario) => {
     const f = fixture(true);
     const bound = boundRelease(f, "managed-command-env");
     for (const path of ["src", "skills/dori-mode/scripts/src", "package.json"])
@@ -29,7 +29,9 @@ posix(
       })),
     );
     const manifest = withArchive(validateReleaseManifest({ ...bound.bundle.manifest, source }), bytes);
-    const installed = await installBundle(f.paths, { manifest, files: readArchive(bytes, manifest) }, undefined);
+    const previous = await installBundle(f.paths, f.release("readback-previous").bundle, undefined);
+    const installed = await installBundle(f.paths, { manifest, files: readArchive(bytes, manifest) }, previous);
+    const next = f.release("readback-next");
     const release = releasePath(f.paths, installed.current);
     // Native home lookup must see the real child startup environment, not an in-process HOME replacement.
     const managed = join(f.paths.dori, "bin/omp");
@@ -47,6 +49,10 @@ posix(
     writeFileSync(f.paths.config, JSON.stringify({ agentCommand: ["omp", ...suffix] }));
     const selected = [...expected, "--owner-option", ""];
     const payload = {
+      release,
+      previousTag: previous.current.tag,
+      nextTag: next.bundle.manifest.tag,
+      nextDist: next.dist,
       config: f.paths.config,
       home: f.paths.home,
       managed,
@@ -59,13 +65,35 @@ posix(
     };
     const probe = `
 const assert = (await import("node:assert/strict")).default;
-const { writeFileSync } = await import("node:fs");
+const { writeFileSync, renameSync } = await import("node:fs");
+const { dirname, join } = await import("node:path");
 const { homedir } = await import("node:os");
 const { loadConfig } = await import(process.argv[1]);
 const { agentCommand, defaultDeps } = await import(process.argv[2]);
-const { config, home, managed, expected, suffix, selected, expectedCommand, selectedCommand, custom } = JSON.parse(process.argv[3]);
+const { release, previousTag, nextTag, nextDist, config, home, managed, expected, suffix, selected, expectedCommand, selectedCommand, custom } = JSON.parse(process.argv[3]);
+const { setupReadback } = await import(join(release, "src/setup-readback.ts"));
+const { captureSetupFile } = await import(join(release, "src/setup-files.ts"));
+const readback = () => setupReadback(captureSetupFile(config), "consumer-updater-reader", { path: config, home });
 const mode = process.argv[4];
-if (mode === "foreign-home") {
+if (mode === "recovery") {
+  delete process.env.DORI_AGENT_CMD;
+  writeFileSync(config, JSON.stringify({ runtime: "herdr", agentCommand: ["omp", ...suffix] }));
+  const dependency = dirname((await loadConfig(config, home)).ompUlwPath);
+  renameSync(dependency, dependency + ".held-by-fixture");
+  const { consumerPaths } = await import(join(release, "src/release/files.ts"));
+  const { loadInstalled } = await import(join(release, "src/release/state.ts"));
+  const { acquireBundle } = await import(join(release, "src/release/bundle.ts"));
+  const { installBundle, rollbackRelease } = await import(join(release, "src/release/install.ts"));
+  const paths = consumerPaths(home, dirname(config));
+  const rolled = await rollbackRelease(paths, loadInstalled(paths));
+  assert.equal(rolled.current.tag, previousTag);
+  const updated = await installBundle(paths, await acquireBundle({ from: nextDist }), rolled);
+  assert.equal(updated.current.tag, nextTag);
+  const receipt = await readback();
+  assert.equal(receipt.effective, "unavailable");
+  assert.equal(receipt.reason, "current-updater-runtime-unavailable");
+  assert.equal(receipt.overridden, null);
+} else if (mode === "foreign-home") {
   assert.notEqual(homedir(), home);
   assert.deepEqual((await loadConfig(config, home)).agentCommand, [...expected, ...suffix]);
 } else {
@@ -73,6 +101,9 @@ if (mode === "foreign-home") {
   assert.equal(homedir(), home);
   assert.deepEqual((await loadConfig(config, home)).agentCommand, [...expected, ...suffix]);
   assert.equal(defaultDeps().agentCmd, expectedCommand);
+  const normalized = await readback();
+  assert.equal(normalized.effective, "selected");
+  assert.deepEqual(normalized.overridden, []);
   for (const role of ["dori", "lane"])
     assert.equal(agentCommand(defaultDeps(), role), expectedCommand + " --dori-role " + role);
   delete process.env.DORI_AGENT_CMD;
@@ -83,6 +114,9 @@ if (mode === "foreign-home") {
   for (const first of ["omp", managed]) {
     writeFileSync(config, JSON.stringify({ agentCommand: [first, ...suffix] }));
     assert.deepEqual((await loadConfig(config, home)).agentCommand, [...selected, ...suffix]);
+    const overridden = await readback();
+    assert.equal(overridden.effective, "shadowed");
+    assert.deepEqual(overridden.overridden, ["agentCommand"]);
   }
   assert.equal(defaultDeps().agentCmd, selectedCommand);
   writeFileSync(config, JSON.stringify({ agentCommand: [custom, ...suffix] }));
@@ -104,7 +138,7 @@ if (mode === "foreign-home") {
 }
 console.log(JSON.stringify({ mode, checked: true }));
 `;
-    for (const mode of ["foreign-home", "managed-commands"]) {
+    for (const mode of scenario === "normalization" ? ["foreign-home", "managed-commands"] : ["recovery"]) {
       const child = Bun.spawnSync(
         [
           process.execPath,

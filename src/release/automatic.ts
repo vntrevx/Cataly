@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { platform } from "../platform/index.ts";
+import { captureSetupFile, SetupConflict, type SetupSnapshot } from "../setup-files.ts";
 import { underProcess } from "../update/deployment-process.ts";
 import { acquireBundle, type VerifiedBundle } from "./bundle.ts";
 import {
@@ -67,7 +68,6 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
     if (releasePath(paths, observed.current) !== source) return verifyAutomaticInstallation(paths, observed);
     state = readAutomaticState(paths);
     if (!state.enabled || now < state.nextCheck) return source;
-    const config = automaticConfig(paths);
     const attempted: AutomaticState = { version: 1, enabled: true, lastAttempt: now, nextCheck: now + DAY };
     const finish = (outcome: NonNullable<AutomaticState["outcome"]>, detail?: string, available?: string): void => {
       saveAutomaticState(paths, {
@@ -77,6 +77,16 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
         ...(available ? { available } : {}),
       });
     };
+    let snapshot: SetupSnapshot;
+    try {
+      snapshot = captureSetupFile(paths.config);
+    } catch (error) {
+      if (!(error instanceof SetupConflict)) throw error;
+      const runnable = await verifyAutomaticInstallation(paths, observed);
+      finish("held", error.message);
+      return runnable;
+    }
+    const config = automaticConfig(paths);
     if (automaticOverrides(paths, config)) {
       finish("held", "Explicit native or ULW override; use the manual release updater");
       return source;
@@ -112,13 +122,11 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       if (installed.current.requirements.omp === "18.20.0" && manifest.requirements.omp !== "18.20.0")
         throw new Error("Automatic updates cannot downgrade the bound native protocol");
       preflightAutomaticInstallation(paths);
-      const after = await installBundle(
-        paths,
-        candidate,
-        installed,
-        () => preflightAutomaticInstallation(paths),
-        options.launchOwner,
-      );
+      const after = await installBundle(paths, candidate, installed, {
+        config: snapshot,
+        beforeActivate: () => preflightAutomaticInstallation(paths),
+        ...(options.launchOwner === undefined ? {} : { launchOwner: options.launchOwner }),
+      });
       finish("installed", undefined, manifest.tag);
       return verifyRelease(paths, after.current);
     } catch (error) {
@@ -127,7 +135,7 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       if (!current) throw new Error("Consumer installation disappeared during automatic update");
       const runnable = await verifyAutomaticInstallation(paths, current);
       const detail = error instanceof Error ? error.message : String(error);
-      finish(/holds|held|Live/.test(detail) ? "held" : "failed", detail);
+      finish(error instanceof SetupConflict || /holds|held|Live/.test(detail) ? "held" : "failed", detail);
       return runnable;
     }
   } finally {

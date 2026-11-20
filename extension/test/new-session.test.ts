@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { readPaneState } from "../../skills/dori-mode/scripts/src/lane-state";
 import { readMonitorSet } from "../../src/update/deployment-monitors.ts";
+import { ROLE_INVARIANTS } from "../role-invariants.ts";
 import { type FakePi, type FakeSession, load, until, useConfig } from "./fake-pi";
 
 const PANE = "w1:p61";
@@ -106,7 +107,7 @@ test("a new lane carries only its role and resets goal, approvals and working st
     agentStatus: "idle",
   });
   expect(await pi.emit("before_agent_start", agentStart)).toContainEqual({
-    systemPrompt: ["base prompt", "<fake-ulw-policy>"],
+    systemPrompt: ["base prompt", ROLE_INVARIANTS.lane, "<fake-ulw-policy>"],
   });
   await expect(run(pi, { op: "list" })).rejects.toThrow("monitor works only in the Dori session");
   await pi.emit("tool_approval_resolved", { toolCallId: "old-approval" });

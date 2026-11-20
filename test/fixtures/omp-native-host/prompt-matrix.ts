@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ROLE_INVARIANTS } from "../../../extension/role-invariants.ts";
 
 const [root, cwd] = process.argv.slice(2);
 assert(
@@ -151,6 +152,8 @@ for (const [mode, entries] of [
     const policy = loaded && !scenario.child && scenario.prompt.startsWith("ulw");
     // Profile exclusion preserves the native profile; Dori's independent Sol lane guidance still applies.
     const bookkeeping = scenario.role === "lane" && !scenario.child && model.id === SOL_MODEL.id;
+    const rootRole = scenario.child ? undefined : scenario.role;
+    const invariant = rootRole === undefined ? undefined : ROLE_INVARIANTS[rootRole];
     for (const blocks of [first, compacted]) {
       const text = blocks.join("\n");
       assert.equal(text.split("<omp-model-preset>").length - 1, profile ? 1 : 0, `${label} model profile count`);
@@ -187,6 +190,8 @@ for (const [mode, entries] of [
         bookkeeping ? 1 : 0,
         `${label} bookkeeping count`,
       );
+      for (const block of Object.values(ROLE_INVARIANTS))
+        assert.equal(blocks.filter((value) => value === block).length, block === invariant ? 1 : 0, `${label} role core`);
       for (const block of downstream) assert(blocks.includes(block), `${label} lost downstream context`);
       assert.equal(text.includes("F67_MONITOR_CAPABILITY"), scenario.role === "dori", `${label} monitor advertising`);
       // Native custom profiles deliberately omit the default tool inventory.
@@ -203,7 +208,10 @@ for (const [mode, entries] of [
       if (scenario.excluded || scenario.customPrompt)
         assert.deepEqual(
           blocks.filter(
-            (block) => !block.startsWith("<omp-ulw-policy>") && !block.startsWith("<omp-dori-lane-bookkeeping>"),
+            (block) =>
+              block !== invariant &&
+              !block.startsWith("<omp-ulw-policy>") &&
+              !block.startsWith("<omp-dori-lane-bookkeeping>"),
           ),
           result.base,
           `${label} changed the excluded native profile`,

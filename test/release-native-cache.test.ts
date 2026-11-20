@@ -133,10 +133,10 @@ posix(
     symlinkSync(join(outside, "omp"), join(refs, "omp"));
     const report = (roots: string[]) =>
       Object.fromEntries(
-        reportNativeCache(c.home, [], roots, ownProcessCwds, { files: ownProcessFiles }).map((entry) => [
-          entry.directory,
-          entry.protectedBy,
-        ]),
+        // This fixture checks references, not consumer commands in sibling tests.
+        reportNativeCache(c.home, [], roots, ownProcessCwds, { table: () => "", files: ownProcessFiles }).map(
+          (entry) => [entry.directory, entry.protectedBy],
+        ),
       );
     const linked = report([refs]);
     expect(linked[wrapped.receipt.directory]).toEqual([`reference ${join(refs, "omp")}`]);

@@ -1,5 +1,6 @@
 import { lstatSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { assertSetupFile, type SetupSnapshot } from "../setup-files.ts";
 import { assertSourceAdmission, sameManifest, sourceManifest } from "../update/source.ts";
 import {
   type ConsumerPaths,
@@ -150,15 +151,22 @@ export function recoverInstalled(paths: ConsumerPaths, launchOwner?: number): In
   }
 }
 
+type ActivationConfiguration = { readonly snapshot: SetupSnapshot; readonly beforeJournal?: () => void };
+
 function activateReleaseUnlocked(
   paths: ConsumerPaths,
   before: InstalledState | undefined,
   after: InstalledState,
+  configuration?: ActivationConfiguration,
 ): void {
   assertInstalledPointer(paths, before);
   if (before) verifyRelease(paths, before.current);
   const target = verifyRelease(paths, after.current);
   assertNoLiveDori(paths);
+  if (configuration) {
+    assertSetupFile(configuration.snapshot);
+    configuration.beforeJournal?.();
+  }
   const journal: Journal = { version: 1, ...(before ? { before } : {}), after };
   saveJson(paths.journal, journal);
   const old = before ? releasePath(paths, before.current) : undefined;
@@ -192,11 +200,12 @@ export function activateRelease(
   before: InstalledState | undefined,
   after: InstalledState,
   launchOwner?: number,
+  configuration?: ActivationConfiguration,
 ): void {
   const unlock = acquireLaunchGate(paths);
   try {
     assertNoConsumerLaunches(paths, launchOwner);
-    activateReleaseUnlocked(paths, before, after);
+    activateReleaseUnlocked(paths, before, after, configuration);
   } finally {
     unlock();
   }

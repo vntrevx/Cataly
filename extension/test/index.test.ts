@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 import { paneStatePath, readPaneState, writePaneState } from "../../skills/dori-mode/scripts/src/lane-state";
+import { ROLE_INVARIANTS } from "../role-invariants.ts";
 import { calls, type FakePi, type FakeSession, load, until, useConfig } from "./fake-pi";
 
 const FAKE_ULW = join(import.meta.dir, "fake-ulw.ts");
@@ -46,7 +47,7 @@ describe("role", () => {
     expect(s.entries).toEqual([roleEntry("lane")]);
     expect(readPaneState(stateDir, PANE)?.role).toBe("lane");
     expect(await resumed.emit("before_agent_start", agentStart)).toContainEqual({
-      systemPrompt: ["base prompt", "<fake-ulw-policy>"],
+      systemPrompt: ["base prompt", ROLE_INVARIANTS.lane, "<fake-ulw-policy>"],
     });
   });
 
@@ -162,7 +163,9 @@ describe("role", () => {
     stateDir = useConfig("");
     const lane = await load({ session: session("lane"), flags: { "dori-role": "lane" } });
     await lane.emit("session_start");
-    expect(await lane.emit("before_agent_start", agentStart)).toEqual([undefined]);
+    expect(await lane.emit("before_agent_start", agentStart)).toEqual([
+      { systemPrompt: ["base prompt", ROLE_INVARIANTS.lane] },
+    ]);
     expect(lane.tools.has("fake_ulw_tool")).toBe(false);
     expect(lane.notes).toEqual([]);
     expect(readPaneState(stateDir, PANE)?.role).toBe("lane");
@@ -293,7 +296,7 @@ describe("monitor restore", () => {
       ]);
       expect(pi.active).toContain("monitor");
       expect(await pi.emit("before_agent_start", agentStart)).toContainEqual({
-        systemPrompt: ["base prompt", "<fake-ulw-policy>"],
+        systemPrompt: ["base prompt", ROLE_INVARIANTS.dori, "<fake-ulw-policy>"],
       });
       const carried = await monitorCall(pi, { op: "list" });
       expect(carried).toContain("tick (pid");
@@ -650,6 +653,7 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
         expect(prompt).toContain("Retained downstream context");
         // Dori's bookkeeping contract deliberately remains GPT-6.1 Sol only.
         expect(prompt).not.toContain("<omp-dori-lane-bookkeeping>");
+        expect(result.first.filter((block) => block === ROLE_INVARIANTS.lane)).toHaveLength(1);
         expect(result.first).toEqual(result.afterAll[0]);
         expect(result.second).toEqual(result.first);
         expect(result.afterAll[1]).toEqual(result.first);
@@ -658,7 +662,7 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
     },
   );
 
-  test("native OMP composes Sol bookkeeping with the pinned preset and preserves excluded prompts", async () => {
+  test("native OMP composes root guidance and Sol bookkeeping without changing ULW", async () => {
     if (!process.env["DORI_TEST_OMP_ROOT"])
       throw new Error("the real bound ULW fixture requires the exact native OMP host fixture; see CONTRIBUTING.md");
     const compat = process.env["DORI_TEST_COMPAT_ULW_ENTRY"];
@@ -687,6 +691,7 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
       const prompt = JSON.stringify(result.first);
       expect(prompt.match(/<omp-model-preset>/g)).toHaveLength(1);
       expect(prompt.match(/<omp-dori-lane-bookkeeping>/g)).toHaveLength(1);
+      expect(result.first.filter((block) => block === ROLE_INVARIANTS.lane)).toHaveLength(1);
       expect(prompt).not.toContain("HOST_ROLE");
       expect(prompt).toContain("Retained downstream context");
     }
@@ -705,7 +710,8 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
       const original = [...base];
       const result = await nativeComposition([REAL_ULW, dori], base, { ...excluded, observeBefore: dori });
       expect(result.beforeDori).toHaveLength(2);
-      expect(result.afterAll).toEqual(result.beforeDori);
+      const invariant = excluded.role && !excluded.agent ? ROLE_INVARIANTS[excluded.role] : undefined;
+      expect(result.afterAll).toEqual(result.beforeDori.map((blocks) => (invariant ? [...blocks, invariant] : blocks)));
       expect(result.second).toEqual(result.first);
       if (result.first !== undefined) expect(result.first).toEqual(result.afterAll[0]);
       expect(JSON.stringify(result.afterAll)).not.toContain("<omp-dori-lane-bookkeeping>");
@@ -732,7 +738,12 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
     expect(JSON.stringify(legacyPrompt)).not.toContain("<omp-dori-lane-bookkeeping>");
     expect(JSON.stringify(embedded.first).match(/<omp-dori-lane-bookkeeping>/g)).toHaveLength(1);
     expect(embedded.first.filter((block) => block.includes("<omp-dori-lane-bookkeeping>"))).toHaveLength(1);
-    expect(embedded.first.filter((block) => !block.includes("<omp-dori-lane-bookkeeping>"))).toEqual(legacyPrompt);
+    expect(embedded.first.filter((block) => block === ROLE_INVARIANTS.lane)).toHaveLength(1);
+    expect(
+      embedded.first.filter(
+        (block) => block !== ROLE_INVARIANTS.lane && !block.includes("<omp-dori-lane-bookkeeping>"),
+      ),
+    ).toEqual(legacyPrompt);
     for (const excluded of exclusions) {
       const base = [host, "Retained downstream context"];
       const before = [...base];
@@ -743,9 +754,12 @@ describe.skipIf(!existsSync(REAL_ULW))("with the real omp-ulw", () => {
       expect(base).toEqual(before);
       useConfig(compat);
       const result = await nativeComposition([dori], base, excluded);
-      expect(result.first).toEqual(baseline.first);
+      const invariant = excluded.role && !excluded.agent ? ROLE_INVARIANTS[excluded.role] : undefined;
+      expect(result.first).toEqual(invariant ? result.afterAll[0] : baseline.first);
       expect(result.second).toEqual(result.first);
-      expect(result.afterAll).toEqual(baseline.afterAll);
+      for (const blocks of result.afterAll)
+        expect(blocks.filter((block) => block === invariant)).toHaveLength(invariant ? 1 : 0);
+      expect(result.afterAll.map((blocks) => blocks.filter((block) => block !== invariant))).toEqual(baseline.afterAll);
       expect(JSON.stringify(result.afterAll)).not.toContain("<omp-dori-lane-bookkeeping>");
       expect(base).toEqual(before);
     }

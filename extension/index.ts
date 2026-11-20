@@ -11,6 +11,7 @@
  *   approvals of the Dori/lane session running in HERDR_PANE_ID or HC_TERMINAL_ID.
  * - Lanes without a goal get omp's `goal` tool so the agent can create its goal from the lane brief.
  * - The Dori session gets the `monitor` tool (monitor.ts).
+ * - Root Dori/lane agents get compact role guidance on each turn; children do not.
  * - A lane's main agent on GPT-6.1 Sol is told to carry lane bookkeeping along with real work (lane-bookkeeping.ts).
  */
 import { spawnSync } from "node:child_process";
@@ -34,6 +35,7 @@ import { type AskLane, automaticDiscordAskRoute, bindAskLane } from "./discord-a
 import { DiscordLane } from "./discord-lane.ts";
 import { type PromptModel, withLaneBookkeeping } from "./lane-bookkeeping.ts";
 import { MONITOR_DESCRIPTION, Monitors } from "./monitor";
+import { ROLE_INVARIANTS } from "./role-invariants.ts";
 import { bumpAttempts, MAX_CONTINUATIONS, openOwes, recordOwes, reminder } from "../skills/dori-mode/scripts/src/owes";
 
 interface SessionEntry {
@@ -765,10 +767,14 @@ export default async function ompDori(pi: DoriApi): Promise<void> {
       ctx.abort();
       throw requiredLoadError;
     }
-    if (role !== "lane" || ctx.agent.kind !== "main" || typeof event !== "object" || event === null) return;
-    await discordLane.beforeAgentStart?.(event, ctx);
-    const systemPrompt = "systemPrompt" in event ? withLaneBookkeeping(event.systemPrompt, ctx.model) : undefined;
-    return systemPrompt && { systemPrompt };
+    if (!role || ctx.agent.kind !== "main" || typeof event !== "object" || event === null) return;
+    if (role === "lane") await discordLane.beforeAgentStart?.(event, ctx);
+    const original = "systemPrompt" in event ? event.systemPrompt : undefined;
+    if (!Array.isArray(original) || !original.every((block) => typeof block === "string")) return;
+    const invariant = ROLE_INVARIANTS[role];
+    const withRole = original.includes(invariant) ? original : [...original, invariant];
+    const systemPrompt = role === "lane" ? (withLaneBookkeeping(withRole, ctx.model) ?? withRole) : withRole;
+    if (systemPrompt !== original) return { systemPrompt };
   });
 
   pi.on("before_provider_request", (_event, ctx) => {
