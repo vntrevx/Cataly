@@ -1,6 +1,6 @@
-import { createReadStream, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { SHELLS } from "../../../../src/runtime/foreground.ts";
 import type { Probe, SessionRef } from "../../../../src/runtime/types.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -64,6 +64,9 @@ export const resumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> =>
   }
 };
 
+/** OMP's own bound for finding the title slot and session header (SESSION_HEADER_READ_LIMIT). */
+const HEADER_READ_LIMIT = 1024 * 1024;
+
 /** OMP's optional fixed-width title slot (v1), only ever the first physical line before the session header. */
 const isTitleSlot = (entry: Record<string, unknown>): boolean =>
   entry["type"] === "title" &&
@@ -82,29 +85,26 @@ const readResumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> => {
     if (matches.length !== 1) throw new LaunchError(`lane ${lane.key} has no unique saved session file`);
     file = join(dir, matches[0] ?? "");
   }
-  const stream = createReadStream(file, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
-  let first = true;
-  try {
-    for await (const line of lines) {
-      const header = JSON.parse(line) as Record<string, unknown>;
-      if (first && isTitleSlot(header)) {
-        first = false;
-        continue;
-      }
-      const cwd = header["cwd"];
-      if (
-        header["type"] !== "session" ||
-        header["id"] !== lane.session ||
-        typeof cwd !== "string" ||
-        realpathSync(cwd) !== realpathSync(lane.cwd ?? deps.config.defaultCwd)
-      )
-        throw new LaunchError(`lane ${lane.key} saved session identity or cwd differs`);
-      return realpathSync(file);
-    }
-    throw new LaunchError(`lane ${lane.key} saved session is empty`);
-  } finally {
-    lines.close();
-    stream.destroy();
+  // Records end only at LF bytes, as in OMP: readline would also split at a lone CR or U+2028/U+2029.
+  // A record cut off by the read limit fails to parse and is refused.
+  await using handle = await open(file, "r");
+  const head = Buffer.alloc(HEADER_READ_LIMIT);
+  const { bytesRead } = await handle.read(head, 0, head.length, 0);
+  for (let start = 0, first = true; start < bytesRead; first = false) {
+    const newline = head.subarray(start, bytesRead).indexOf(0x0a);
+    const end = newline === -1 ? bytesRead : start + newline;
+    const header = JSON.parse(head.toString("utf8", start, end)) as Record<string, unknown>;
+    start = end + 1;
+    if (first && isTitleSlot(header)) continue;
+    const cwd = header["cwd"];
+    if (
+      header["type"] !== "session" ||
+      header["id"] !== lane.session ||
+      typeof cwd !== "string" ||
+      realpathSync(cwd) !== realpathSync(lane.cwd ?? deps.config.defaultCwd)
+    )
+      throw new LaunchError(`lane ${lane.key} saved session identity or cwd differs`);
+    return realpathSync(file);
   }
+  throw new LaunchError(`lane ${lane.key} saved session is empty`);
 };
