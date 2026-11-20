@@ -24,6 +24,7 @@ import {
   saveJson,
 } from "./files.ts";
 import { assertNoLiveDori } from "./live.ts";
+import { controllerReads } from "./controller.ts";
 import { assertNoConsumerLaunches, waitLaunchGate } from "./launch-leases.ts";
 import { validateReleaseManifest } from "./manifest.ts";
 import { provisionNativeSource } from "./native.ts";
@@ -39,11 +40,6 @@ import {
   releasePath,
   verifyRelease,
 } from "./state.ts";
-
-// Pre-19 controllers validate both manifests before checking whether automatic updates are disabled.
-function controllerReads(current: InstalledState["current"], previous: InstalledState["current"]): boolean {
-  return current.requirements.omp.startsWith("19.") || !previous.requirements.omp.startsWith("19.");
-}
 
 export function preflightInstallation(paths: ConsumerPaths): void {
   pointer(paths.live);
@@ -78,7 +74,8 @@ async function installReferences(
   manifest: InstalledState["current"],
   config: SetupSnapshot,
   launchOwner?: number,
-): Promise<SetupSnapshot> {
+  deferred = false,
+): Promise<readonly [SetupSnapshot, () => Promise<void>]> {
   // Preflight the entire set before the first link/config creation. Existing custom files stay untouched.
   preflightInstallation(paths);
   if (manifest.requirements.omp !== "18.18.8") await provisionNativeSource(source, paths.home);
@@ -89,6 +86,7 @@ async function installReferences(
     const plan = consumerConfigPlan(paths, config, source, dependency, manifest.requirements.omp !== "18.18.8");
     console.error(`SETUP_PREVIEW ${JSON.stringify(setupPreview(config, plan.text, plan.keys))}`);
     const published = publishSetupFile(config, plan.text);
+    let render = async () => {};
     if (paths.dori !== join(paths.home, ".dori")) {
       // Wrappers are release behavior too. Using this updater's renderer would retain newer bytes on rollback.
       const renderer = "src/release/references.ts";
@@ -99,8 +97,14 @@ async function installReferences(
       const target = await import(pathToFileURL(join(source, renderer)).href);
       if (typeof target.installIsolatedReferences !== "function")
         throw new Error("Selected consumer reference renderer has no installer");
-      await target.installIsolatedReferences(paths, source);
-      preflightReferences(paths);
+      const install = async () => {
+        await target.installIsolatedReferences(paths, source);
+        preflightReferences(paths);
+      };
+      // An older release's dispatcher rejects the newer release, which stays selected through a held or interrupted
+      // activation. Render it only after activation; the newer dispatcher launches either release meanwhile.
+      if (deferred) render = install;
+      else await install();
     }
     for (const [path, target] of paths.links) {
       realDirectory(dirname(path), true);
@@ -112,7 +116,7 @@ async function installReferences(
       home: paths.home,
     });
     console.error(`SETUP_READBACK ${JSON.stringify(readback)}`);
-    return published;
+    return [published, render];
   } finally {
     gate();
   }
@@ -153,7 +157,7 @@ export async function installBundle(
       throw new Error("Installed release identity collision");
     const source = verifyRelease(paths, manifest);
     const dependency = await provisionDependency(paths, manifest, source);
-    const published = await installReferences(paths, source, dependency, manifest, config, options.launchOwner);
+    const [published] = await installReferences(paths, source, dependency, manifest, config, options.launchOwner);
     assertSetupFile(published);
     assertInstalledPointer(paths, before);
     return before;
@@ -177,7 +181,7 @@ export async function installBundle(
       freezeDirectories(destination);
     }
     const source = verifyRelease(paths, manifest);
-    const published = await installReferences(paths, source, dependency, manifest, config, options.launchOwner);
+    const [published] = await installReferences(paths, source, dependency, manifest, config, options.launchOwner);
     const after: InstalledState = { version: 1, current: manifest, ...(before ? { previous: before.current } : {}) };
     options.beforeActivate?.();
     activateRelease(paths, before, after, options.launchOwner, { snapshot: published });
@@ -202,16 +206,26 @@ export async function rollbackRelease(
   assertInstalledPointer(paths, before);
   const source = verifyRelease(paths, before.previous);
   const dependency = await provisionDependency(paths, before.previous, source);
-  const published = await installReferences(paths, source, dependency, before.previous, config);
+  const reads = controllerReads(before.previous, before.current);
+  const [published, render] = await installReferences(
+    paths,
+    source,
+    dependency,
+    before.previous,
+    config,
+    undefined,
+    !reads,
+  );
   const after: InstalledState = {
     version: 1,
     current: before.previous,
-    ...(controllerReads(before.previous, before.current) ? { previous: before.current } : {}),
+    ...(reads ? { previous: before.current } : {}),
   };
   activateRelease(paths, before, after, undefined, {
     snapshot: published,
     // A requested rollback remains selected until the owner explicitly resumes automatic updates.
     beforeJournal: () => setAutomaticEnabled(paths, false, true),
   });
+  await render();
   return after;
 }
