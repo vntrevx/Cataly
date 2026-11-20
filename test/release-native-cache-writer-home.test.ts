@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
 
@@ -43,6 +43,23 @@ unix("a Dori update writer keeps every identity only for the cache under its own
   } finally {
     other.kill();
     own.kill();
+  }
+});
+
+// A relative HOME names a directory only against the writer's own working directory, which the pruner does not read.
+unix("a Dori update writer with a relative HOME keeps every identity", async () => {
+  const c = pruneFixture();
+  const x = c.native("x");
+  // From the pruner's working directory this resolves to an existing directory other than the cache's home.
+  const relative = "other-relative-home";
+  mkdirSync(resolve(relative), { recursive: true });
+  const writerProcess = await writer(c.root, relative, ["update", "install"]);
+  try {
+    const held = c.prune({ table: () => `${writerProcess.pid} ${uid} bun /x/bin/dori update install\n` });
+    expect(keptFor(held, x.directory)).toEqual(expect.arrayContaining([expect.stringContaining("Dori cache writer")]));
+  } finally {
+    writerProcess.kill();
+    rmSync(resolve(relative), { recursive: true, force: true });
   }
 });
 

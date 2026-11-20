@@ -73,8 +73,11 @@ function writesHere(pid: string, args: string, named: string, homes: readonly st
   if (!platform.procfs && named !== "env" && !isAbsolute(named)) return true;
   try {
     let home: string | undefined;
-    if (named === "env") home = /(?:^|\0)HOME=([^\0]*)/.exec(procEnviron(Number(pid)))?.[1];
-    else if (named) home = isAbsolute(named) ? named : resolve(readlinkSync(`/proc/${pid}/cwd`), named);
+    if (named === "env") {
+      home = /(?:^|\0)HOME=([^\0]*)/.exec(procEnviron(Number(pid)))?.[1];
+      // A relative HOME would resolve against this process, not the writer's working directory.
+      if (home !== undefined && !isAbsolute(home)) return true;
+    } else if (named) home = isAbsolute(named) ? named : resolve(readlinkSync(`/proc/${pid}/cwd`), named);
     return home === undefined || homes.includes(realpathSync(home));
   } catch {
     return true;
