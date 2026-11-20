@@ -21,7 +21,9 @@ import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune
 import { nativeCacheFixture, ownProcessCwds } from "./source-bundle-setup.ts";
 
 afterEach(removePruneFixtures);
-const nonRoot = test.skipIf(process.getuid?.() === 0);
+// POSIX-only: cache validation checks permission bits and owner uids. Partial removal also requires a non-root user.
+const posix = test.skipIf(process.platform === "win32");
+const nonRoot = test.skipIf(process.platform === "win32" || process.getuid?.() === 0);
 // These fixtures open descriptors in this process only. Run the real reader
 // without scanning unrelated host processes on every prune and recovery pass.
 const fixtureFiles = () =>
@@ -90,7 +92,12 @@ function partialRemoval() {
   }
   expect(blocked).toBe(true);
   const failureCode = (failure as NodeJS.ErrnoException | undefined)?.code;
-  expect(failureCode === "EACCES" || failureCode === "EPERM").toBe(true);
+  // Darwin's recursive rmSync reports the blocked subtree as ENOTEMPTY where Linux reports EACCES.
+  expect(
+    failureCode === "EACCES" ||
+      failureCode === "EPERM" ||
+      (process.platform === "darwin" && failureCode === "ENOTEMPTY"),
+  ).toBe(true);
   const left = readdirSync(cache).filter((name) => name.startsWith(prefix));
   expect(left).toHaveLength(1);
   const remainder = join(cache, left[0]!);
@@ -126,7 +133,7 @@ nonRoot("partial removal never returns to live; explicit cleanup preserves a new
   expect(cachePending(f.c.home)).toEqual([]);
 });
 
-test("successful explicit removal still removes the unused copy and its quarantine record", () => {
+posix("successful explicit removal still removes the unused copy and its quarantine record", () => {
   const c = pruneFixture();
   const x = c.native("success");
   expect(c.prune({ now: 0 }).removed).toEqual([]);
@@ -136,7 +143,7 @@ test("successful explicit removal still removes the unused copy and its quaranti
   expect(cachePending(c.home)).toEqual([]);
 });
 
-test("an intact pre-check deleting copy still restores when a reference appears", () => {
+posix("an intact pre-check deleting copy still restores when a reference appears", () => {
   const c = pruneFixture();
   const x = c.native("intact");
   c.prune({ now: 0 });
@@ -211,7 +218,7 @@ test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
   },
 );
 
-test("committed cleanup refuses linked or writable cache children without touching their contents", () => {
+posix("committed cleanup refuses linked or writable cache children without touching their contents", () => {
   const c = pruneFixture();
   const x = c.native("unsafe");
   const outside = join(c.root, "outside");

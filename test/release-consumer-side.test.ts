@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -14,61 +14,69 @@ import { installBundle, rollbackRelease } from "../src/release/install.ts";
 import { saveJson } from "../src/release/files.ts";
 import { nativeOmp } from "../src/release/provision.ts";
 import { ompStateDir } from "../src/runtime/omp.ts";
-import { fixture } from "./release-consumer-setup.ts";
+import { fixture, posix } from "./release-consumer-setup.ts";
 
-test("an isolated consumer leaves primary discovery untouched and its CLI ignores inherited primary selection", async () => {
-  const f = fixture(true);
-  const primary = join(f.paths.home, ".dori");
-  mkdirSync(primary);
-  writeFileSync(join(primary, "config.json"), "primary config\n");
-  const first = await installBundle(f.paths, f.release("first\n").bundle, undefined);
-  // The real installed CLI needs the actual shipped entry point, not the payload-only bundle fixture.
-  const cli = resolve(import.meta.dir, "../skills/dori-mode/scripts/src/cli.ts");
-  const wrapper = readFileSync(join(f.paths.dori, "bin/dori"), "utf8");
-  const run = Bun.spawnSync(
-    [
-      "bash",
-      "-c",
-      wrapper.replace(join(f.paths.live, "skills/dori-mode/scripts/src/cli.ts"), cli),
-      "--",
-      "update",
-      "status",
-    ],
-    {
-      env: {
-        HOME: f.paths.home,
-        PATH: process.env["PATH"],
-        DORI_HOME: primary,
-        DORI_CONFIG: join(primary, "config.json"),
-        DORI_STATE_DIR: join(primary, "state"),
-        DORI_TELEMETRY: "0",
-        DO_NOT_TRACK: "1",
+posix(
+  "an isolated consumer leaves primary discovery untouched and its CLI ignores inherited primary selection",
+  async () => {
+    const f = fixture(true);
+    const primary = join(f.paths.home, ".dori");
+    mkdirSync(primary);
+    writeFileSync(join(primary, "config.json"), "primary config\n");
+    const first = await installBundle(f.paths, f.release("first\n").bundle, undefined);
+    // The real installed CLI needs the actual shipped entry point, not the payload-only bundle fixture.
+    const cli = resolve(import.meta.dir, "../skills/dori-mode/scripts/src/cli.ts");
+    const wrapper = readFileSync(join(f.paths.dori, "bin/dori"), "utf8");
+    const run = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        wrapper.replace(join(f.paths.live, "skills/dori-mode/scripts/src/cli.ts"), cli),
+        "--",
+        "update",
+        "status",
+      ],
+      {
+        env: {
+          HOME: f.paths.home,
+          PATH: process.env["PATH"],
+          DORI_HOME: primary,
+          DORI_CONFIG: join(primary, "config.json"),
+          DORI_STATE_DIR: join(primary, "state"),
+          DORI_TELEMETRY: "0",
+          DO_NOT_TRACK: "1",
+        },
       },
-    },
-  );
-  expect(run.exitCode).toBe(0);
-  expect(JSON.parse(run.stdout.toString()).installed.tag).toBe(first.current.tag);
-  expect(readFileSync(join(primary, "config.json"), "utf8")).toBe("primary config\n");
-  expect(existsSync(join(f.paths.home, ".agents"))).toBe(false);
-  expect(existsSync(join(f.paths.home, ".omp"))).toBe(false);
-});
+    );
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout.toString()).installed.tag).toBe(first.current.tag);
+    expect(readFileSync(join(primary, "config.json"), "utf8")).toBe("primary config\n");
+    expect(existsSync(join(f.paths.home, ".agents"))).toBe(false);
+    expect(existsSync(join(f.paths.home, ".omp"))).toBe(false);
+  },
+);
 
-test("modified isolated wrappers hold an update and rollback without changing active source, config or owner bytes", async () => {
-  const f = fixture(true);
-  const one = await installBundle(f.paths, f.release("first\n").bundle, undefined);
-  const two = await installBundle(f.paths, f.release("second\n").bundle, one);
-  const pointer = readlinkSync(f.paths.live);
-  const config = readFileSync(f.paths.config);
-  const command = join(f.paths.dori, "bin/dori");
-  writeFileSync(command, "owner wrapper\n");
-  await expect(installBundle(f.paths, f.release("third\n").bundle, two)).rejects.toThrow("Consumer reference changed");
-  await expect(rollbackRelease(f.paths, two)).rejects.toThrow("Consumer reference changed");
-  expect(readlinkSync(f.paths.live)).toBe(pointer);
-  expect(readFileSync(f.paths.config)).toEqual(config);
-  expect(readFileSync(command, "utf8")).toBe("owner wrapper\n");
-});
+posix(
+  "modified isolated wrappers hold an update and rollback without changing active source, config or owner bytes",
+  async () => {
+    const f = fixture(true);
+    const one = await installBundle(f.paths, f.release("first\n").bundle, undefined);
+    const two = await installBundle(f.paths, f.release("second\n").bundle, one);
+    const pointer = readlinkSync(f.paths.live);
+    const config = readFileSync(f.paths.config);
+    const command = join(f.paths.dori, "bin/dori");
+    writeFileSync(command, "owner wrapper\n");
+    await expect(installBundle(f.paths, f.release("third\n").bundle, two)).rejects.toThrow(
+      "Consumer reference changed",
+    );
+    await expect(rollbackRelease(f.paths, two)).rejects.toThrow("Consumer reference changed");
+    expect(readlinkSync(f.paths.live)).toBe(pointer);
+    expect(readFileSync(f.paths.config)).toEqual(config);
+    expect(readFileSync(command, "utf8")).toBe("owner wrapper\n");
+  },
+);
 
-test("a side OMP launch bypasses foreign Dori wrappers and clears inherited harness and state selection", async () => {
+posix("a side OMP launch bypasses foreign Dori wrappers and clears inherited harness and state selection", async () => {
   const f = fixture(true);
   const foreign = join(f.paths.home, "foreign");
   const native = join(f.paths.home, "native");
@@ -152,36 +160,39 @@ test("a side OMP launch bypasses foreign Dori wrappers and clears inherited harn
   expect(ompStateDir({ DORI_HOME: f.paths.dori, DORI_CONFIG: f.paths.config })).toBe(join(f.paths.dori, "state"));
 });
 
-test("an isolated OMP launch keeps OMP self-update off, since its wrapper is the first omp on the consumer PATH", async () => {
-  const f = fixture(true);
-  const native = join(f.paths.home, "native");
-  mkdirSync(native);
-  writeFileSync(
-    join(native, "omp"),
-    `#!${process.execPath}\nconsole.log(JSON.stringify({ argv: process.argv.slice(2), path: process.env.PATH }));\n`,
-    { mode: 0o755 },
-  );
-  const previous = process.env["PATH"];
-  process.env["PATH"] = `${native}:${previous ?? ""}`;
-  try {
-    await installBundle(f.paths, f.release("first\n").bundle, undefined);
-  } finally {
-    if (previous === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = previous;
-  }
-  const result = Bun.spawnSync([join(f.paths.dori, "bin/omp"), "--version"], {
-    env: { HOME: f.paths.home, PATH: previous },
-  });
-  expect(result.exitCode, result.stderr.toString()).toBe(0);
-  const { argv, path } = JSON.parse(result.stdout.toString()) as { argv: string[]; path: string };
-  expect(path.split(":")[0]).toBe(join(f.paths.dori, "bin"));
-  const overlays = argv.flatMap((arg, index) => (argv[index - 1] === "--config" ? [arg] : []));
-  expect(overlays).toContain(join(f.paths.dori, "omp.yml"));
-  const merged = Object.assign({}, ...overlays.map((file) => Bun.YAML.parse(readFileSync(file, "utf8")) as object));
-  expect(merged).toMatchObject({ update: { auto: false } });
-});
+posix(
+  "an isolated OMP launch keeps OMP self-update off, since its wrapper is the first omp on the consumer PATH",
+  async () => {
+    const f = fixture(true);
+    const native = join(f.paths.home, "native");
+    mkdirSync(native);
+    writeFileSync(
+      join(native, "omp"),
+      `#!${process.execPath}\nconsole.log(JSON.stringify({ argv: process.argv.slice(2), path: process.env.PATH }));\n`,
+      { mode: 0o755 },
+    );
+    const previous = process.env["PATH"];
+    process.env["PATH"] = `${native}:${previous ?? ""}`;
+    try {
+      await installBundle(f.paths, f.release("first\n").bundle, undefined);
+    } finally {
+      if (previous === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previous;
+    }
+    const result = Bun.spawnSync([join(f.paths.dori, "bin/omp"), "--version"], {
+      env: { HOME: f.paths.home, PATH: previous },
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const { argv, path } = JSON.parse(result.stdout.toString()) as { argv: string[]; path: string };
+    expect(path.split(":")[0]).toBe(join(f.paths.dori, "bin"));
+    const overlays = argv.flatMap((arg, index) => (argv[index - 1] === "--config" ? [arg] : []));
+    expect(overlays).toContain(join(f.paths.dori, "omp.yml"));
+    const merged = Object.assign({}, ...overlays.map((file) => Bun.YAML.parse(readFileSync(file, "utf8")) as object));
+    expect(merged).toMatchObject({ update: { auto: false } });
+  },
+);
 
-test.each([false, true])("a side home is not a source marker (linked=%s)", (linked) => {
+posix.each([false, true])("a side home is not a source marker (linked=%s)", (linked) => {
   const f = fixture();
   const native = join(f.paths.home, "bin");
   mkdirSync(native);
@@ -213,7 +224,7 @@ test.each([false, true])("a side home is not a source marker (linked=%s)", (link
   }
 });
 
-test("an interrupted initial reference transaction resumes without taking over changed files", async () => {
+posix("an interrupted initial reference transaction resumes without taking over changed files", async () => {
   const f = fixture(true);
   const bundle = f.release("first\n").bundle;
   const before = await installBundle(f.paths, bundle, undefined);

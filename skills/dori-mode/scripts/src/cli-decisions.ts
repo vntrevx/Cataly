@@ -1,7 +1,18 @@
-/** dori decision: the owner's pending product choices, kept in a record so the lead never re-asks from memory. */
+/**
+ * dori decision: the owner's pending product choices, kept in a record so the lead never re-asks from memory, and the
+ * lead's own choices of routine ones. It only writes the record and prints JSON: it sends no message and answers no
+ * native approval prompt.
+ */
 import { type Command, die } from "./cli-context.ts";
 import { Decisions } from "./decisions.ts";
-import { type Decision, DecisionError, type DecisionRead, settled } from "./decisions-record.ts";
+import {
+  DECISION_KINDS,
+  type Decision,
+  DecisionError,
+  type DecisionKind,
+  type DecisionRead,
+  settled,
+} from "./decisions-record.ts";
 import { decisionText } from "./decisions-render.ts";
 import { DORI_VALUE_OPTIONS } from "./monitor-dori.ts";
 import { realClock } from "./run.ts";
@@ -24,9 +35,10 @@ const noteWorklog = (stateDir: string, decision: Decision, now: number): void =>
   if (id === undefined) return;
   try {
     const worklog = new Worklog(stateDir);
-    const note = `decision ${decision.id} answered: ${decision.answer ?? ""}`;
+    const verb = decision.authority === "lead" ? "chosen by the lead" : "answered";
+    const note = `decision ${decision.id} ${verb}: ${decision.answer ?? ""}`;
     if (worklog.open().some((item) => item.id === id))
-      worklog.note(id, note.length <= 1000 ? note : `decision ${decision.id} answered (see decisions.jsonl)`, now);
+      worklog.note(id, note.length <= 1000 ? note : `decision ${decision.id} ${verb} (see decisions.jsonl)`, now);
   } catch (e) {
     console.error(`DECISION_WARNING worklog ${id} note not written: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -36,6 +48,7 @@ const VALUE_FLAGS: Readonly<Record<string, true>> = {
   source: true,
   lane: true,
   thread: true,
+  kind: true,
   option: true,
   recommend: true,
   worklog: true,
@@ -80,6 +93,11 @@ const decision: Command = async ({ key, rest, positionals, values, opt, need, st
       const laneThread = lane?.thread && lane.thread !== "none" ? lane.thread : undefined;
       const given = opt("thread");
       const thread = given === "none" ? undefined : given || laneThread;
+      const kind = opt("kind");
+      if (kind !== undefined && !DECISION_KINDS.includes(kind as DecisionKind))
+        die(`--kind must be ${DECISION_KINDS.join(" or ")}`);
+      if (kind === "routine" && laneThread !== undefined && thread !== laneThread)
+        die(`routine decision belongs to the lane's thread ${laneThread}`);
       const recommend = opt("recommend");
       if (recommend !== undefined && !/^\d+$/.test(recommend)) die("--recommend must be an option number");
       const worklog = opt("worklog");
@@ -91,6 +109,7 @@ const decision: Command = async ({ key, rest, positionals, values, opt, need, st
             source: need("source"),
             ...(lane !== undefined ? { lane: lane.key } : {}),
             ...(thread !== undefined ? { thread } : {}),
+            ...(kind !== undefined ? { kind: kind as DecisionKind } : {}),
             options: strings("option"),
             ...(recommend !== undefined ? { recommend: Number(recommend) } : {}),
             ...(worklog !== undefined ? { worklog } : {}),
@@ -113,6 +132,21 @@ const decision: Command = async ({ key, rest, positionals, values, opt, need, st
       );
       noteWorklog(config.stateDir, answered, now);
       show(answered);
+      return;
+    }
+    case "choose": {
+      // The lead's pick of a routine decision's option, recorded only after the choice and its reason were posted in
+      // the decision's thread: --source is that message, --thread that thread.
+      const decisionId = id();
+      const [option, ...extra] = positionals.slice(2);
+      const picked =
+        option !== undefined && extra.length === 0 ? option : die("decision choose needs exactly one option number");
+      const reasons = strings("reason");
+      const [reason] = reasons;
+      if (reasons.length !== 1 || reason === undefined) return die("decision choose needs exactly one --reason");
+      const chosen = ledger.choose(decisionId, picked, { reason, source: need("source"), thread: need("thread") }, now);
+      noteWorklog(config.stateDir, chosen, now);
+      show(chosen);
       return;
     }
     case "withdraw": {
@@ -140,7 +174,7 @@ const decision: Command = async ({ key, rest, positionals, values, opt, need, st
       for (const d of warned(ledger.read()).items) if (settled(d) === undefined) console.log(decisionText(d, now));
       return;
     default:
-      die("decision needs ask, posted, answer, withdraw, match, list or digest");
+      die("decision needs ask, posted, answer, choose, withdraw, match, list or digest");
   }
 };
 

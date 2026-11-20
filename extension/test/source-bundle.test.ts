@@ -4,6 +4,19 @@ import { dirname, join } from "node:path";
 import { requiredSourceRequest } from "../../test/fixtures/omp-native-host/required-source.ts";
 import { useConfig } from "./fake-pi.ts";
 
+/**
+ * The native fixture's credential sqlite file stays open for the life of the test process, so Windows refuses to
+ * delete the temporary home that holds it; POSIX unlinks open files and keeps failing loudly here.
+ */
+const removeHome = (home: string): void => {
+  try {
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== "win32" || (code !== "EBUSY" && code !== "EPERM")) throw error;
+  }
+};
+
 for (const boundary of ["session", "provider"] as const) {
   test(`missing required overlays block real ${boundary} transport only for role sessions`, async () => {
     const keys = ["HOME", "DORI_CONFIG", "DORI_STATE_DIR", "DORI_OMP_ULW_PATH", "HERDR_PANE_ID", "HC_TERMINAL_ID"];
@@ -26,7 +39,7 @@ for (const boundary of ["session", "provider"] as const) {
         if (before[index] === undefined) delete process.env[key];
         else process.env[key] = before[index];
       });
-      rmSync(home, { recursive: true, force: true });
+      removeHome(home);
     }
   });
 }
@@ -79,7 +92,7 @@ for (const input of [
           if (before[index] === undefined) delete process.env[key];
           else process.env[key] = before[index];
         });
-        rmSync(home, { recursive: true, force: true });
+        removeHome(home);
       }
     });
   }

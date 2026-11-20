@@ -15,7 +15,10 @@ import { installBundle, rollbackRelease } from "../src/release/install.ts";
 import { recoverInstalled, releasePath } from "../src/release/state.ts";
 import { fixture } from "./release-consumer-setup.ts";
 
-test("isolated discovery follows the active release through interrupted activation and rollback", async () => {
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("isolated discovery follows the active release through interrupted activation and rollback", async () => {
   const f = fixture(true);
   const native = join(f.root, "native");
   mkdirSync(native);
@@ -70,7 +73,7 @@ console.log(JSON.stringify({
   }
 });
 
-test.each(["bytes", "file symlink", "link target", "mode"] as const)(
+posix.each(["bytes", "file symlink", "link target", "mode"] as const)(
   "reinstall preserves and rejects modified discovery %s",
   async (change) => {
     const f = fixture(true);

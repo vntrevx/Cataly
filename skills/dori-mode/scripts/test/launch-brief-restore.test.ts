@@ -89,5 +89,6 @@ test("a brief that cannot be put back keeps its original beside it and names it"
   const backup = join(briefs, kept[0]!);
   expect(message).toContain(`the original brief is kept at ${backup}`);
   expect(readFileSync(backup, "utf8")).toBe(ORIGINAL);
-  expect(statSync(backup).mode & 0o777).toBe(0o600);
+  // Windows reports 0666 for any writable file; the 0600 check is POSIX-only.
+  if (process.platform !== "win32") expect(statSync(backup).mode & 0o777).toBe(0o600);
 });

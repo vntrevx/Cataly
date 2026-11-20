@@ -8,7 +8,10 @@ import { withState } from "./fakes.ts";
 const options = { ownerId: "10", channelIds: ["20"] };
 const ignored = (id: string) => ownerMessage(id, { author: { id: "11" } });
 
-test("1,000 filtered messages across overlapping pages use one durable checkpoint", async () => {
+// POSIX-only: the Discord cursor store requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("1,000 filtered messages across overlapping pages use one durable checkpoint", async () => {
   const state = withState();
   try {
     const store = fileDiscordInboundStore(state.dir, "20");

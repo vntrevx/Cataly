@@ -130,7 +130,10 @@ const discordCli = (): DiscordCli => {
           env: {
             HOME: state.dir,
             PATH: "/usr/bin:/bin",
+            // The OS lookups agree: POSIX reads TMPDIR, Windows reads TEMP (then TMP).
             TMPDIR: tmp,
+            TMP: tmp,
+            TEMP: tmp,
             DORI_CONFIG: config,
             DORI_STATE_DIR: state.dir,
             DORI_DISCORD_TOKEN: "synthetic-ops-token",

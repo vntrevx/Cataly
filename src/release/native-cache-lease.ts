@@ -10,6 +10,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
+import { platform } from "../platform/index.ts";
 import { bootId, processExists, procStat } from "../update/proc.ts";
 import { owned, realDirectory } from "./files.ts";
 import { liveTasks } from "./process-cwd.ts";
@@ -18,8 +19,7 @@ import { liveTasks } from "./process-cwd.ts";
  * Shared leases and the exclusive prune lock of the native cache.
  *
  * Every writer that creates, verifies, publishes or launches an identity first leases it (`leaseNativeIdentity`), then
- * reads the prune lock; a prune claims the lock (`claimNativePrune`), then reads the leases. Either the prune sees the
- * lease and keeps the identity, or the writer sees the lock and waits until the prune is over.
+ * reads the prune lock; a prune claims the lock (`claimNativePrune`), then reads the leases, so one sees the other.
  */
 
 /** A process as a lease or the lock records it. `exec` keeps all three, so a shell's lease covers what it execs. */
@@ -53,7 +53,7 @@ export function holderEnded(holder: CacheHolder, boot = bootId()): boolean {
     const stat = procStat(holder.pid);
     if (stat.startTicks !== holder.startTicks) return true;
     // A Linux thread group lives on after its leader exits (the leader then shows as a zombie).
-    return stat.zombie && (process.platform !== "linux" || liveTasks(String(holder.pid)) === undefined);
+    return stat.zombie && (!platform.procfs || liveTasks(String(holder.pid)) === undefined);
   } catch {
     try {
       return !processExists(holder.pid);
@@ -111,7 +111,7 @@ function directory(path: string): void {
 /** `flock(2)` from the C library: a kernel lock its holder's death releases, so no stale lock is ever left. */
 let flockSymbol: ((fd: number, operation: number) => number) | undefined;
 function flock(fd: number, operation: number): boolean {
-  flockSymbol ??= dlopen(process.platform === "darwin" ? "libSystem.B.dylib" : "libc.so.6", {
+  flockSymbol ??= dlopen(platform.flockLibrary(), {
     flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
   }).symbols.flock as (fd: number, operation: number) => number;
   return flockSymbol(fd, operation) === 0;

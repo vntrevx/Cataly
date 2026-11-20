@@ -14,7 +14,7 @@ beforeEach(() => {
 afterEach(() => state.done());
 
 // The real CLI against a recorded fetch: Slack methods answer from `replies`, every request is logged.
-const slackCli = async (args: readonly string[], replies: Record<string, unknown> = {}) => {
+const slackCli = async (args: readonly string[], replies: Record<string, unknown> = {}, retryAfter?: number) => {
   const config = join(state.dir, "config.json");
   const log = join(state.dir, "fetch.jsonl");
   writeFileSync(config, JSON.stringify({ stateDir: state.dir, defaultCwd: state.dir, hooks: {} }));
@@ -27,6 +27,7 @@ const slackCli = async (args: readonly string[], replies: Record<string, unknown
       "DORI_SLACK_TOKEN=xoxb-not-a-real-token",
       `DORI_TEST_FETCH_LOG=${log}`,
       `DORI_TEST_FETCH_REPLIES=${JSON.stringify(replies)}`,
+      ...(retryAfter === undefined ? [] : [`DORI_TEST_SLACK_RETRY_AFTER=${retryAfter}`]),
       process.execPath,
       "--preload",
       recorder,
@@ -62,6 +63,31 @@ test("Slack inbound prints the owner's whole message on its one INBOUND line", a
     "INBOUND_READY slack",
     `INBOUND threads-view C1 10.1 11.1 U_OWNER ${JSON.stringify(text)}`,
   ]);
+});
+
+test.each([8, 3_600])("Slack honors a %is Retry-After floor or exits when it exceeds budget", async (seconds) => {
+  const result = await slackCli(
+    ["inbound", "slack", "--loop", "0.05"],
+    {
+      "auth.test": { ok: true, user_id: "U_SELF" },
+      "subscriptions.thread.getView": { ok: true, threads: [] },
+      "client.counts": { ok: true, ims: [{ id: "D1", has_unreads: true }] },
+    },
+    seconds,
+  );
+  const waits = result.out.split("\n").filter((line) => line.startsWith("FETCH_SLEEP "));
+  expect(result.out).toContain("INBOUND_READY slack");
+  if (seconds === 3_600) {
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("HTTP 429; Retry-After exceeds the 60s automatic retry limit");
+    expect(result.methods).toEqual(["auth.test", "subscriptions.thread.getView"]);
+    expect(waits).toEqual([]);
+  } else {
+    expect([result.code, result.err]).toEqual([0, ""]);
+    expect(waits).toEqual([...Array(5).fill("FETCH_SLEEP 8000"), "FETCH_SLEEP 3000"]);
+    expect(result.methods).toEqual(["auth.test", ...Array(6).fill("subscriptions.thread.getView"), "client.counts"]);
+    expect(result.out).toContain('INBOUND unread D1 - - - "0 mention(s), unread"');
+  }
 });
 
 test("send slack refuses an --edit that is empty or not a message ts before it posts anything", async () => {

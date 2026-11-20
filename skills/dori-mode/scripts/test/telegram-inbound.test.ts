@@ -1,19 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
-import { Telegram } from "../src/messenger/telegram.ts";
 import { fileTgInboundStore, pollTelegramInbound } from "../src/messenger/telegram-inbound.ts";
 import { inboundLagLog } from "../src/messenger/telegram-lag.ts";
-import { fakeClock, withState } from "./fakes.ts";
-
-const OWNER = 5250;
-
-const OTHER = 6612;
-
-const GROUP = -1004;
-
-const TOPIC = 3;
+import { withState } from "./fakes.ts";
+import { GROUP, mk, msg, OTHER, OWNER, telegramFake, TOPIC } from "./telegram-inbound-fakes.ts";
 
 const state = withState();
 
@@ -22,29 +13,6 @@ const state = withState();
 beforeEach(() => mkdirSync(state.dir, { recursive: true }));
 
 afterEach(() => state.done());
-
-type U = { update_id: number; message?: unknown; edited_message?: unknown };
-
-const msg = (from: number, chatId: number, type: string, text: string, thread?: number, isTopicMessage?: boolean) => ({
-  message_id: 1,
-  from: { id: from, is_bot: false, username: from === OWNER ? "owner" : "someone" },
-  chat: { id: chatId, type },
-  ...(thread === undefined ? {} : { message_thread_id: thread }),
-  ...(isTopicMessage === undefined ? {} : { is_topic_message: isTopicMessage }),
-  text,
-});
-
-const telegramFake = (batches: U[][]) => {
-  const bodies: Record<string, unknown>[] = [];
-  const http: Http = async (req: HttpRequest): Promise<HttpResponse> => {
-    bodies.push(JSON.parse(String(req.body ?? "{}")) as Record<string, unknown>);
-    const batch = batches.shift() ?? [];
-    return { status: 200, headers: {}, body: JSON.stringify({ ok: true, result: batch }) };
-  };
-  return { http, bodies };
-};
-
-const mk = (http: Http): Telegram => new Telegram(http, fakeClock(0), "T");
 
 test("owner DMs pass, non-owner and bot messages drop, offset still advances", async () => {
   const { http, bodies } = telegramFake([

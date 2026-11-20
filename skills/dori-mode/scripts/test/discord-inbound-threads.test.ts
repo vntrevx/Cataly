@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { discordInbound } from "../src/messenger/discord-inbound.ts";
 import { MessengerError } from "../src/messenger/http.ts";
 import { discordRestWorld, memoryDiscordCursor, ownerMessage } from "./discord-inbound-fakes.ts";
-import { liveWorld } from "./discord-inbound-live-fakes.ts";
+import { liveWorld, memoryLiveWorld } from "./discord-inbound-live-fakes.ts";
+
+// This case verifies admission through the private POSIX disk queue.
+const diskTest = test.skipIf(process.platform === "win32");
 
 const cursorsFor = (initial: Record<string, string> = {}) => {
   const stores = new Map<string, ReturnType<typeof memoryDiscordCursor>>();
@@ -136,7 +139,7 @@ test("a configured thread exists without its parent being watched", async () => 
   expect(intake.channels()).toEqual(["31"]);
 });
 
-test("a live message in a new thread under a watched channel is accepted once and persisted", async () => {
+diskTest("a live message in a new thread under a watched channel is accepted once and persisted", async () => {
   const world = await liveWorld([ownerMessage("100")], { ownerId: "10", channelIds: ["20"] });
   world.rest.state.guilds = [{ id: "5", channels: ["20", "21"], threads: [] }];
   world.rest.state.threadParents.set("50", "20");
@@ -152,7 +155,7 @@ test("a live message in a new thread under a watched channel is accepted once an
 });
 
 test("a live message in a thread of an unwatched channel stays out of intake", async () => {
-  const world = await liveWorld([ownerMessage("100")], { ownerId: "10", channelIds: ["20"] });
+  const world = await memoryLiveWorld([ownerMessage("100")], { ownerId: "10", channelIds: ["20"] });
   world.rest.state.guilds = [{ id: "5", channels: ["20", "21"], threads: [] }];
   world.rest.state.threadParents.set("51", "21");
   const [socket] = world.sockets;
@@ -165,7 +168,7 @@ test("a live message in a thread of an unwatched channel stays out of intake", a
 });
 
 test("a thread whose parent lookup is rate limited retries through the backfill without losing the message", async () => {
-  const world = await liveWorld([ownerMessage("100")], { ownerId: "10", channelIds: ["20"] });
+  const world = await memoryLiveWorld([ownerMessage("100")], { ownerId: "10", channelIds: ["20"] });
   world.rest.state.guilds = [{ id: "5", channels: ["20", "21"], threads: [] }];
   world.rest.state.threadParents.set("50", "20");
   const [socket] = world.sockets;

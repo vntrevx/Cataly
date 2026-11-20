@@ -21,6 +21,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
 function cache() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-native-cache-")));
   roots.push(root);
@@ -32,7 +35,7 @@ function cache() {
   return { root, home, native };
 }
 
-test("the report names what uses each identity and removes none, the unused one included", async () => {
+posix("the report names what uses each identity and removes none, the unused one included", async () => {
   const c = cache();
   const live = c.native("live");
   const releases = join(c.root, "dori/releases");
@@ -77,7 +80,7 @@ test("the report names what uses each identity and removes none, the unused one 
   }
 });
 
-test("a link into the cache, a process working in an entry and a partial receipt are reported as uses", async () => {
+posix("a link into the cache, a process working in an entry and a partial receipt are reported as uses", async () => {
   const c = cache();
   const linked = c.native("linked");
   const chained = c.native("chained");
@@ -115,41 +118,44 @@ test("a link into the cache, a process working in an entry and a partial receipt
   }
 });
 
-test("a link to a wrapper outside the roots reports what it names; a link to an unscanned directory every identity", () => {
-  const c = cache();
-  const wrapped = c.native("wrapped");
-  const free = c.native("free");
-  for (const f of [wrapped, free]) rmSync(f.source, { recursive: true });
-  const outside = join(c.root, "opt/wrappers");
-  mkdirSync(outside, { recursive: true });
-  writeFileSync(join(outside, "omp"), `#!/bin/sh\nexec ${wrapped.receipt.omp} "$@"\n`);
-  const refs = join(c.root, "refs");
-  mkdirSync(refs);
-  symlinkSync(join(outside, "omp"), join(refs, "omp"));
-  const report = (roots: string[]) =>
-    Object.fromEntries(
-      reportNativeCache(c.home, [], roots, ownProcessCwds, { files: ownProcessFiles }).map((entry) => [
-        entry.directory,
-        entry.protectedBy,
-      ]),
-    );
-  const linked = report([refs]);
-  expect(linked[wrapped.receipt.directory]).toEqual([`reference ${join(refs, "omp")}`]);
-  expect(linked[free.receipt.directory]).toEqual([]);
-  symlinkSync(outside, join(refs, "wrappers"));
-  const held = `link to an unscanned directory ${join(refs, "wrappers")}`;
-  expect(report([refs])[free.receipt.directory]).toEqual([held]);
-  // Once that directory is scanned too, its link no longer holds anything.
-  expect(report([refs, join(c.root, "opt")])[free.receipt.directory]).toEqual([]);
-  // A reference root given as a link is read at its real path.
-  symlinkSync(outside, join(c.root, "wrappers-alias"));
-  expect(report([join(c.root, "wrappers-alias")])[wrapped.receipt.directory]).toEqual([
-    `reference ${join(outside, "omp")}`,
-  ]);
-  expect(existsSync(free.receipt.directory)).toBe(true);
-});
+posix(
+  "a link to a wrapper outside the roots reports what it names; a link to an unscanned directory every identity",
+  () => {
+    const c = cache();
+    const wrapped = c.native("wrapped");
+    const free = c.native("free");
+    for (const f of [wrapped, free]) rmSync(f.source, { recursive: true });
+    const outside = join(c.root, "opt/wrappers");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "omp"), `#!/bin/sh\nexec ${wrapped.receipt.omp} "$@"\n`);
+    const refs = join(c.root, "refs");
+    mkdirSync(refs);
+    symlinkSync(join(outside, "omp"), join(refs, "omp"));
+    const report = (roots: string[]) =>
+      Object.fromEntries(
+        reportNativeCache(c.home, [], roots, ownProcessCwds, { files: ownProcessFiles }).map((entry) => [
+          entry.directory,
+          entry.protectedBy,
+        ]),
+      );
+    const linked = report([refs]);
+    expect(linked[wrapped.receipt.directory]).toEqual([`reference ${join(refs, "omp")}`]);
+    expect(linked[free.receipt.directory]).toEqual([]);
+    symlinkSync(outside, join(refs, "wrappers"));
+    const held = `link to an unscanned directory ${join(refs, "wrappers")}`;
+    expect(report([refs])[free.receipt.directory]).toEqual([held]);
+    // Once that directory is scanned too, its link no longer holds anything.
+    expect(report([refs, join(c.root, "opt")])[free.receipt.directory]).toEqual([]);
+    // A reference root given as a link is read at its real path.
+    symlinkSync(outside, join(c.root, "wrappers-alias"));
+    expect(report([join(c.root, "wrappers-alias")])[wrapped.receipt.directory]).toEqual([
+      `reference ${join(outside, "omp")}`,
+    ]);
+    expect(existsSync(free.receipt.directory)).toBe(true);
+  },
+);
 
-test.each(["linux", "darwin"] as const)("a process's working directory is read the %s way", async (platform) => {
+posix.each(["linux", "darwin"] as const)("a process's working directory is read the %s way", async (platform) => {
   if (platform === "linux" && process.platform !== "linux") return;
   const c = cache();
   const holder = Bun.spawn(["/bin/sh", "-c", "echo ready; read line"], { cwd: c.root, stdin: "pipe", stdout: "pipe" });
@@ -165,7 +171,7 @@ test.each(["linux", "darwin"] as const)("a process's working directory is read t
   }
 });
 
-test("dori update cache reports by default; --prune quarantines, trusting only the processes it is told to", () => {
+posix("dori update cache reports by default; --prune quarantines, trusting only the processes it is told to", () => {
   const c = cache();
   const superseded = c.native("superseded");
   renameSync(superseded.source, join(c.root, "moved-away"));

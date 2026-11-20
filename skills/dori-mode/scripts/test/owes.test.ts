@@ -50,7 +50,7 @@ describe("ledger", () => {
     const state = withState();
     try {
       await recordOwes(state.dir, inbound(CHANNEL, "100", "first"), at);
-      await recordSent(state.dir, CHANNEL, at + 2);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at + 2);
       expect(openOwes(state.dir, at + 3).map((owe) => owe.id)).toEqual([`${CHANNEL}:100`]);
 
       await recordMark(state.dir, CHANNEL, "100", at + 4);
@@ -66,7 +66,7 @@ describe("ledger", () => {
       await recordOwes(state.dir, inbound(CHANNEL, "100", "first"), at);
       await recordMark(state.dir, CHANNEL, "100", at + 1);
       expect(openOwes(state.dir, at + 2).map((owe) => owe.id)).toEqual([`${CHANNEL}:100`]);
-      await recordSent(state.dir, CHANNEL, at + 3);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at + 3);
       expect(openOwes(state.dir, at + 4)).toEqual([]);
     } finally {
       state.done();
@@ -77,7 +77,7 @@ describe("ledger", () => {
     const state = withState();
     try {
       await recordOwes(state.dir, inbound(CHANNEL, "100", "first"), at);
-      await recordSent(state.dir, CHANNEL, at + 1);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at + 1);
       await recordMark(state.dir, CHANNEL, "999", at + 2);
       expect(openOwes(state.dir, at + 3).map((owe) => owe.id)).toEqual([`${CHANNEL}:100`]);
     } finally {
@@ -88,7 +88,7 @@ describe("ledger", () => {
   test("a receipt from before the message cannot settle it, on either half", async () => {
     const state = withState();
     try {
-      await recordSent(state.dir, CHANNEL, at - 10);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at - 10);
       await recordMark(state.dir, CHANNEL, "100", at - 10);
       await recordOwes(state.dir, inbound(CHANNEL, "100", "later"), at);
       expect(openOwes(state.dir, at + 1).map((owe) => owe.id)).toEqual([`${CHANNEL}:100`]);
@@ -104,7 +104,7 @@ describe("ledger", () => {
       await recordOwes(state.dir, inbound("999", "200", "other channel"), at);
       expect(openOwes(state.dir, at + 1).map((owe) => owe.id)).toEqual([`${CHANNEL}:100`, "999:200"]);
 
-      await recordSent(state.dir, CHANNEL, at + 2);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at + 2);
       await recordMark(state.dir, CHANNEL, "100", at + 2);
       expect(openOwes(state.dir, at + 3).map((owe) => owe.id)).toEqual(["999:200"]);
 
@@ -155,16 +155,16 @@ describe("ledger", () => {
     const state = withState();
     try {
       await recordOwes(state.dir, inbound(CHANNEL, "100", "secret"), at);
-      await recordSent(state.dir, CHANNEL, at + 1);
+      await recordSent(state.dir, CHANNEL, "100", ["701"], at + 1);
       bumpAttempts(state.dir, [`${CHANNEL}:100`]);
       const dir = join(state.dir, "owes");
       for (const name of ["inbound.jsonl", "sent.jsonl", "attempts.json"]) {
         const path = join(dir, name);
         expect(existsSync(path)).toBe(true);
         expect(readFileSync(path, "utf8").trim()).not.toBe("");
-        expect(statSync(path).mode & 0o777).toBe(0o600);
+        if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
       }
-      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      if (process.platform !== "win32") expect(statSync(dir).mode & 0o777).toBe(0o700);
     } finally {
       state.done();
     }
@@ -173,7 +173,7 @@ describe("ledger", () => {
   test("the ledgers stay capped instead of growing with every send", async () => {
     const state = withState();
     try {
-      for (let i = 0; i < 250; i++) await recordSent(state.dir, CHANNEL, at + i);
+      for (let i = 0; i < 250; i++) await recordSent(state.dir, CHANNEL, "100", ["701"], at + i);
       const lines = readFileSync(join(state.dir, "owes", "sent.jsonl"), "utf8")
         .trim()
         .split("\n");

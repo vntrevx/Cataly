@@ -48,6 +48,7 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
     overlap: false,
     stuckBefore: false,
     failure: new Map<string, number>(),
+    retryAfter: new Map<string, string>(),
     responses: new Map<string, string>(),
     unreachable: new Set<string>(),
     blocked: new Map<string, Promise<void>>(),
@@ -71,7 +72,14 @@ export const discordRestWorld = (messages: TestDiscordMessage[] = []) => {
     const url = new URL(request.url);
     const path = url.pathname.slice("/api/v10".length);
     const status = state.failure.get(path);
-    if (status) return { status, headers: {}, body: '{"diagnostic":"private unrelated server body"}' };
+    const retryAfter = state.retryAfter.get(path);
+    if (status) {
+      return {
+        status,
+        headers: retryAfter === undefined ? {} : { "retry-after": retryAfter },
+        body: '{"diagnostic":"private unrelated server body"}',
+      };
+    }
     if (request.headers?.["Authorization"] !== "Bot unit-private-token") {
       return { status: 401, headers: {}, body: '{"diagnostic":"private authentication body"}' };
     }

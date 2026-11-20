@@ -5,6 +5,9 @@ import { object } from "../src/update/config.ts";
 import { githubApi, githubPages } from "./release-process.ts";
 
 export const RELEASE_REPOSITORY = "vntrevx/Cataly";
+const CHECK_RUN_URL = new RegExp(
+  `^https://api\\.github\\.com/repos/${RELEASE_REPOSITORY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/check-runs/(\\d+)$`,
+);
 const REQUIRED = ["check", "e2e-herdr", "e2e-hc"];
 type Reads = { api: typeof githubApi; pages: typeof githubPages };
 
@@ -119,10 +122,7 @@ export async function releaseGate(
     const matches = jobs.filter((job) => job["name"] === name);
     if (matches.length !== 1) throw new Error(`Required exact-commit CI job is missing or ambiguous: ${name}`);
     const job = matches[0]!;
-    const match =
-      typeof job["check_run_url"] === "string"
-        ? /^https:\/\/api\.github\.com\/repos\/vntrevx\/Cataly\/check-runs\/(\d+)$/.exec(job["check_run_url"])
-        : null;
+    const match = typeof job["check_run_url"] === "string" ? CHECK_RUN_URL.exec(job["check_run_url"]) : null;
     if (
       job["head_sha"] !== manifest.commit ||
       job["run_id"] !== id ||

@@ -46,7 +46,7 @@ For the historical `v0.1.2` assets below, install git, Bun, native OMP and herdr
 
 Consumers need neither the GitHub CLI nor GitHub write permission to install, check, update or roll back Dori. These operations do not call porting/review models or change global provider settings. Later AI sessions use your own configured provider and quota; Discord uses your own application/bot account and token. No maintainer credentials, private session history or model authentication ship in the assets.
 
-Use the canonical repository **https://github.com/vntrevx/omp-dori** and the exact tag **`v0.1.2`**. Its intended canonical release path is **https://github.com/vntrevx/omp-dori/releases/tag/v0.1.2**. Check the repository owner, tag and release commit there before downloading. Do not substitute a fork, an arbitrary `main` script or an unverified mirror.
+Use the canonical repository **https://github.com/vntrevx/Cataly** and the exact tag **`v0.1.2`**. Its intended canonical release path is **https://github.com/vntrevx/Cataly/releases/tag/v0.1.2**. Check the repository owner, tag and release commit there before downloading. Do not substitute a fork, an arbitrary `main` script or an unverified mirror.
 
 Each release has four fixed assets:
 
@@ -66,7 +66,7 @@ After publication, use an account with its own home and no existing running Dori
 ```sh
 download_dir="$(mktemp -d)" || exit 1
 cd "$download_dir" || exit 1
-release_url="https://github.com/vntrevx/omp-dori/releases/download/v0.1.2"
+release_url="https://github.com/vntrevx/Cataly/releases/download/v0.1.2"
 for asset in install.sh release-manifest.json SHA256SUMS omp-dori-v0.1.2.tar.gz; do
   curl --proto '=https' --tlsv1.2 -fL "$release_url/$asset" -o "$asset" || exit 1
 done
@@ -170,15 +170,99 @@ With the protected token file prepared above and the non-secret IDs inherited fr
 
 The token value never appears in this argv or its monitor receipt: only the child shell reads and exports it. No private helper, external watch script, Node or agent-messenger is needed. A different token-file path is an explicit local choice; keep it owned, regular and mode `0600`.
 
+To let Discord follow-ups reopen a registered herdr lane after a normal tab close, add `--wake-lanes` to that existing shared REST monitor's command. Keep the same state directory, bot, owner, and watched rooms and stop any overlapping per-room poller before enabling it. No installation or update enables the flag for you. The monitor queues the message, resumes the same OMP session in a new tab when its binding is verified, and posts the resulting answer to the original Discord message. Explicitly paused lanes stay paused. Hard-killed or unverified sessions, hc, Gateway intake, and `--loop 0` are outside the automatic reopen path.
+
+Automatic reopen waits for the new foreground pane to own the same native session, not merely for herdr to accept a launch. The lane uses the saved model; when its identity differs, the monitor leaves the message queued. The reopened process uses a bundled quota/retry overlay that disables model fallback, provider-error retries, and automatic saved-reset redemption. It does not edit your OMP configuration. Interrupted or rejected Discord dispatches are held without replay, and a deleted Discord original is never replaced with an unthreaded reply.
+
+This path currently requires Linux to confirm native session ownership. The shared receiver must remain running while a lane tab is closed; it does not start if the monitor or its owning session has exited.
+
+For a long-running receiver, optionally set `"restart": "on-failure"` in the
+same monitor start request. The monitor retries a nonzero exit or signal after
+five seconds, up to three times in a failure streak. A run of at least one minute
+resets that streak. This option is stored with the monitor and applies when the
+same session resumes. Clean exits, including successful `--loop 0`, are not
+retried. Explicit stop, session shutdown, output storage failure, and uncertain
+monitor delivery do not retry the child. Existing monitors with no policy keep
+their current behavior. The monitor itself still belongs to the OMP session:
+use the same session's resume path after OMP exits. This is receiver-process
+recovery, not an end-to-end delivery acknowledgement.
+
 By default the command polls continuously every **three seconds**. `--loop` uses **minutes**: `--loop 0.1` means six seconds, and `--loop 0` runs once. Append those flags after `inbound discord` in the opted-in argv when needed.
 
 Startup validates bot authentication, application Message Content Intent and View Channel/Read Message History access before `INBOUND_READY discord owner=<id> channel=<id[,id...]|all> bot=<id>` (`mode=gateway` is appended with `--gateway`). Each channel without a stored cursor baselines its latest message ID without replaying history; an empty channel starts at `0`. This also applies to channels first found by a later REST discovery. In scope `all`, a channel first seen through a live dispatch starts just before that message, so earlier history in that channel is skipped. Existing stored cursors resume instead of baselining again. **Wait for readiness, then send a fresh owner message.** Subsequent owner messages appear as `INBOUND discord <channel> <message> from=owner ref=<id|-> <JSON text>` for native monitor delivery to the owning OMP session.
 
-Attachment-only and Discord voice messages keep the text `""` on that unchanged `INBOUND discord` line. Available reply context follows as `INBOUND_REPLY`; each attachment follows as `INBOUND_ATTACHMENT` with its filename, optional content type, size, exact signed URL and optional voice/duration metadata ([record format](../skills/dori-mode/references/scripts.md#dori-inbound-discord---loop-minutes---gateway)). Reply context is data, not a new owner request; a deleted target retains only `ref=`. Signed URLs expire, so use them promptly for an explicitly chosen download or `dori transcribe <url>`. Metadata delivery itself starts no transcription or inference. REST and Gateway use the same formatter and one emit per message before cursor commit; a malformed attachment/list or throwing emitter leaves that message uncommitted.
+Attachment-only and Discord voice messages keep the text `""` on that unchanged `INBOUND discord` line. Reply context follows as `INBOUND_REPLY`; each attachment follows as `INBOUND_ATTACHMENT` with its filename, optional content type, size, exact signed URL and optional voice/duration metadata ([record format](../skills/dori-mode/references/scripts.md#dori-inbound-discord---loop-minutes---gateway)). Reply context is data, not a new owner request. An omitted snapshot adds `"status":"unresolved"`; an unavailable target (for example, after deletion) adds `"status":"unavailable"`. Both retain `ref=` and the original reply ID, with `null` author/text rather than invented empty text. Signed URLs expire, so use them promptly for an explicitly chosen download or `dori transcribe <url>`. Metadata delivery itself starts no transcription or inference. REST and Gateway use the same formatter and one emit per message before cursor commit; a malformed attachment/list, mismatched reply identity or throwing emitter leaves that message uncommitted.
 
 The cursor is committed under `<stateDir>/discord-inbound/<channelId>.json` in a private owned directory with mode-0600 atomic cursor files. Later REST polls page back to the cursor, deduplicate and handle known owner messages in ID order. Explicitly restarting the monitor resumes its committed cursor. Do not delete the cursor to simulate successful intake. This is new-message intake with reply/media metadata; edit and delete events are not delivered.
 
 Only a remote history-read 403/404 removes an unavailable discovered channel; explicitly configured targets still fail on those responses. Content conversion, delivery and local cursor failures are not permission loss. In Gateway mode they stop intake before later queued messages can advance past the failed message. If an already watched channel's cursor disappears, intake reports the missing-state error rather than silently dropping live messages or recreating a baseline. First-seen scope-all channels still seed their new cursors as described above.
+
+An owner message to an exact Discord channel or thread registered to one
+native OMP lane goes to that lane as a Dori Monitor message, with no terminal
+keystrokes and no new setting. The receiver commits the lane inbox before
+advancing its cursor; pending messages survive a resume of the same session.
+Unbound or ambiguous channels keep the lead's existing intake behavior.
+An exact reply to an open ASK takes precedence over ordinary chat.
+
+To take over an independently configured receiver, stop the old reader before
+starting that exact lane once with `--dori-lane-receiver`. This uses its
+existing explicit receiver state and credentials, requires a separate mailbox
+and cursor root, and remembers the takeover on that session only. The normal
+shared receiver requires no flag. Restart the shared receiver when upgrading
+so it uses the new routing logic.
+
+#### Answering native OMP ASK from Discord
+
+On a supported Discord connection, ASK is enabled automatically once
+`dori inbound discord` is running and has verified the bot, owner and
+channels. It uses that installation's private `$DORI_HOME/discord-token`
+and its existing state directory. No settings file is created or edited.
+Restart the receiver when updating so it reports its current routes.
+
+- A Dori lead uses the single explicitly configured Discord destination.
+  If more than one destination is configured or only discovery is enabled,
+  ASK stays in the terminal rather than guessing.
+- A lane uses only its own registered `discord:<channel-or-thread-id>`
+  destination while the same receiver watches it. New `dori launch` lanes
+  are bound at launch; older lanes need an exact native session identity in
+  the registry (`dori sync --write` can record it).
+- Stopped receivers, unmatched bot credentials and unresolved lanes do not
+  enable automatic delivery. A custom token file or receiver can still use
+  the existing explicit route below.
+
+An explicit route in `<stateDir>/discord-ask.json` takes precedence. Use an
+absolute token file path, keep both files owned and mode `0600`, and make
+sure the bot can post in the selected room. Set a session's entry to `false`
+to keep ASK local for that session. No manual file is needed for the
+standard connection above.
+
+```json
+{
+  "sessions": {
+    "<OMP-session-id>": {
+      "channel": "<Discord-channel-or-thread-id>",
+      "owner": "<Discord-owner-id>",
+      "tokenFile": "/absolute/path/to/discord-token"
+    }
+  }
+}
+```
+
+The bot first posts a short preparation message, then fills it in once it can
+receive replies. Use Discord's **Reply** on the completed ASK. For a single
+field, plain text can be enough; for multiple fields, submit a JSON object
+using the field names in the question. When a choice lists **Other**, you
+can include one custom text value. An invalid reply explains the error
+without submitting the form; reply to the original ASK again. A different
+room, a new message, or a reply to another question does not answer the open
+form.
+
+Local input still works and the first valid submission wins. Forms that
+cannot be represented faithfully, including password and file inputs, stay
+local. ASK answers do not approve tools or get queued as ordinary lane input.
+An OMP session switch, cancellation, or restart ends the open question. This
+feature posts question text to the configured room; do not select a public
+room for a session that asks about private work.
 
 #### Real-time Gateway mode
 
@@ -329,14 +413,14 @@ The output is a review artifact, not an installed update. A conflict requires a 
 - **Interrupted activation:** run `~/.dori/bin/dori update status` and retain the release state/journal if it reports an unresolved inconsistency. Do not hand-edit the active pointer to manufacture success.
 - **Discord messages work but the bot is offline:** inspect the opt-in Gateway presence monitor, its genuine READY/RESUMED and heartbeat logs, your token/intents and the actual Discord indicator. REST success alone proves none of these.
 
-For a support report, include the exact tag, release commit/source hash shown by the manifest or status, OS/architecture, Bun/OMP versions, selected runtime, command and sanitized output. State whether the input was a canonical network release or `--from`. Report checksum failure, skipped checks and unexercised behavior honestly. Exclude tokens, auth files, private session transcripts and project data. Use the repository's [issues](https://github.com/vntrevx/omp-dori/issues) after reviewing what you are submitting.
+For a support report, include the exact tag, release commit/source hash shown by the manifest or status, OS/architecture, Bun/OMP versions, selected runtime, command and sanitized output. State whether the input was a canonical network release or `--from`. Report checksum failure, skipped checks and unexercised behavior honestly. Exclude tokens, auth files, private session transcripts and project data. Use the repository's [issues](https://github.com/vntrevx/Cataly/issues) after reviewing what you are submitting.
 
 ## Source checkouts for maintainers
 
 Source installation is separate from public release installation. Use an ordinary checkout outside the frozen consumer release directories:
 
 ```sh
-git clone https://github.com/vntrevx/omp-dori.git "$HOME/src/omp-dori"
+git clone https://github.com/vntrevx/Cataly.git "$HOME/src/omp-dori"
 cd "$HOME/src/omp-dori"
 DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
 ```
@@ -379,7 +463,9 @@ The general interface is `bun scripts/release.ts build --out DIST [--prerelease]
 
 Before publication, maintainers perform isolated real-binary install/update/failure-recovery QA without personal HOME/auth/history mounts, review the change freshly and obtain the required CI evidence for the exact release commit. Report the actual results separately: source checks or a historical port replay are not a future clean-consumer run, a provider test or an independent external-user beta.
 
-The `.github/workflows/release.yml` tag workflow validates the tag against the canonical package version. It requires successful **`check`**, **`e2e-herdr`** and **`e2e-hc`** results for that exact commit from the repository's own CI workflow and the trusted GitHub Actions app **15368**. A tag push alone does not prove `ci.yml` ran. The first release is explicitly marked prerelease. Existing tags, releases and assets must not be overwritten; publication needs maintainer permissions and consumers need none.
+Use the [per-run evidence contract](../.github/pull_request_template.md#evidence) for release QA too. Link actual receipts with observed source/native/ULW identities (including overlays), OS/architecture, exact commands, runtime/fixture setup, synthetic/loopback/live provider boundaries, and unverified surfaces. Pins are intended inputs, not observed runtime proof; explain unknown or N/A. Rerun affected checks after relevant source, runtime, or environment changes, or keep that claim unverified rather than carrying old receipts forward.
+
+The `.github/workflows/release.yml` tag workflow validates the tag against the canonical package version. It requires successful **`check`**, **`e2e-herdr`** and **`e2e-hc`** results for that exact commit from the repository's own CI workflow and the trusted GitHub Actions app **15368**. A tag push alone does not prove `ci.yml` ran. The separate `.github/workflows/cross-os.yml` workflow reports macOS and Windows results on pull requests and `main` pushes, but it is outside this release gate and forms no part of release evidence. The first release is explicitly marked prerelease. Existing tags, releases and assets must not be overwritten; publication needs maintainer permissions and consumers need none.
 
 Every maintainer release-metadata mutation names the tag and commit identity explicitly and reads back the known release ID rather than re-resolving a draft by tag; a body-only draft update can drop that draft's tag binding. The local producer publication path uses the GitHub CLI and needs a `gh` that supports `--paginate` together with `--slurp` for paginated API reads, including release-asset listing, which the trusted Actions runner provides; an older host `gh` without `--slurp` is not a supported producer environment. This is a maintainer tool requirement only: consumer install, check, update and rollback still need no `gh`.
 

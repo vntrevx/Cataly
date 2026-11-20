@@ -149,8 +149,11 @@ for (const explicit of [false, true]) {
   }
 }
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const head of [undefined, "99", "107"]) {
-  test(`a quiet REST head (${head}) leaves retained older owners available to the admitted FIFO`, async () => {
+  posix(`a quiet REST head (${head}) leaves retained older owners available to the admitted FIFO`, async () => {
     const world = queuedWorld({
       history: head ? [ownerMessage(head)] : [],
       messages: [ownerMessage("105"), ownerMessage("109")],

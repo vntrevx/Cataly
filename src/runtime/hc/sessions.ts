@@ -1,6 +1,6 @@
 import type { Exec } from "../exec.ts";
 import type { CreateSpec, SessionInfo, SessionRef } from "../types.ts";
-import { hcCall, isKind } from "./exec.ts";
+import { hcCall, isKind, isReportedKind } from "./exec.ts";
 import { statusWord } from "./probe.ts";
 
 const NAME_MAX = 32;
@@ -85,7 +85,7 @@ export async function create(exec: Exec, spec: CreateSpec, shell: string, space?
   try {
     result = await hcCall(exec, createArgv(spec, shell, name, space));
   } catch (e) {
-    if (name === undefined || !isKind(e, "name_taken")) throw e;
+    if (name === undefined || !isReportedKind(e, "name_taken")) throw e;
     result = await hcCall(exec, createArgv(spec, shell, undefined, space));
   }
   const id = str(result["address"]);

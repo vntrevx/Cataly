@@ -3,7 +3,6 @@
 !package.json
 !bun.lock
 !tsconfig*.json
-!biome.jsonc
 !knip.json
 !install.sh
 !omp-ulw.lock

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { platform } from "../platform/index.ts";
 import { owned, realDirectory, syncDirectory } from "./files.ts";
 import { nativeCacheRoot, nativeStage } from "./native-cache-lease.ts";
 import { exclusiveBytes, type NativeCacheEntry, receiptHolds } from "./native-cache.ts";
@@ -10,7 +11,7 @@ import { type UseHoldOptions, useHolds } from "./native-cache-uses.ts";
 import type { processCwds } from "./process-cwd.ts";
 
 const LEFTOVER = new RegExp(
-  `^native-${process.platform}-${process.arch}-([a-f0-9]{64})\\.(pruning|deleting-[a-f0-9]{16}|removing-[a-f0-9]{16})$`,
+  `^${platform.nativeCacheLabel()}-([a-f0-9]{64})\\.(pruning|deleting-[a-f0-9]{16}|removing-[a-f0-9]{16})$`,
 );
 export const QUARANTINE = "native-quarantine";
 
@@ -71,7 +72,7 @@ export function deleteQuarantined(
   const nonce = randomBytes(8).toString("hex");
   const copies = [
     ...doomed.map((entry) => {
-      if (entry.directory !== join(cache, `native-${process.platform}-${process.arch}-${entry.identity}`))
+      if (entry.directory !== join(cache, `${platform.nativeCacheLabel()}-${entry.identity}`))
         throw new Error("Native removal must name a direct cache child");
       realDirectory(`${entry.directory}.pruning`);
       owned(`${entry.directory}.pruning`);

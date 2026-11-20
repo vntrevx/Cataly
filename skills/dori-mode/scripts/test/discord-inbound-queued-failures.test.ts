@@ -5,8 +5,11 @@ import { MessengerError } from "../src/messenger/http.ts";
 import { ownerMessage } from "./discord-inbound-fakes.ts";
 import { queuedWorld, settle } from "./discord-inbound-live-fakes.ts";
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const fault of ["emit", "save", "ack"] as const)
-  test(`${fault} failure stops merged recovery before 107 and preserves durable 105 across reopen`, async () => {
+  posix(`${fault} failure stops merged recovery before 107 and preserves durable 105 across reopen`, async () => {
     const world = await queuedWorld({
       history: [ownerMessage("107")],
       messages: [ownerMessage("105"), ownerMessage("109")],
@@ -87,7 +90,7 @@ for (const fault of ["emit", "save", "ack"] as const)
     }
   });
 
-test("queued owner conversion failure is not hidden by a newer filtered REST checkpoint", async () => {
+posix("queued owner conversion failure is not hidden by a newer filtered REST checkpoint", async () => {
   const missing = ownerMessage("105");
   delete missing.content;
   const world = await queuedWorld({
@@ -104,50 +107,53 @@ test("queued owner conversion failure is not hidden by a newer filtered REST che
 });
 
 for (const fault of ["save", "ack"] as const)
-  test(`late 105 ${fault} failure retains its admission and repeats only inside its acknowledgement window`, async () => {
-    const world = await queuedWorld({
-      cursors: { "20": "107" },
-      admissions: { "105": "102", "109": "107" },
-      history: [ownerMessage("107")],
-      messages: [ownerMessage("105"), ownerMessage("109")],
-    });
-    const failure = new Error(`late ${fault} failed`);
-    let broken = true;
-    const acknowledge = world.queue().acknowledge;
-    const ack = spyOn(world.queue(), "acknowledge").mockImplementation((channel, message) => {
-      if (broken && fault === "ack" && message === "105") throw failure;
-      acknowledge(channel, message);
-    });
-    const storeFor = (channel: string, seed?: boolean) => {
-      const store = world.queue().storeFor(channel, seed);
-      return {
-        load: store.load,
-        save: (id: string) => {
-          if (broken && fault === "save" && id === "107") throw failure;
-          store.save(id);
-        },
+  posix(
+    `late 105 ${fault} failure retains its admission and repeats only inside its acknowledgement window`,
+    async () => {
+      const world = await queuedWorld({
+        cursors: { "20": "107" },
+        admissions: { "105": "102", "109": "107" },
+        history: [ownerMessage("107")],
+        messages: [ownerMessage("105"), ownerMessage("109")],
+      });
+      const failure = new Error(`late ${fault} failed`);
+      let broken = true;
+      const acknowledge = world.queue().acknowledge;
+      const ack = spyOn(world.queue(), "acknowledge").mockImplementation((channel, message) => {
+        if (broken && fault === "ack" && message === "105") throw failure;
+        acknowledge(channel, message);
+      });
+      const storeFor = (channel: string, seed?: boolean) => {
+        const store = world.queue().storeFor(channel, seed);
+        return {
+          load: store.load,
+          save: (id: string) => {
+            if (broken && fault === "save" && id === "107") throw failure;
+            store.save(id);
+          },
+        };
       };
-    };
-    try {
-      const run = await world.start(() => settle(), storeFor);
-      expect(await run.outcome).toBe(failure);
-      expect(world.received).toEqual(["20:105"]);
-      expect(world.cursor()).toBe("107");
-      expect(world.queue().first()?.admittedAfter).toBe("102");
-      broken = false;
-      ack.mockRestore();
-      await world.restart(undefined, storeFor);
-      await settle();
-      expect(world.received).toEqual(["20:105", "20:105", "20:109"]);
-      expect(world.saves).toEqual(fault === "ack" ? ["20:107", "20:107", "20:109"] : ["20:107", "20:109"]);
-      expect(world.cursor()).toBe("109");
-      expect(world.queue().first()).toBeNull();
-    } finally {
-      ack.mockRestore();
-    }
-  });
+      try {
+        const run = await world.start(() => settle(), storeFor);
+        expect(await run.outcome).toBe(failure);
+        expect(world.received).toEqual(["20:105"]);
+        expect(world.cursor()).toBe("107");
+        expect(world.queue().first()?.admittedAfter).toBe("102");
+        broken = false;
+        ack.mockRestore();
+        await world.restart(undefined, storeFor);
+        await settle();
+        expect(world.received).toEqual(["20:105", "20:105", "20:109"]);
+        expect(world.saves).toEqual(fault === "ack" ? ["20:107", "20:107", "20:109"] : ["20:107", "20:109"]);
+        expect(world.cursor()).toBe("109");
+        expect(world.queue().first()).toBeNull();
+      } finally {
+        ack.mockRestore();
+      }
+    },
+  );
 
-test("stop before a late owner's acknowledgement retains it without draining its successor", async () => {
+posix("stop before a late owner's acknowledgement retains it without draining its successor", async () => {
   const world = await queuedWorld({
     messages: [ownerMessage("105"), ownerMessage("109")],
     cursors: { "20": "107" },

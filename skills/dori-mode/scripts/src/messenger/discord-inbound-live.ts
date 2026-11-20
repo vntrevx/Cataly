@@ -1,5 +1,5 @@
 import { discordGateway, type GatewayClock, type GatewaySocket } from "./discord-gateway.ts";
-import { type Emit, isTransient, type Message } from "./discord-inbound-api.ts";
+import { type Emit, type Message, transientRetryDelay } from "./discord-inbound-api.ts";
 import type { DiscordInboundQueue } from "./discord-inbound-queue.ts";
 import { discordThreadAdmission, type ThreadIntake } from "./discord-inbound-thread-admission.ts";
 
@@ -14,6 +14,7 @@ type Intake = ThreadIntake & {
 };
 
 export type DiscordInboundLive = { done: Promise<void>; close(): void };
+export type DiscordInboundLifecycle = { ready(): void; disconnect(): void };
 
 /**
  * Scoped dispatches and backfills share the durable FIFO. Unknown thread scope is resolved in bounded RAM
@@ -27,6 +28,7 @@ export const discordInboundLive = (
   emit: Emit,
   report: (line: string) => void,
   queue: DiscordInboundQueue,
+  lifecycle?: DiscordInboundLifecycle,
 ): DiscordInboundLive => {
   const admission = new AbortController();
   const cancelled = new Error("Discord inbound closed before ledger admission");
@@ -49,9 +51,10 @@ export const discordInboundLive = (
       try {
         return await intake.sync(deliver, queue, metadata.flushKnown);
       } catch (error) {
-        if (dead || !isTransient(error)) throw error;
-        report(`DISCORD_GATEWAY_BACKFILL_RETRY discord retry_in=${delay / 1000}s`);
-        await pause(delay);
+        const wait = transientRetryDelay(error, delay);
+        if (dead || wait === undefined) throw error;
+        report(`DISCORD_GATEWAY_BACKFILL_RETRY discord retry_in=${wait / 1000}s`);
+        await pause(wait);
         if (dead) return;
       }
     }
@@ -111,8 +114,10 @@ export const discordInboundLive = (
     label: "DISCORD_GATEWAY",
     intents: GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT,
     online: false,
+    onDisconnect: () => lifecycle?.disconnect(),
     onReady: () => {
       try {
+        lifecycle?.ready();
         enqueue("sync");
       } catch (error) {
         fail(error);

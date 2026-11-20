@@ -13,6 +13,8 @@ import { settle } from "./discord-inbound-live-fakes.ts";
 import { FakeGateway, gatewayTimers } from "./discord-presence-fakes.ts";
 import { withState } from "./fakes.ts";
 
+const posix = test.skipIf(process.platform === "win32");
+
 const world = async (
   mode: "sync" | "message",
   emit: (message: DiscordInbound, signal: AbortSignal | undefined, root: string) => Promise<void>,
@@ -66,7 +68,7 @@ const world = async (
 
 for (const mode of ["sync", "message"] as const) {
   for (const ending of ["close", "terminal"] as const) {
-    test(`${mode}: ${ending} cancels a held-lock ledger wait and retains payload/cursor/ack state`, async () => {
+    posix(`${mode}: ${ending} cancels a held-lock ledger wait and retains payload/cursor/ack state`, async () => {
       const entered = Promise.withResolvers<void>();
       const begin = Promise.withResolvers<void>();
       const received: string[] = [];
@@ -114,7 +116,7 @@ for (const mode of ["sync", "message"] as const) {
 }
 
 for (const fault of [new Error("context failed during close"), new DOMException("unrelated abort", "AbortError")]) {
-  test(`close still propagates a genuine non-owned fault: ${fault.message}`, async () => {
+  posix(`close still propagates a genuine non-owned fault: ${fault.message}`, async () => {
     const entered = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
     const w = await world("message", async () => {

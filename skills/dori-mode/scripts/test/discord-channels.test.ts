@@ -33,7 +33,8 @@ test("purposes are stored privately, replaced, cleared and validated before anyt
       "20": { purpose: "dev and ops", name: "chat", updatedAt: "2026-11-17T00:00:02.000Z" },
       "40": { purpose: "one task", updatedAt: "2026-11-17T00:00:01.000Z" },
     });
-    expect(statSync(store.path).mode & 0o777).toBe(0o600);
+    // Windows reports 0666 for any writable file; the 0600 check is POSIX-only.
+    if (process.platform !== "win32") expect(statSync(store.path).mode & 0o777).toBe(0o600);
     for (const bad of ["", "   ", "two\nlines", "tab\there", "x".repeat(501), "sep\u2028arator", "flip\u202eped"])
       await expect(store.set("20", bad, undefined, 0)).rejects.toBeInstanceOf(ChannelPurposeError);
     await expect(store.set("chat", "fine", undefined, 0)).rejects.toBeInstanceOf(ChannelPurposeError);

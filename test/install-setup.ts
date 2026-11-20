@@ -1,4 +1,4 @@
-import { afterEach } from "bun:test";
+import { afterEach, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -12,6 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { digest } from "../src/update/source.ts";
+
+// POSIX-only: this installer fixture runs shell scripts, links and mode checks the Windows host cannot exercise.
+export const posix = test.skipIf(process.platform === "win32");
 
 // The real source installer over a local upstream; package installs and toolchain probes stay isolated.
 export const script = resolve(import.meta.dir, "../scripts/install-source.sh");

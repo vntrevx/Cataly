@@ -1,15 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, parse, resolve } from "node:path";
 import { nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
+
+// POSIX-only: native admission fixtures build private directories that POSIX mode bits mark.
+const posix = test.skipIf(process.platform === "win32");
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("a lightweight command in a consumer release still validates every native byte before handler loading", () => {
+posix("a lightweight command in a consumer release still validates every native byte before handler loading", () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "dori-cli-native-")));
   roots.push(home);
   const source = join(home, ".dori/releases/releases", `${"a".repeat(40)}-${"b".repeat(16)}`);
@@ -76,27 +79,53 @@ test("an explicitly configured external OMP needs no native receipt, but the man
   mkdirSync(join(stateDir, "lanes"), { recursive: true });
   writeFileSync(join(stateDir, "lanes/fixture.json"), JSON.stringify({ key: "fixture", status: "working" }));
   const config = join(home, "config.json");
-  const invoke = (executable: string) => {
+  const invoke = (executable: string, cwd = home) => {
     writeFileSync(config, JSON.stringify({ stateDir, agentCommand: [executable], ompUlwPath: "/explicit-ulw" }));
     return Bun.spawnSync(
       [process.execPath, join(source, "skills/dori-mode/scripts/src/cli.ts"), "checkpoints", "fixture"],
       {
-        env: { HOME: home, PATH: process.env["PATH"], DORI_CONFIG: config, DORI_TELEMETRY: "0", DO_NOT_TRACK: "1" },
+        cwd,
+        env: {
+          HOME: home,
+          USERPROFILE: home,
+          PATH: process.env["PATH"],
+          DORI_CONFIG: config,
+          DORI_TELEMETRY: "0",
+          DO_NOT_TRACK: "1",
+        },
         timeout: 15_000,
       },
     );
   };
-  const external = invoke(join(home, "external/bin/omp"));
-  expect({ code: external.exitCode, out: external.stdout.toString(), err: external.stderr.toString() }).toEqual({
-    code: 0,
-    out: "[]\n",
-    err: "",
-  });
+  const assertExternal = (executable: string, cwd?: string) => {
+    const run = invoke(executable, cwd);
+    expect({ executable, code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() }).toEqual({
+      executable,
+      code: 0,
+      out: "[]\n",
+      err: "",
+    });
+  };
+  const externalBin = join(home, "external", "bin");
+  mkdirSync(externalBin, { recursive: true });
+  assertExternal(join(externalBin, "omp"));
 
-  for (const executable of ["omp", join(home, ".dori/bin/omp"), join(source, "scripts/consumer/omp")]) {
+  const managedPaths = ["omp", join(home, ".dori", "bin", "omp"), join(source, "scripts", "consumer", "omp")];
+  if (process.platform === "win32") {
+    const drive = parse(home).root;
+    assertExternal(join(drive, "bin", "omp"), join(home, ".dori"));
+    assertExternal(join(drive, basename(source), "scripts", "consumer", "omp"), join(source, ".."));
+    const alias = join(home, "dori-junction");
+    symlinkSync(join(home, ".dori"), alias, "junction");
+    managedPaths.push(
+      join(alias, "bin", "omp"),
+      join(alias, "releases", "releases", basename(source), "scripts", "consumer", "omp"),
+    );
+  }
+  for (const executable of managedPaths) {
     const managed = invoke(executable);
-    expect(managed.exitCode).not.toBe(0);
+    expect(managed.exitCode === 0 ? { unexpectedlyAccepted: executable } : null).toBeNull();
     expect(managed.stdout.toString()).toBe("");
     expect(managed.stderr.toString()).toContain("consumer-manifests");
   }
-});
+}, 20_000);

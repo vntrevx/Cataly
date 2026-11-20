@@ -11,6 +11,9 @@ import { digest } from "../src/update/source.ts";
 import { snapshot } from "../scripts/consumer-smoke-inspect.ts";
 import { archive, fixture, withArchive } from "./release-consumer-setup.ts";
 
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
 const rendererPath = "src/release/references.ts";
 const rendererModule = JSON.stringify(resolve(import.meta.dir, "../src/release/references.ts"));
 
@@ -55,7 +58,7 @@ export function installIsolatedReferences(paths, source) {
 `;
 }
 
-test("isolated update and rollback restore exact release-specific wrapper bytes, modes and receipt", async () => {
+posix("isolated update and rollback restore exact release-specific wrapper bytes, modes and receipt", async () => {
   const f = fixture(true);
   const first = withRenderer(f.release("one").bundle, renderer("A"));
   const one = await installBundle(f.paths, first, undefined);
@@ -75,7 +78,7 @@ test("isolated update and rollback restore exact release-specific wrapper bytes,
   preflightReferences(f.paths);
 });
 
-test.each([
+posix.each([
   ["missing", undefined, "no authenticated consumer reference renderer"],
   ["missing export", "export const unrelated = true;\n", "has no installer"],
   ["import error", 'throw new Error("renderer import failed");\n', "renderer import failed"],
@@ -99,7 +102,7 @@ test.each([
   acquireLaunchGate(f.paths)();
 });
 
-test("a live launch lease blocks even the target renderer's top-level code", async () => {
+posix("a live launch lease blocks even the target renderer's top-level code", async () => {
   const f = fixture(true);
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const marker = join(f.root, "renderer-imported");
@@ -119,7 +122,7 @@ test("a live launch lease blocks even the target renderer's top-level code", asy
   expect(readlinkSync(f.paths.live)).toBe(releasePath(f.paths, one.current));
 });
 
-test("a tampered retained renderer is rejected before rollback import or reference publication", async () => {
+posix("a tampered retained renderer is rejected before rollback import or reference publication", async () => {
   const f = fixture(true);
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const two = await installBundle(f.paths, f.release("two").bundle, one);
@@ -134,7 +137,7 @@ test("a tampered retained renderer is rejected before rollback import or referen
   expect(snapshot(join(f.paths.dori, "bin"))).toBe(wrappers);
 });
 
-test("postflight reference admission rejects an inconsistent target renderer before activation", async () => {
+posix("postflight reference admission rejects an inconsistent target renderer before activation", async () => {
   const f = fixture(true);
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const candidate = withRenderer(

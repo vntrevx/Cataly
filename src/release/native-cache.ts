@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { platform } from "../platform/index.ts";
 import { owned, readJson, realDirectory } from "./files.ts";
 import type { NativeReceipt } from "./native.ts";
 import { protections } from "./native-cache-refs.ts";
@@ -20,7 +21,7 @@ export type NativeCacheEntry = {
   readonly protectedBy: readonly string[];
 };
 
-const ENTRY = new RegExp(`^native-${process.platform}-${process.arch}-([a-f0-9]{64})$`);
+const ENTRY = new RegExp(`^${platform.nativeCacheLabel()}-([a-f0-9]{64})$`);
 
 /** Freed bytes: inodes whose link count is fully accounted for inside the directory (shared Bun cache links are not). */
 export function exclusiveBytes(directory: string): number {

@@ -1,4 +1,4 @@
-import { afterEach } from "bun:test";
+import { afterEach, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -19,6 +19,9 @@ import { type ConsumerPaths, consumerPaths, initialize, saveJson } from "../src/
 import { validateReleaseManifest } from "../src/release/manifest.ts";
 import type { ReleaseManifest } from "../src/release/types.ts";
 import { digest, sourceManifest } from "../src/update/source.ts";
+
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+export const posix = test.skipIf(process.platform === "win32");
 
 const roots: string[] = [];
 const environmentKeys = [

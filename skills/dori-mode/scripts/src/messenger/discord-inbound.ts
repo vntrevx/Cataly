@@ -29,6 +29,18 @@ export type DiscordInboundOptions = {
   threads?: boolean;
 };
 
+/** Failure to add a read receipt must not replay the owner's request. */
+export async function markDiscordInboundSeen(
+  discord: Pick<Discord, "react">,
+  message: Pick<DiscordInbound, "channel" | "message">,
+): Promise<void> {
+  try {
+    await discord.react(message.channel, message.message, "👀");
+  } catch {
+    console.error(`Discord read receipt failed for ${message.channel}/${message.message}`);
+  }
+}
+
 export const formatDiscordInbound = (message: DiscordInbound): string => {
   const id = `discord ${message.channel} ${message.message}`;
   return [

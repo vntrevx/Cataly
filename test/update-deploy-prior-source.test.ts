@@ -15,6 +15,8 @@ import { overlayFixture } from "./source-bundle-setup.ts";
 import { deploymentConfig } from "./update-deploy-setup.ts";
 
 const roots: string[] = [];
+// POSIX-only: the fixture is a shebang native binary with symlinked overlays and POSIX process identities.
+const it = test.skipIf(process.platform === "win32");
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -72,7 +74,7 @@ async function conversion(sameOverlay: boolean) {
   return { config, record, runtime, oldSource };
 }
 
-test("a first conversion binds its rollback toolchain to the prior source before any stop", async () => {
+it("a first conversion binds its rollback toolchain to the prior source before any stop", async () => {
   const f = await conversion(true);
   f.record.oldRuntime = await admitRuntimeToolchains(f.config, f.record, f.runtime, undefined, true);
   const old = f.record.oldToolchain!;
@@ -98,7 +100,7 @@ test("a first conversion binds its rollback toolchain to the prior source before
   );
 });
 
-test("a prior source pinning a different extension overlay is held before any stop", async () => {
+it("a prior source pinning a different extension overlay is held before any stop", async () => {
   const f = await conversion(false);
   await expect(admitRuntimeToolchains(f.config, f.record, f.runtime, undefined, true)).rejects.toThrow(
     "prior source cannot be relaunched with the prepared extension overlay",

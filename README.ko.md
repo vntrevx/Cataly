@@ -1,133 +1,134 @@
+<p align="center">
+  <img src="docs/cataly-portrait.webp" width="320" alt="은빛 머리와 붉은 광륜이 있는 Cataly 캐릭터 초상">
+</p>
+
 # Cataly
 
-**의도를 이해하고, 맥락을 읽고, 끝까지 완수합니다.**
+**의도를 이해하고 맥락을 읽어 끝까지 해냅니다.**
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [中文](README.zh.md)
+Cataly는 개발 업무를 함께하는 AI 동료입니다.
+단계별 지시 대신 목표와 지켜야 할 조건을 알려주세요.
+Discord에서 요청을 받아 전용 코딩 세션에서 작업하고,
+직접 확인할 수 있는 결과를 돌려줍니다.
 
-Cataly는 목표를 완성된 결과로 만드는 AI 동료입니다. 이루고 싶은 일을 알려주면,
-다음 단계를 책임지고 주변 맥락을 고려하며 직접 확인할 수 있는 결과를
-낼 때까지 작업을 이어갑니다.
+[시작하기](#시작하기) · [작동 방식](#작동-방식) · [문서](#문서)
 
-지시를 따르는 데 그치지 않고 올바른 판단을 내리는 것이 목표입니다.
-중요한 점을 짚고 세부 사항을 연결하며, 매 단계마다 관리받지 않아도
-작업을 처리하는 것을 지향합니다.
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md)<br>
+[Deutsch](README.de.md) · [Italiano](README.it.md) · [中文](README.zh.md)
 
-## 지향하는 원칙
+## 목표부터 알려주세요
 
-- **결과를 책임집니다.** 활동 목록을 채우는 대신 목표 달성을 위해 일합니다.
-- **맥락을 이해합니다.** 대화, 프로젝트 관례, 제약 조건과 사용자의 선호를
-  함께 고려합니다.
-- **신중하게 주도합니다.** 일상적인 판단은 스스로 내립니다. 실질적인 절충이
-  필요하거나 권한이 없어 사용자의 판단이 필요할 때 질문합니다.
-- **끝까지 완수합니다.** 조사하고, 구현하고, 검증한 뒤 실제로 무엇이
-  이루어졌는지 보고합니다. 설득력 있는 설명은 작동하는 결과를 대신할 수 없습니다.
+> 로그인 테스트가 간헐적으로 실패하는 이유를 찾아줘. 공개 API는 그대로 두고,
+> 관련 테스트를 돌린 다음 원인과 검증 결과를 담아 PR을 열어줘.
 
-Cataly는 이 기준을 중심으로 만들어집니다. 행동할 역량, 맥락을 이해하는
-세심함, 그리고 결과에 대한 책임을 갖추는 것입니다.
+- **의도를 이해합니다.** 간헐적 실패는 증상입니다. 공개 API를 유지하면서
+  검토할 수 있는 수정안을 만드는 것이 목표입니다. 목표가 조사 범위를 결정합니다.
+- **맥락을 읽습니다.** 대화, 저장소 관례, 제약, 사용자가 밝힌 선호를 함께 고려합니다.
+  일상적인 판단은 Cataly가 맡고, 실질적인 절충이나 권한 판단이 필요할 때는 묻습니다.
+- **끝까지 완수합니다.** 패치를 만드는 것으로 끝내지 않습니다. 합의한 결과를 확인하고,
+  근거와 아직 확인하지 못한 부분을 함께 보고합니다.
+
+차이는 채팅 화면이 아니라, 요청과 실제 작업 세션, 그리고 완료를 뒷받침하는 근거가
+서로 연결된다는 데 있습니다.
 
 ## 작동 방식
 
-Cataly는 메신저 대화를 네이티브 코딩 에이전트 런타임과 진행 상황을 추적하는
-작업 레인에 연결합니다.
+아래는 현재 `main`의 작업 흐름입니다.
 
-- 리드는 작은 요청을 직접 처리하고, 긴 작업에는 작업 설명, 전용 세션과
-  책임질 담당자를 지정합니다.
-- 작업 로그, 체크포인트와 레지스트리를 통해 재시작 후에도 진행 상황을 확인할 수 있습니다.
-- Discord 수신 기능은 답장 맥락과 첨부 파일 메타데이터를 작업에 전달합니다.
-- 프로세스에 연결된 세션·승인 기록으로 의도한 에이전트에게 전달되도록 보호합니다.
-- 완료 검사는 명령 성공, 파일 일치, 병합된 풀 리퀘스트나 게시된 버전 같은
-  구체적인 신호를 확인할 수 있습니다.
-- 선택적 스케줄링, 모니터와 감독 기능은 명시적으로 활성화했을 때 지속적인
-  작업을 지원합니다.
+1. **요청을 받습니다.** Discord 수신을 켜면 지정한 사용자의 메시지를 읽고,
+   확인할 수 있는 답장 맥락과 첨부 파일 메타데이터를 함께 전달합니다.
+2. **리드가 작업을 맡깁니다.** 간단한 요청은 직접 처리합니다. 긴 작업에는 브리프와
+   명시적인 `Done` 조건을 붙여 **레인**을 엽니다. 레인은 herdr 또는 hc에서 실행되는
+   전용 [oh-my-pi(OMP)](https://github.com/can1357/oh-my-pi) 코딩 세션입니다.
+   레지스트리는 작업을 세션과 메신저 스레드에 연결합니다.
+3. **레인이 작업하고 보고합니다.** 작업 로그·보고·체크포인트를 통해 재시작 후에도
+   진행 상황을 확인할 수 있습니다. Discord 채널이 레인 하나에 연결돼
+   있으면 일반 채팅은 해당 레인의 OMP 세션으로 전달됩니다. 지원되는 ASK 양식에
+   직접 답장하면 새 작업을 시작하는 대신 열린 질문에 답합니다.
+4. **완료를 검증합니다.** 레인의 완료 보고 자체가 증거는 아닙니다. Done 절차는
+   명령 실행 결과, 파일 상태, PR 병합, 패키지 버전 게시 등을 확인할 수 있습니다.
+   검증을 통과했다는 것은 확인한 항목의 증거이지 모든 결과를 보장한다는 뜻은 아닙니다.
 
-이 구현은
-[dori-superagent](https://github.com/sisyphuslabs/dori-superagent),
-[oh-my-pi](https://github.com/can1357/oh-my-pi),
-[omp-ulw](https://github.com/dbc-hbin/omp-ulw)를 결합합니다. 각 프로젝트의
-저자, 라이선스와 소스 출처는 계속 이 프로젝트의 일부로 남습니다.
+**통제권은 사용자에게 있습니다.** Cataly는 사용자가 제공한 계정과 권한으로
+작동합니다. 도움이 될 것이라는 판단만으로 외부 작업 권한이 생기지는 않습니다.
+설치만으로 에이전트·메신저 수신기·서비스가 시작되지는 않습니다. 원하는 기능만
+활성화하고, 인증 정보와 비공개 대화는 공개 보고에서 제외하세요. 선택적 텔레메트리는
+`DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로 끌 수 있습니다.
 
 ## 시작하기
 
-Cataly는 프로젝트 이름입니다. 기존 `dori`, `omp-dori`, `omp` 명령,
-설치 홈 디렉터리와 게시된 배포 파일 이름은 바뀌지 않았습니다.
+Cataly는 프로젝트 이름입니다. `dori`, `omp-dori`, `omp` 명령과 기존 설치 경로,
+게시된 배포 파일 이름은 그대로입니다.
 
-### 소스에서 작업하기
+### 게시된 프리릴리스 써보기
 
-먼저 git, Bun 1.4.4+, herdr 또는 hc를 설치하세요.
-자세한 내용은 [소스 사전 요구 사항](docs/releases.md#current-source-bundle)을 참고하세요.
+[v0.1.2 프리릴리스](https://github.com/vntrevx/Cataly/releases/tag/v0.1.2)는
+**Linux x64 / herdr / Discord** 환경을 대상으로 합니다. 검증 기준은 Ubuntu 24.04 x64,
+Bun 1.4.4, 네이티브 OMP 18.18.8, herdr 0.9.5입니다. 별도로 설치한 OMP와 기본
+설치 홈 `~/.dori`를 사용합니다. 현재 `main`의 새 기능과 도구 체인은 포함되지 않습니다.
 
-실행 중인 설치나 고정된 사용자용 릴리스가 아닌 별도의 체크아웃을 사용하세요.
+1. [정확한 프리릴리스 설치](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#install-the-exact-preview)를 따르세요.
+   [사전 요구 사항](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#prerequisites-and-trust)을 확인하고,
+   같은 릴리스의 배포 파일을 검증한 뒤 설치기를 실행합니다.
+2. [모델 제공업체와 Discord 봇을 설정한 뒤 Dori를 시작하세요](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#your-authentication-and-explicit-startup).
+   본인의 제공업체 계정과 사용량 한도, 봇 토큰, 사용자 ID, 채널 ID를 사용합니다.
+3. [Discord 수신을 켜세요](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#discord-owner-intake).
+   `INBOUND_READY`가 표시된 뒤 설정한 채널에 새 메시지를 보내세요. 첫 시작 시에는
+   이전 메시지를 다시 가져오지 않습니다.
+
+### 현재 소스에서 시작하기
+
+git, Bun 1.4.4 이상과 선택한 세션 런타임(herdr 또는 hc)을 준비해 별도 체크아웃을
+사용하세요. 소스 설치기는 고정된 패치 버전 **OMP 18.20.0**과 **omp-ulw** 오버레이를
+준비합니다. 기본 설치에는 사전에 설치한 OMP나 Cargo가 필요 없고, 일반 배포판 `omp`로
+이 구성을 대체하지 않습니다.
 
 ```bash
 git clone https://github.com/vntrevx/Cataly.git "$HOME/src/Cataly" || exit 1
 cd "$HOME/src/Cataly" || exit 1
-DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-source.sh
+DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" \
+  bash scripts/install-source.sh
 ```
 
-소스 설치기는 프로젝트에 묶인 수정 OMP 18.20.0과 ULW 오버레이를 준비합니다.
-`PATH`에 있는 기본 배포판 `omp`는 이를 대체할 수 없습니다. Side 모드는
-기본적으로 `~/.omp-dori`를 사용하며 자체 래퍼와 설정을 유지하고, 주 설치인
-`~/.dori`는 건드리지 않습니다. 설치는 에이전트, 메신저 수신기나 서비스를 시작하지 않습니다.
+Side 모드는 기본적으로 `~/.omp-dori`를 사용하며 기존 `~/.dori` 설치를 건드리지
+않습니다. Side 홈 설정을 마친 뒤 `omp-dori omp`로 전용 래퍼를 사용하세요. 런타임별
+구성과 실행은 [소스 설치 가이드](docs/releases.md#source-checkouts-for-maintainers)를
+참고하세요. `omp-dori doctor`는 설정을 읽기 전용으로 점검하고, `omp-dori status`는
+레인 상태를 보여줍니다.
 
-격리, 설정과 명시적 시작 방법은
-[소스 설치 가이드](docs/releases.md#source-checkouts-for-maintainers)를
-읽어보세요. 네이티브 세션은 본인의 제공업체 인증과 사용량 한도를 사용합니다.
-
-### 게시된 릴리스 사용하기
-
-기존 **v0.1.2 프리릴리스**에는 변경되지 않는 Linux x64 / herdr / Discord
-계약이 적용됩니다. 저장소 이름이 바뀌어도 이 배포 파일이 업그레이드되거나
-새로운 플랫폼 지원이 생기지는 않습니다.
-
-[검증된 정확한 릴리스 설치 절차](docs/releases.md#prerequisites-and-trust)를 따르세요.
-사전 요구 사항, 체크섬, 설치, 본인 인증, 명시적 시작과 선택적으로 활성화하는
-Discord 모니터를 다룹니다. 정확한 릴리스 대신 임의의 `main` 설치기를
-사용하지 마세요.
-
-사용자용 구현은 검증된 릴리스 매니페스트에 명시된 경우 격리된 macOS arm64 / hc
-프로필도 지원합니다. 이는 macOS 릴리스가 게시되었다는 뜻이 아닙니다.
-Slack과 Telegram은 여전히 소스 기능입니다.
-
-## 운영 원칙
-
-Cataly는 사용자가 제공한 계정과 권한으로 작동합니다. 외부에 영향을 주는
-작업에는 해당 승인이 필요하며, 도움이 될 것이라는 판단만으로 권한이 생기지
-않습니다. 실행하려는 세션, 모니터와 서비스만 활성화하세요.
-
-검증에는 한계가 있습니다. 완료 신호가 통과했다는 것은 그 신호에 대한
-증거이지 모든 결과를 보장하는 것은 아닙니다. 보고에서는 관찰한 결과,
-남아 있는 불확실성과 수행하지 않은 작업을 구분해야 합니다.
-
-인증 정보, 비공개 대화와 계정 데이터를 공개 패치나 보고서에 넣지 마세요.
-선택적 텔레메트리는 `DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로
-비활성화할 수 있습니다.
+**지원 범위:** Slack과 Telegram은 소스에 남아 있는 연동 기능이며 게시된 프리릴리스의
+지원 범위에 포함되지 않습니다. 호환 릴리스 매니페스트에 명시된 경우 격리된
+macOS arm64 / hc 설치가 가능하지만, 해당 배포본이 게시됐다는 뜻은 아닙니다.
+`main` 병합만으로 기존 프리릴리스가 업데이트되지는 않습니다.
 
 ## 문서
 
+**설치와 운영**
+
 - [설치, 지원, 업데이트와 롤백](docs/releases.md)
-- [스킬과 운영 규칙](skills/dori-mode/SKILL.md)
-- [메신저 설정](skills/dori-mode/references/setup.md)
-- [런타임 어댑터와 세션 계약](docs/runtime.md)
-- [컨테이너 설정](docs/container.md)
-- [스케줄링과 백로그](docs/hourly-loop.md)
-- [공유 잠금과 레인 우선순위](docs/locks.md)
-- [기여 안내](CONTRIBUTING.md)
-- [변경 기록](CHANGELOG.md)
-- [라이선스와 소스 출처 표시](LICENSE) · [라이선스 안내](LICENSING.md) · [수정본 고지](NOTICE)
+- [메신저 설정](skills/dori-mode/references/setup.md) · [Dori 운영 규칙](skills/dori-mode/SKILL.md)
+- [레인 명령과 설정](skills/dori-mode/references/scripts.md) · [완료 검증 절차](skills/dori-mode/references/done-protocol.md)
+
+**더 알아보기**
+
+- [런타임 어댑터와 세션 계약](docs/runtime.md) · [소스 개발용 컨테이너](docs/container.md)
+- [스케줄링과 백로그](docs/hourly-loop.md) · [공유 잠금과 레인 우선순위](docs/locks.md)
+- [선택형 유료 Discord 음성 도우미(현재 소스)](docs/discord-voice.md) · [변경 기록](CHANGELOG.md)
 
 ## 기여하기
 
-명확한 목표, 범위가 분명한 변경과 작동한다는 증거를 준비하세요.
-[기여 안내](CONTRIBUTING.md)에서 시작하고,
-[기존 이슈](https://github.com/vntrevx/Cataly/issues)와
-[풀 리퀘스트](https://github.com/vntrevx/Cataly/pulls)를 확인하며,
-변경이 필요했던 맥락을 보존하세요.
+[기여 안내](CONTRIBUTING.md)에서 시작하고
+[이슈](https://github.com/vntrevx/Cataly/issues)와
+[PR](https://github.com/vntrevx/Cataly/pulls)을 확인하세요. 변경 범위를 분명히 하고,
+작동을 확인한 근거를 함께 남겨주세요.
 
-## 라이선스
+## 라이선스와 출처
 
-라이선스는 각 구성 요소의 출처를 따릅니다. dori-superagent에서 파생된
-자료에는 [Sustainable Use License 1.0](LICENSE)이 유지되며,
-기존 OMP 통합 부분은 [MIT 라이선스와 저작권 고지](LICENSE.omp-dori)를 유지합니다.
-다른 구성 요소도 각자의 조건을 유지합니다. MIT 고지는 저장소 전체를
-재허가하지 않습니다. [NOTICE](NOTICE)에 가져온 리비전과
-수정본의 출처 표시를 기록합니다.
+Cataly는 [dori-superagent](https://github.com/sisyphuslabs/dori-superagent),
+[oh-my-pi](https://github.com/can1357/oh-my-pi),
+[omp-ulw](https://github.com/dbc-hbin/omp-ulw)를 결합합니다. dori-superagent에서
+파생된 부분은 [Sustainable Use License 1.0](LICENSE)을 따릅니다. 기존 OMP 통합
+부분은 [MIT 라이선스와 저작권 고지](LICENSE.omp-dori)를 유지하며, 이 MIT 고지는
+저장소 전체에 적용되지 않습니다. 다른 구성 요소에는 각각의 조건이 적용됩니다.
+가져온 소스의 리비전과 수정본 출처는 [라이선스 안내](LICENSING.md)와 [NOTICE](NOTICE)를
+참고하세요.

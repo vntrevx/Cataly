@@ -1,5 +1,6 @@
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
+import { platform } from "../platform/index.ts";
 import type { ConsumerPaths } from "./files.ts";
 import { consumerPaths, owned, readJson, realDirectory, regularFile, saveJson } from "./files.ts";
 import { assertSourceBundle, readSourceBundle } from "./source-bundle.ts";
@@ -41,13 +42,8 @@ export function nativeOmp(): string | undefined {
 }
 
 export function prerequisites(runtime: string, tools = true, legacyNative = false, paths = consumerPaths()): void {
-  if (
-    !(
-      (process.platform === "linux" && process.arch === "x64" && runtime === "herdr") ||
-      (process.platform === "darwin" && process.arch === "arm64" && runtime === "hc")
-    )
-  )
-    throw new Error(`Unsupported release host/runtime: ${process.platform}/${process.arch}/${runtime}`);
+  if (!platform.supportsReleaseProfile(platform.os, process.arch, runtime))
+    throw new Error(`Unsupported release host/runtime: ${platform.os}/${process.arch}/${runtime}`);
   if (!tools) return;
   if (!atLeast(Bun.version, [1, 4, 4])) throw new Error("Bun 1.4.4+ is required; install it before OMP-Dori");
   for (const name of ["git", runtime]) {

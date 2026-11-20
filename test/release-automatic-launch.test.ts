@@ -13,13 +13,16 @@ import { digest } from "../src/update/source.ts";
 import { archive, portableFixture as fixture, withArchive } from "./release-consumer-setup.ts";
 import { boundRelease } from "./release-native-recovery-setup.ts";
 
-test("ordinary source directories are never enrolled or checked by the consumer launcher", async () => {
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("ordinary source directories are never enrolled or checked by the consumer launcher", async () => {
   const f = fixture();
   expect(await automaticLaunch(f.root, f.paths.home)).toBe(f.root);
   expect(readAutomaticState(f.paths).nextCheck).toBe(0);
 });
 
-test("a candidate without support for the configured host/runtime profile is never activated", async () => {
+posix("a candidate without support for the configured host/runtime profile is never activated", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const config = JSON.parse(readFileSync(f.paths.config, "utf8"));
@@ -41,7 +44,7 @@ test("a candidate without support for the configured host/runtime profile is nev
   });
 });
 
-test("bound automatic activation admits native and ULW bundles without mutating the old release", async () => {
+posix("bound automatic activation admits native and ULW bundles without mutating the old release", async () => {
   const f = fixture();
   const first = boundRelease(f, "first");
   const before = await installBundle(f.paths, first.bundle, undefined);
@@ -58,7 +61,7 @@ test("bound automatic activation admits native and ULW bundles without mutating 
   );
 });
 
-test("primary consumer shell re-execs the newly selected source before resolving native code", () => {
+posix("primary consumer shell re-execs the newly selected source before resolving native code", () => {
   const f = fixture();
   const current = join(f.root, "first source");
   const next = join(f.root, "next source");
@@ -117,7 +120,7 @@ function withAutomatic(bundle: VerifiedBundle, next: string): VerifiedBundle {
   return { manifest, files: readArchive(archiveBytes, manifest) };
 }
 
-test("isolated launch computes extension and discovery argv from the new source, in an empty cwd", async () => {
+posix("isolated launch computes extension and discovery argv from the new source, in an empty cwd", async () => {
   const f = fixture(true);
   const next = f.release("next").bundle;
   const nextSource = releasePath(f.paths, next.manifest);
@@ -141,7 +144,7 @@ test("isolated launch computes extension and discovery argv from the new source,
   expect(args).not.toContain(join(releasePath(f.paths, current.manifest), "extension"));
 });
 
-test("automatic CLI opt-out and resume are durable and leave config bytes untouched", async () => {
+posix("automatic CLI opt-out and resume are durable and leave config bytes untouched", async () => {
   const f = fixture();
   await installBundle(f.paths, f.release("one").bundle, undefined);
   const config = readFileSync(f.paths.config);
@@ -156,23 +159,26 @@ test("automatic CLI opt-out and resume are durable and leave config bytes untouc
   expect(readFileSync(f.paths.config)).toEqual(config);
 });
 
-test("automatic primary updates preserve custom model roles, thinking and native update settings byte-for-byte", async () => {
-  const f = fixture();
-  await installBundle(f.paths, f.release("one").bundle, undefined);
-  const settings = "modelRoles:\n  default: owner/model\ndefaultThinkingLevel: ultra\nupdate:\n  auto: false\n";
-  const path = join(f.paths.dori, "omp.yml");
-  writeFileSync(path, settings, { mode: 0o600 });
-  const candidate = f.release("two").bundle;
-  await automaticUpdate(f.paths, {
-    now: 60,
-    acquire: async () => ({ ...candidate, manifest: { ...candidate.manifest, prerelease: false } }),
-    checkTools: () => {},
-  });
-  expect(readFileSync(path, "utf8")).toBe(settings);
-  expect(readAutomaticState(f.paths).outcome).toBe("installed");
-});
+posix(
+  "automatic primary updates preserve custom model roles, thinking and native update settings byte-for-byte",
+  async () => {
+    const f = fixture();
+    await installBundle(f.paths, f.release("one").bundle, undefined);
+    const settings = "modelRoles:\n  default: owner/model\ndefaultThinkingLevel: ultra\nupdate:\n  auto: false\n";
+    const path = join(f.paths.dori, "omp.yml");
+    writeFileSync(path, settings, { mode: 0o600 });
+    const candidate = f.release("two").bundle;
+    await automaticUpdate(f.paths, {
+      now: 60,
+      acquire: async () => ({ ...candidate, manifest: { ...candidate.manifest, prerelease: false } }),
+      checkTools: () => {},
+    });
+    expect(readFileSync(path, "utf8")).toBe(settings);
+    expect(readAutomaticState(f.paths).outcome).toBe("installed");
+  },
+);
 
-test("an owner-edited owned isolated settings file is preserved and fails launch admission closed", async () => {
+posix("an owner-edited owned isolated settings file is preserved and fails launch admission closed", async () => {
   const f = fixture(true);
   await installBundle(f.paths, f.release("one").bundle, undefined);
   const path = join(f.paths.dori, "omp.yml");

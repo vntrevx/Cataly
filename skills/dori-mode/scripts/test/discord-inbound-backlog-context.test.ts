@@ -10,8 +10,11 @@ import { withState } from "./fakes.ts";
 
 const options = { ownerId: "10", channelIds: ["20"] };
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 // Use the actual queue, atomic cursor store, backfill batching and asynchronous context lookup together.
-test("a queued backfill awaits context before checkpointing and draining live successors", async () => {
+posix("a queued backfill awaits context before checkpointing and draining live successors", async () => {
   const state = withState();
   const queue = discordInboundQueue(state.dir);
   const lookup = Promise.withResolvers<void>();
@@ -101,7 +104,7 @@ test("a queued backfill awaits context before checkpointing and draining live su
 });
 
 for (const fault of ["emit", "save"] as const)
-  test(`a late ${fault} failure retains the FIFO and replays every successor after restart`, async () => {
+  posix(`a late ${fault} failure retains the FIFO and replays every successor after restart`, async () => {
     const state = withState();
     let queue = discordInboundQueue(state.dir);
     const release = Promise.withResolvers<void>();

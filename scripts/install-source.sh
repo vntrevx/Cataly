@@ -15,7 +15,7 @@ fail() { echo "$1" >&2; exit 1; }
 absolute() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac; }
 at_least() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | { read -r first; printf '%s\n' "$first"; })" = "$1" ]; }
 
-repo="https://github.com/vntrevx/omp-dori.git"
+repo="https://github.com/vntrevx/Cataly.git"
 ulw_repo="${OMP_ULW_REPO:-https://github.com/dbc-hbin/omp-ulw.git}"
 ulw_ref="${OMP_ULW_REF:-lock}"
 primary_home="$HOME/.dori"

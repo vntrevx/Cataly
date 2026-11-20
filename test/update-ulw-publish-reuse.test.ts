@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 import { publishUlwCandidate } from "../scripts/update-ulw-publish.ts";
 import { ulwPublicationFixture } from "./update-ulw-publish-setup.ts";
 
+// Every case prepares a trusted source bundle, which requires POSIX write-permission bits.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const advanced of [false, true]) {
-  test.each(["open", "closed"])(
+  posix.each(["open", "closed"])(
     `verified %s candidate is reused without object writes when main advanced=${advanced}`,
     async (state) => {
       const f = await ulwPublicationFixture();
@@ -21,7 +24,7 @@ for (const advanced of [false, true]) {
   );
 }
 
-test("a verified open candidate still dispatches its original exact head after main advances if CI never started", async () => {
+posix("an open candidate dispatches its original head if CI never started", async () => {
   const f = await ulwPublicationFixture();
   await publishUlwCandidate(f.source, f.directory, f.api);
   const next = await f.advanceMain();
@@ -37,7 +40,7 @@ test("a verified open candidate still dispatches its original exact head after m
   expect(f.calls.some((call) => call.path.includes(`head_sha=${f.commit}&event=workflow_dispatch`))).toBe(true);
 });
 
-test.each(["previousMetadataChanged", "candidateMetadataChanged", "unrelatedTreeChanged", "ancestor"] as const)(
+posix.each(["previousMetadataChanged", "candidateMetadataChanged", "unrelatedTreeChanged", "ancestor"] as const)(
   "same named candidate does not bypass the %s fence after main advances",
   async (field) => {
     const f = await ulwPublicationFixture();
@@ -50,7 +53,7 @@ test.each(["previousMetadataChanged", "candidateMetadataChanged", "unrelatedTree
   },
 );
 
-test.each(["url", "head-repo", "head-ref", "head-sha", "base-repo", "base-ref", "state"])(
+posix.each(["url", "head-repo", "head-ref", "head-sha", "base-repo", "base-ref", "state"])(
   "an existing PR with mismatched %s is held before publication or dispatch",
   async (field) => {
     const f = await ulwPublicationFixture();
@@ -69,7 +72,7 @@ test.each(["url", "head-repo", "head-ref", "head-sha", "base-repo", "base-ref", 
   },
 );
 
-test("an existing PR with a missing branch is held, not silently recreated", async () => {
+posix("an existing PR with a missing branch is held, not silently recreated", async () => {
   const f = await ulwPublicationFixture();
   await publishUlwCandidate(f.source, f.directory, f.api);
   f.state.branch = false;
@@ -78,7 +81,7 @@ test("an existing PR with a missing branch is held, not silently recreated", asy
   expect(f.calls.every((call) => call.method === "GET")).toBe(true);
 });
 
-test("an orphan branch from before main advancement remains held without rewriting it", async () => {
+posix("an orphan branch from before main advancement remains held without rewriting it", async () => {
   const f = await ulwPublicationFixture();
   await publishUlwCandidate(f.source, f.directory, f.api);
   f.state.pull = undefined;

@@ -8,6 +8,9 @@ import { checkoutSourceBundle } from "../src/release/source-checkout.ts";
 import { digest } from "../src/update/source.ts";
 import { fixtureGit, overlayFixture } from "./source-bundle-setup.ts";
 
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -38,7 +41,7 @@ function fixture() {
   return { root, source, remote, old, original, output, advance };
 }
 
-test("unchanged ULW ref prepares nothing and leaves source/overlay checkout untouched", async () => {
+posix("unchanged ULW ref prepares nothing and leaves source/overlay checkout untouched", async () => {
   const f = fixture();
   const before = fixtureGit(f.remote, "write-tree");
   expect(await prepareUlwUpdate(f.source, f.output, f.remote)).toBeUndefined();
@@ -47,7 +50,7 @@ test("unchanged ULW ref prepares nothing and leaves source/overlay checkout unto
   expect(ULW_UPDATE_FILES.map((file) => readFileSync(join(f.source, file)))).toEqual(f.original);
 });
 
-test("new upstream and local overlay both survive an authenticated three-way candidate", async () => {
+posix("new upstream and local overlay both survive an authenticated three-way candidate", async () => {
   const f = fixture();
   const commit = f.advance();
   const candidate = await prepareUlwUpdate(f.source, f.output, f.remote);
@@ -67,7 +70,7 @@ test("new upstream and local overlay both survive an authenticated three-way can
   await expect(prepareUlwUpdate(f.source, f.output, f.remote)).rejects.toThrow("output already exists");
 });
 
-test("legacy unified patches are normalized without losing their authenticated overlay", async () => {
+posix("legacy unified patches are normalized without losing their authenticated overlay", async () => {
   const f = fixture();
   const patch = f.old.patch.replace(/^diff --git.*\n|^index .*\n/gm, "");
   writeFileSync(join(f.source, "omp-ulw.patch"), patch);
@@ -86,7 +89,7 @@ test("legacy unified patches are normalized without losing their authenticated o
   expect(readFileSync(join(checkout, "index.ts"), "utf8")).toContain('selected = "reviewed-overlay"');
 });
 
-test("a conflicting new upstream holds without a candidate or changed source pins", async () => {
+posix("a conflicting new upstream holds without a candidate or changed source pins", async () => {
   const f = fixture();
   f.advance(true);
   await expect(prepareUlwUpdate(f.source, f.output, f.remote)).rejects.toThrow(
@@ -97,7 +100,7 @@ test("a conflicting new upstream holds without a candidate or changed source pin
   expect(readdirSync(f.root).filter((name) => name.startsWith(".ulw-update-"))).toEqual([]);
 });
 
-test("source lock tampering and uncommitted bound metadata are refused", async () => {
+posix("source lock tampering and uncommitted bound metadata are refused", async () => {
   const f = fixture();
   f.advance();
   writeFileSync(join(f.source, "omp-ulw.lock"), `${"f".repeat(40)}\n`);

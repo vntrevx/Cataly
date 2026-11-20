@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { platform } from "../platform/index.ts";
 import { nativeStage, readLeases } from "./native-cache-lease.ts";
 import { processCwds, processIsKernelThread, processStart } from "./process-cwd.ts";
 import { type ProcessFiles, processFiles, usesDirectory } from "./process-files.ts";
@@ -46,7 +47,7 @@ function processTable(): string {
  * lets them). A process this cannot inspect counts as able to.
  */
 function entersAny(pid: string, uid: number): boolean {
-  if (process.platform !== "linux") return uid === 0;
+  if (!platform.procfs) return uid === 0;
   try {
     const kernel = processIsKernelThread(pid);
     if (kernel === undefined) return true;
@@ -65,7 +66,7 @@ function entersAny(pid: string, uid: number): boolean {
  */
 function writesHere(pid: string, args: string, named: string, homes: readonly string[]): boolean {
   if (homes.some((home) => args.includes(home))) return true;
-  if (process.platform !== "linux" && !isAbsolute(named)) return true;
+  if (!platform.procfs && !isAbsolute(named)) return true;
   try {
     let home: string | undefined;
     if (named === "env") home = /(?:^|\0)HOME=([^\0]*)/.exec(readFileSync(`/proc/${pid}/environ`, "latin1"))?.[1];
@@ -150,7 +151,7 @@ export function useHolds(cache: string, keys: readonly string[], options: UseHol
       all(`unreadable open files of process ${pid}@${processStart(pid) ?? "?"} (${argsOf.get(pid) ?? ""})`);
   const caches = [...new Set([cache, realpathSync(cache)])];
   for (const key of keys) {
-    const entries = caches.map((root) => join(root, `native-${process.platform}-${process.arch}-${key}`));
+    const entries = caches.map((root) => join(root, `${platform.nativeCacheLabel()}-${key}`));
     for (const [pid, paths] of found?.files ?? [])
       if (paths.some((used) => entries.some((entry) => usesDirectory(used, entry))))
         add(key, `process ${pid} has it open, mapped or running`);

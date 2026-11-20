@@ -167,14 +167,12 @@ if (import.meta.main) {
   try {
     code = await main(process.argv.slice(2), deps);
   } catch (e) {
-    if (
-      !(
-        e instanceof Refusal ||
-        e instanceof ConfigError ||
-        e instanceof RuntimeConfigError ||
-        e instanceof RuntimeChoiceError
-      )
-    )
+    if (!(
+      e instanceof Refusal ||
+      e instanceof ConfigError ||
+      e instanceof RuntimeConfigError ||
+      e instanceof RuntimeChoiceError
+    ))
       throw e;
     console.error(e.message);
     code = 2;

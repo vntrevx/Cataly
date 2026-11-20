@@ -10,49 +10,54 @@ import { sourceManifest } from "../src/update/source.ts";
 import { archive, fixture, withArchive } from "./release-consumer-setup.ts";
 import { boundRelease } from "./release-native-recovery-setup.ts";
 
-test("physical consumers normalize raw managed defaults without changing selected argv or owner overrides", async () => {
-  const f = fixture(true);
-  const bound = boundRelease(f, "managed-command-env");
-  for (const path of ["src", "skills/dori-mode/scripts/src", "package.json"])
-    cpSync(resolve(import.meta.dir, "..", path), join(bound.source, path), { recursive: true });
-  const source = sourceManifest(bound.source);
-  const bytes = archive(
-    source.files.map((file) => ({
-      name: `${bound.bundle.manifest.archive.root}/${file.path}`,
-      bytes: readFileSync(join(bound.source, file.path)),
-      mode: file.executable ? 0o755 : 0o644,
-    })),
-  );
-  const manifest = withArchive(validateReleaseManifest({ ...bound.bundle.manifest, source }), bytes);
-  const installed = await installBundle(f.paths, { manifest, files: readArchive(bytes, manifest) }, undefined);
-  const release = releasePath(f.paths, installed.current);
-  // Native home lookup must see the real child startup environment, not an in-process HOME replacement.
-  const managed = join(f.paths.dori, "bin/omp");
-  const expected = [
-    join(release, "scripts/consumer/omp"),
-    "--no-extensions",
-    "-e",
-    join(release, "extension"),
-    "--config",
-    join(f.paths.dori, "omp.yml"),
-    "--config",
-    join(f.paths.root, "consumer-discovery", basename(release), "omp.yml"),
-  ];
-  const suffix = ["--dori-role", "lane", "--model", "{model}", "--", "{prompt}"];
-  writeFileSync(f.paths.config, JSON.stringify({ agentCommand: ["omp", ...suffix] }));
-  const selected = [...expected, "--owner-option", ""];
-  const payload = {
-    config: f.paths.config,
-    home: f.paths.home,
-    managed,
-    expected,
-    suffix,
-    selected,
-    expectedCommand: expected.map(shq).join(" "),
-    selectedCommand: selected.map(shq).join(" "),
-    custom: join(f.root, "owner executable 'quote'", "bin/omp"),
-  };
-  const probe = `
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix(
+  "physical consumers normalize raw managed defaults without changing selected argv or owner overrides",
+  async () => {
+    const f = fixture(true);
+    const bound = boundRelease(f, "managed-command-env");
+    for (const path of ["src", "skills/dori-mode/scripts/src", "package.json"])
+      cpSync(resolve(import.meta.dir, "..", path), join(bound.source, path), { recursive: true });
+    const source = sourceManifest(bound.source);
+    const bytes = archive(
+      source.files.map((file) => ({
+        name: `${bound.bundle.manifest.archive.root}/${file.path}`,
+        bytes: readFileSync(join(bound.source, file.path)),
+        mode: file.executable ? 0o755 : 0o644,
+      })),
+    );
+    const manifest = withArchive(validateReleaseManifest({ ...bound.bundle.manifest, source }), bytes);
+    const installed = await installBundle(f.paths, { manifest, files: readArchive(bytes, manifest) }, undefined);
+    const release = releasePath(f.paths, installed.current);
+    // Native home lookup must see the real child startup environment, not an in-process HOME replacement.
+    const managed = join(f.paths.dori, "bin/omp");
+    const expected = [
+      join(release, "scripts/consumer/omp"),
+      "--no-extensions",
+      "-e",
+      join(release, "extension"),
+      "--config",
+      join(f.paths.dori, "omp.yml"),
+      "--config",
+      join(f.paths.root, "consumer-discovery", basename(release), "omp.yml"),
+    ];
+    const suffix = ["--dori-role", "lane", "--model", "{model}", "--", "{prompt}"];
+    writeFileSync(f.paths.config, JSON.stringify({ agentCommand: ["omp", ...suffix] }));
+    const selected = [...expected, "--owner-option", ""];
+    const payload = {
+      config: f.paths.config,
+      home: f.paths.home,
+      managed,
+      expected,
+      suffix,
+      selected,
+      expectedCommand: expected.map(shq).join(" "),
+      selectedCommand: selected.map(shq).join(" "),
+      custom: join(f.root, "owner executable 'quote'", "bin/omp"),
+    };
+    const probe = `
 const assert = (await import("node:assert/strict")).default;
 const { writeFileSync } = await import("node:fs");
 const { homedir } = await import("node:os");
@@ -99,31 +104,33 @@ if (mode === "foreign-home") {
 }
 console.log(JSON.stringify({ mode, checked: true }));
 `;
-  for (const mode of ["foreign-home", "managed-commands"]) {
-    const child = Bun.spawnSync(
-      [
-        process.execPath,
-        "-e",
-        probe,
-        join(release, "skills/dori-mode/scripts/src/config.ts"),
-        join(release, "src/harness.ts"),
-        JSON.stringify(payload),
-        mode,
-      ],
-      {
-        timeout: 10_000,
-        cwd: f.root,
-        env: {
-          HOME: mode === "foreign-home" ? join(f.root, "foreign-home") : f.paths.home,
-          PATH: process.env["PATH"],
-          DORI_HOME: f.paths.dori,
-          DORI_CONFIG: f.paths.config,
-          DORI_AGENT_CMD: managed,
-          DORI_TELEMETRY: "0",
+    for (const mode of ["foreign-home", "managed-commands"]) {
+      const child = Bun.spawnSync(
+        [
+          process.execPath,
+          "-e",
+          probe,
+          join(release, "skills/dori-mode/scripts/src/config.ts"),
+          join(release, "src/harness.ts"),
+          JSON.stringify(payload),
+          mode,
+        ],
+        {
+          timeout: 10_000,
+          cwd: f.root,
+          env: {
+            HOME: mode === "foreign-home" ? join(f.root, "foreign-home") : f.paths.home,
+            PATH: process.env["PATH"],
+            DORI_HOME: f.paths.dori,
+            DORI_CONFIG: f.paths.config,
+            DORI_AGENT_CMD: managed,
+            DORI_TELEMETRY: "0",
+          },
         },
-      },
-    );
-    expect(child.exitCode, child.stderr.toString()).toBe(0);
-    expect(JSON.parse(child.stdout.toString())).toEqual({ mode, checked: true });
-  }
-}, 30_000);
+      );
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      expect(JSON.parse(child.stdout.toString())).toEqual({ mode, checked: true });
+    }
+  },
+  30_000,
+);

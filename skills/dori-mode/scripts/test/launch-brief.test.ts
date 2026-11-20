@@ -33,6 +33,9 @@ afterEach(() => {
   state.done();
 });
 
+// POSIX-only: a read-only directory (0500) and file modes have no meaning on Windows.
+const posix = test.skipIf(process.platform === "win32");
+
 // The lane's tab, as herdr answers a create.
 const withTab = (base: FlowDeps): FlowDeps => ({
   ...base,
@@ -42,7 +45,7 @@ const withTab = (base: FlowDeps): FlowDeps => ({
       : base.run(argv, opts),
 });
 
-test("a brief that cannot be written stops the launch before a tab or a lane record exists", async () => {
+posix("a brief that cannot be written stops the launch before a tab or a lane record exists", async () => {
   const brief = join(briefs, "lane.md");
   writeFileSync(brief, "brief");
   chmodSync(briefs, 0o500);
@@ -128,7 +131,7 @@ test("a brief that links to a template is written through the link", async () =>
   expect(readdirSync(briefs).sort()).toEqual(["lane.md", "template.md"]);
 });
 
-test.each([0o600, 0o640])("staging preserves an existing brief's %s permissions under either umask", async (mode) => {
+posix.each([0o600, 0o640])("staging preserves an existing brief's %s permissions under either umask", async (mode) => {
   const brief = join(briefs, "private.md");
   writeFileSync(brief, "owner instructions");
   chmodSync(brief, mode);

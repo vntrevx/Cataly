@@ -23,6 +23,7 @@ const run = (pi: FakePi, params: Record<string, unknown>) =>
 const sessions: FakePi[] = [];
 const pids = new Set<number>();
 const previousEnv = new Map<string, string | undefined>();
+const posix = test.skipIf(process.platform === "win32");
 let stateDir: string;
 
 const alive = (pid: number): boolean => {
@@ -171,7 +172,8 @@ test.each(["dori", "lane"] as const)("a recorded %s destination overrides role a
   }
 });
 
-test("a new Dori session does not reapply its original session-bound bootstrap", async () => {
+// POSIX-only: reads the 0o600 bootstrap the product verifies by mode and owner uid, and sends SIGTERM.
+posix("a new Dori session does not reapply its original session-bound bootstrap", async () => {
   const started = session("bootstrap-old");
   const bootstrap = join(stateDir, "..", "bootstrap.json");
   const intake = { path: join(stateDir, "heartbeat"), monitor: spec.name, maxAgeMs: 120_000 };
@@ -219,7 +221,8 @@ test("a new Dori session does not reapply its original session-bound bootstrap",
   await runningPid(pi);
 });
 
-test.each([false, true])("rejected bootstrap cannot seed a new session (recorded: %s)", async (recorded) => {
+// POSIX-only: reads the 0o600 bootstrap the product verifies by mode and owner uid.
+posix.each([false, true])("rejected bootstrap cannot seed a new session (recorded: %s)", async (recorded) => {
   const started = session("bootstrap-rejected", recorded ? [roleEntry("dori")] : []);
   const bootstrap = join(stateDir, "..", "bootstrap.json");
   const intake = { path: join(stateDir, "heartbeat"), monitor: spec.name, maxAgeMs: 120_000 };

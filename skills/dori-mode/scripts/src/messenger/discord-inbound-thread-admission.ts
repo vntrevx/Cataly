@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { GatewayClock } from "./discord-gateway.ts";
-import { isTransient, type Message } from "./discord-inbound-api.ts";
+import { type Message, transientRetryDelay } from "./discord-inbound-api.ts";
 import { MessengerError } from "./http.ts";
 
 export type ThreadIntake = {
@@ -51,9 +51,10 @@ export const discordThreadAdmission = (
       try {
         return await intake.resolveThread!(channel, stop);
       } catch (error) {
-        if (stop.aborted || !isTransient(error)) throw error;
-        report(`DISCORD_GATEWAY_ACCEPT_RETRY discord retry_in=${delay / 1000}s`);
-        await pause(delay, stop);
+        const wait = transientRetryDelay(error, delay);
+        if (stop.aborted || wait === undefined) throw error;
+        report(`DISCORD_GATEWAY_ACCEPT_RETRY discord retry_in=${wait / 1000}s`);
+        await pause(wait, stop);
       }
     }
   };
@@ -61,7 +62,7 @@ export const discordThreadAdmission = (
     if (!candidates.some((candidate) => candidate.message.channel_id === channel)) return;
     signal.throwIfAborted();
     const floor = parent === undefined ? undefined : intake.adoptThread!(channel, parent);
-    for (let index = 0; index < candidates.length; ) {
+    for (let index = 0; index < candidates.length;) {
       const candidate = candidates[index]!;
       if (candidate.message.channel_id !== channel) {
         index++;
@@ -113,7 +114,7 @@ export const discordThreadAdmission = (
   return {
     flushKnown(): void {
       if (signal.aborted) return;
-      for (let index = 0; index < candidates.length; ) {
+      for (let index = 0; index < candidates.length;) {
         const channel = candidates[index]!.message.channel_id;
         const parent = intake.parentFor?.(channel);
         if (parent === undefined) {

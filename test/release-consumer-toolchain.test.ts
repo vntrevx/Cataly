@@ -8,7 +8,10 @@ import { validateReleaseManifest } from "../src/release/manifest.ts";
 import { digest } from "../src/update/source.ts";
 import { archive, fixture } from "./release-consumer-setup.ts";
 
-test("reinstall refreshes the owned OMP launcher after its executable moves", async () => {
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("reinstall refreshes the owned OMP launcher after its executable moves", async () => {
   const f = fixture(true);
   const first = join(f.root, "first-toolchain"),
     second = join(f.root, "second-toolchain");
@@ -54,7 +57,7 @@ test("reinstall refreshes the owned OMP launcher after its executable moves", as
   }
 });
 
-test("reinstall from a relocated real Bun repairs its owned CLI launcher", () => {
+posix("reinstall from a relocated real Bun repairs its owned CLI launcher", () => {
   const f = fixture(true);
   const release = f.release("first\n");
   const witness = 'console.log(JSON.stringify({ executable: process.execPath, home: process.env["DORI_HOME"] }));\n';

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { openOwes, recordOwes } from "../src/owes.ts";
 import { withState } from "./fakes.ts";
 
-const modulePath = new URL("../src/owes.ts", import.meta.url).pathname;
-const lockPath = new URL("../src/checkpoint-lock.ts", import.meta.url).pathname;
+const moduleUrl = new URL("../src/owes.ts", import.meta.url).href;
+const lockUrl = new URL("../src/checkpoint-lock.ts", import.meta.url).href;
 const line = (id: string, channel = "20") => `INBOUND discord ${channel} ${id} from=owner ref=- "question"`;
 
 /** Every real child reaches READY before any receives permission to invoke the imported writer. */
@@ -13,13 +13,13 @@ const race = async (stateDir: string, mode: "distinct" | "duplicate" | "receipts
   const children = Array.from({ length: 16 }, (_, index) => {
     const id = mode === "duplicate" ? "2000" : String(2000 + index);
     const code = `
-      import { recordOwes, recordSent, recordMark } from ${JSON.stringify(modulePath)};
+      import { recordOwes, recordSent, recordMark } from ${JSON.stringify(moduleUrl)};
       console.log("READY");
       if ((await Bun.stdin.text()).trim() !== "GO") throw new Error("writer barrier was not released");
       const root = ${JSON.stringify(stateDir)};
       ${
         mode === "receipts"
-          ? `await recordSent(root, "${3000 + index}", 1001); await recordMark(root, "${3000 + index}", "${id}", 1002); console.log(1);`
+          ? `await recordSent(root, "${3000 + index}", "${id}", ["${4000 + index}"], 1001); await recordMark(root, "${3000 + index}", "${id}", 1002); console.log(1);`
           : `console.log(await recordOwes(root, ${JSON.stringify(line(id))}, 1000));`
       }
     `;
@@ -130,7 +130,7 @@ test("a real dead writer's lock is reclaimed before admitting the next owe", asy
   const state = withState();
   mkdirSync(join(state.dir, "owes"), { recursive: true, mode: 0o700 });
   const code = `
-    import { takeLock } from ${JSON.stringify(lockPath)};
+    import { takeLock } from ${JSON.stringify(lockUrl)};
     const held = takeLock(${JSON.stringify(join(state.dir, "owes", "inbound.jsonl.lock"))}, Date.now(), m => new Error(m), {keepLiveOwner:true});
     if (typeof held === "string") throw new Error(held);
     console.log("READY");

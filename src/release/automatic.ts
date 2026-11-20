@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { platform } from "../platform/index.ts";
 import { underProcess } from "../update/deployment-process.ts";
 import { acquireBundle, type VerifiedBundle } from "./bundle.ts";
 import {
@@ -104,7 +105,7 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       const capabilities = candidate.files.find((file) => file.path === "release-capabilities.json")?.bytes;
       if (
         (paths.dori !== join(paths.home, ".dori") && !capabilities) ||
-        !supportsReleaseProfile(manifest, { platform: process.platform, arch: process.arch, runtime }, capabilities)
+        !supportsReleaseProfile(manifest, { platform: platform.os, arch: process.arch, runtime }, capabilities)
       )
         throw new Error("Available release does not support this installation profile");
       // Do not remove the bound launcher by automatically selecting the legacy native protocol.

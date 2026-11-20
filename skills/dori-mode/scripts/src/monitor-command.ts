@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { doriOwnWords } from "./monitor-dori.ts";
 import { bunEntryAt, envCommandAt, LAUNCHERS, launcherCommandAt } from "./monitor-launchers.ts";
 import { quotedSubstitutions, shellWords, splitString, unquote } from "./monitor-syntax.ts";
@@ -21,7 +21,11 @@ import { quotedSubstitutions, shellWords, splitString, unquote } from "./monitor
 // Known limits: a `#` comment is read as words; behind an `env` option this does not know, no program is read, so
 // every word after it may name a lane as before.
 const DORI_NAMES: Record<string, true> = { dori: true, "omp-dori": true };
-const SKILL_SOURCE = /(?:^|\/)dori-mode\/scripts\/src\/cli\.ts$/;
+// A POSIX path is cut at `/` only; a backslash is an ordinary name character there, so only Windows reads it as one.
+const SKILL_SOURCE =
+  process.platform === "win32"
+    ? /(?:^|[\\/])dori-mode[\\/]scripts[\\/]src[\\/]cli\.ts$/
+    : /(?:^|\/)dori-mode\/scripts\/src\/cli\.ts$/;
 // A Set: a `then` key on an object literal reads as a thenable.
 const RESERVED = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "{"]);
 const PREFIXES: Record<string, true> = { exec: true, command: true, builtin: true };
@@ -68,7 +72,7 @@ const scriptAt = (words: readonly string[], at: number): number | undefined => {
 type Dirs = readonly (string | undefined)[];
 // `path` as run in each of `dirs`.
 const within = (dirs: Dirs, path: string): Dirs =>
-  path.startsWith("/") ? [path] : dirs.map((dir) => (dir === undefined ? undefined : join(dir, path)));
+  isAbsolute(path) ? [path] : dirs.map((dir) => (dir === undefined ? undefined : join(dir, path)));
 const OPENS_LIST: Record<string, true> = { ";": true, "(": true, "$(": true, "`": true };
 const OPENS_BODY: Record<string, true> = { if: true, while: true, until: true, for: true, case: true };
 const CLOSES_BODY: Record<string, true> = { fi: true, done: true, esac: true };
@@ -114,7 +118,7 @@ export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] =>
     }
     let here = dir;
     let program: number | undefined;
-    for (let next: number | undefined = at; next !== undefined; ) {
+    for (let next: number | undefined = at; next !== undefined;) {
       at = next;
       next = undefined;
       while (ASSIGNMENT.test(words[at] ?? "")) at++;
@@ -133,9 +137,10 @@ export const laneWords = (command: unknown, cwd: unknown): readonly unknown[] =>
         else {
           // `-S STRING`: env reads STRING's words, its own options included, then the words after it.
           const string = ws[env.at];
-          const split = splitString(words[env.at]?.slice(env.split) ?? "").map(
-            (w): Word => ({ word: w.text, baseAt: (i) => string?.baseAt((env.split ?? 0) + (w.at[i] ?? 0)) ?? -1 }),
-          );
+          const split = splitString(words[env.at]?.slice(env.split) ?? "").map((w): Word => ({
+            word: w.text,
+            baseAt: (i) => string?.baseAt((env.split ?? 0) + (w.at[i] ?? 0)) ?? -1,
+          }));
           commandOf([ws[at] ?? { word: "env", baseAt: () => -1 }, ...split, ...ws.slice(env.at + 1)], here);
         }
       } else if (launcher !== undefined && Object.hasOwn(LAUNCHERS, name)) {

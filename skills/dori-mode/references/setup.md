@@ -52,6 +52,17 @@ Ask which mode, give the trade-off as a short list, and wait for the choice:
 
 Record the choice. With a user token, set `DORI_SLACK_TOKEN` and `DORI_SLACK_COOKIE` (the `d` cookie from that member's browser session). With a bot token, set `DORI_SLACK_TOKEN` to the `xoxb-` token. If you run a second Dori home on the same machine, also write that home's token to `slack-token` next to its `config.json` (`chmod 600`): `dori launch` then hands its lanes the file's path, never the token (see `dori launch` in `scripts.md`).
 
+### Credential scope by process
+
+| Process | Credential source |
+|---|---|
+| Lane agent | Native provider authentication remains available through the existing HOME/agent-directory and provider environment. `dori launch` explicitly empties `DORI_DISCORD_TOKEN` and `DORI_TELEGRAM_TOKEN`, including stale values inherited from a terminal server. |
+| Discord/Telegram monitor or send hook | Load the selected installation's protected token only inside the explicitly authorized messenger child. Direct sends from a lane require the same child-local loading; exporting tokens before `dori launch` no longer supplies them. |
+| Slack lane operations | Preserve the existing home-bound `slack-token` file path and owner/mode checks. The retained single-home environment-token flow is unchanged when no token file is configured. |
+| Upstream model/reporter/check | Reuse the updater's capability allowlists: `modelEnv` only for models, `reporterEnv` only for reporters, and neither for checks. `modelAgentDir` retains the selected native authentication location. |
+
+The general command runner still inherits its caller's environment; keep tokens out of the parent agent and load them at the messenger boundary. These rules reduce accidental propagation, not same-user file access: they are not an OS sandbox. Credential presence does not establish account identity, model availability, quota or permission to spend.
+
 ## 3. Bot
 
 For Discord, create/invite the owner's own bot through the Developer Portal and finish the explicit bot setup below. Other retained messengers have their own browser/login flows. Then give the bot its avatar: the default is `assets/dori-avatar.png` in this skill, and the owner can swap in any image.
@@ -112,13 +123,15 @@ Select `DORI_HOME` explicitly before primary startup (`~/.dori`), or launch the 
 |---|---|---|
 | Discord owner intake (opt-in) | `dori inbound discord`, using the [protected-token child argv](../../../docs/releases.md#discord-owner-intake) | `^INBOUND` |
 | done flow | `dori watch` | `^LANE_` |
-| dead panes | `dori dead-panes --loop 3` | `^(DEAD_PANE\|UNRECOGNISED_PANE)` |
-| host guard | `dori guard --loop 1` | `^HOST_GUARD` |
-| freshness | `dori freshness --loop 5` | `^(NUDGED\|POSTED\|POST-FAILED\|NO-REPORT\|PENDING-REPORT\|STALE-REPORT\|STALLED\|JOURNAL-ERROR\|WORKING-WHILE-PAUSED)` |
-| PR follow-up (opt-in, needs `gh` auth) | `dori pr watch --loop 3` | `^PR_(FEEDBACK\|CI_FAIL\|HEAD_MOVED\|MERGED\|CLOSED\|REOPENED\|WATCH_WARN)` |
+| dead panes | `dori dead-panes --loop 3` | `^(DEAD_PANE\|UNRECOGNISED_PANE\|WARN)` |
+| host guard | `dori guard --loop 1` | `^(HOST_GUARD\|WARN)` |
+| freshness | `dori freshness --loop 5` | `^(NUDGED\|NUDGE-FAILED\|POSTED\|POST-FAILED\|NO-REPORT\|PENDING-REPORT\|STALE-REPORT\|UNRELAYED\|STALLED\|JOURNAL-ERROR\|WORKING-WHILE-PAUSED\|BLOCKED\|WARNING\|SUPERVISION-ERROR\|WARN)` |
+| PR follow-up (opt-in, needs `gh` auth) | `dori pr watch --loop 3` | `^(PR_(FEEDBACK\|CI_FAIL\|HEAD_MOVED\|MERGED\|CLOSED\|REOPENED\|WATCH_WARN)\|WARN)` |
 | Slack inbound (Slack only) | `dori inbound slack --loop 1` | `^INBOUND` |
 | Telegram inbound (Telegram only) | `DORI_TELEGRAM_TOKEN=… DORI_TELEGRAM_OWNER_ID=… dori inbound telegram --loop 1` | `^INBOUND` |
 | presence (opt-in) | `dori presence discord` (or retained Slack: `dori presence slack`) | `^PRESENCE_` |
+
+The recommended freshness filter covers all policies. `dori doctor` requires `NUDGE-FAILED` only when `freshness.nudge` is `"idle-only"`, and `UNRELAYED` only when `freshness.postRaw` is `false` or `freshness.autoPostKinds` is set (including an empty list).
 
 The supported public receiver is **`dori inbound discord`**. It requires the owner's bot token and the two configured IDs, polls every three seconds by default, and emits only that owner's messages from the exact channel. `--loop` is in minutes: `--loop 0.1` polls every six seconds and `--loop 0` runs once. First start saves a latest-message baseline without replay; wait for `INBOUND_READY discord owner=... channel=... bot=...`, then send a fresh owner message. Later records are `INBOUND discord <channel> <message> from=owner ref=<id|-> <JSON text>`, followed by `INBOUND_REPLY` for available reply context and ordered `INBOUND_ATTACHMENT` records for attachments, including voice metadata ([format](scripts.md#dori-inbound-discord---loop-minutes---gateway)). Attachment-only messages keep text `""`; metadata delivery starts no transcription. An owned per-channel cursor survives an explicit restart.
 

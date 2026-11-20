@@ -41,6 +41,17 @@ applicable to the affected material: Sustainable Use License 1.0 for
 dori-superagent-derived code, and MIT for the pre-existing OMP integration covered
 by [LICENSE.omp-dori](LICENSE.omp-dori). [LICENSE](LICENSE) explains the scope.
 
+For copied or adapted third-party code or prompt text, record provenance in the
+PR's [Provenance section](.github/pull_request_template.md#provenance): upstream
+URL, file paths and immutable revision; the applicable file/component license;
+destination paths and modifications; and retained notice paths. For concept-only
+references, cite the source/revision and identify the independently written work.
+A project's root license is not blanket permission for differently licensed
+files, prompts, SDKs or ULW components; follow [LICENSING.md](LICENSING.md).
+Keep required copyright, permission, license and modified-copy notices with copied
+material. Dependency/SDK/ULW changes must preserve their component-specific license
+and notice files in redistributed material.
+
 Cataly does not require a CLA signature or a CLA comment. The retained [CLA](CLA.md)
 and its workflow belong to upstream `sisyphuslabs/dori-superagent`, not a new
 agreement for this repository.
@@ -119,7 +130,9 @@ The full chain is:
 | Command | What it checks |
 | --- | --- |
 | `check:fixtures` | Real ULW, compatibility entry, and exact native-host prerequisites |
-| `check` | Biome lint and formatting |
+| `lint` | oxlint, warnings are errors (`--deny-warnings`) |
+| `format:check` | Prettier formatting check; `format` rewrites |
+| `check` | `lint` then `format:check` |
 | `typecheck` | Harness, skill, and extension TypeScript projects |
 | `knip` | Unused files, exports, and dependencies |
 | `lint:loc` | The 250-line limit per capped TypeScript file |
@@ -138,12 +151,40 @@ Regenerate measured hints with:
 bun test --parallel=1 --timings=.bun-test-timings.json --update-timings ./test/
 ```
 
-Automatic CI requires exactly **`check`, `e2e-herdr`, and `e2e-hc`** on Linux.
-All three must pass on the reviewed head and actual combined target content.
-There is no automatic macOS job; existing macOS tests and consumer verification
-remain available for manual QA. The herdr job verifies a pinned asset checksum,
-limits download attempts, and fails immediately on a checksum mismatch. A missing
-hc E2E file is a failure, not a skip.
+Automatic CI runs in two workflows. `ci.yml` holds the release gate and requires
+exactly **`check`, `e2e-herdr`, and `e2e-hc`** on Linux; all three must pass on the
+reviewed head and actual combined target content. The herdr job verifies a pinned
+asset checksum, limits download attempts, and fails immediately on a checksum
+mismatch. A missing hc E2E file is a failure, not a skip.
+
+`cross-os.yml` runs **`test-macos`** (`macos-15`, arm64: the root, skill and
+extension suites with prepared fixtures, a 30-second per-test timeout on the root
+suite because the runner is slower, and the genuine Darwin arm64 hc consumer
+release smoke on pushes to `main` and manual runs, never on pull requests) and
+**`test-windows`** (`windows-2025`: `check`, `typecheck`, `knip`, `lint:loc` and
+the three suites with the native OMP host fixture). Both run on every pull request
+and push to `main`, and a manual run can select one OS with `-f os=macos|windows`.
+They are outside the release gate and outside the product support scope: releases
+are admitted only for linux/x64/herdr and darwin/arm64/hc, so Windows coverage
+finds portability regressions rather than promising a Windows product.
+
+OS-dependent behaviour belongs in the platform adapter, `src/platform/adapter.ts`
+with its per-OS implementations beside it in `src/platform/`, never in a caller
+that tests `process.platform`; [docs/platform-adapter.md](docs/platform-adapter.md)
+describes the contract.
+
+Tests that exercise POSIX-only behaviour are gated per test, or per `describe`
+suite when every case in it needs the POSIX runtime (`posix`, `it` and `posixSuite`
+in `test/update-setup.ts`, `test/install-setup.ts` and
+`test/release-consumer-setup.ts`), with `skipIf(process.platform === "win32")` and
+a `// POSIX-only:` reason. Gated categories: permission bits and uid ownership
+`0600`/`0700` checks, symlinks and `link(2)` identity, shebang fake executables on
+`PATH`, `/bin/sh` and process groups, `ps`, signals, FIFOs and file names Windows
+cannot create, the Discord inbound cursor store, and atomic replace of an open
+worklog file. Never exclude a file from the suite, use another condition, or relax
+a product security check to make a test pass. A test that fails only on path
+separators, temp directories or the `PATH` delimiter is fixed with
+`node:path`, `os.tmpdir()` or `path.delimiter` instead.
 
 ### Native and provider boundaries
 
@@ -159,6 +200,27 @@ one model preset and bookkeeping block, downstream context, and role/model gates
 The separate pinned compatibility factory establishes an opaque legacy baseline;
 it is not the current default overlay.
 
+`native-prompt-matrix.test.ts` runs 30 scenario/load-order cases, plus native
+parent setup and an orphan-role control, using the pinned `buildSystemPrompt`,
+canonical loader, and `ExtensionRunner` in an isolated Bun child. It covers
+ordinary, ULW, specialized, parent, child, Dori, non-Sol, profile-excluded, and
+user-profile behavior with embedded ULW and both standalone load orders. It
+compares the combined prompt across repeated turns and an ordinary follow-up
+after the native `SessionManager` compaction-entry and `session_compact` hook
+boundary. The child starts with an explicitly selected `monitor` and its
+parent's rendered ULW policy; both must be removed without losing its permitted
+tool or assignment. Dori's main session still advertises `monitor`. A profile
+opt-out preserves the native profile byte-for-byte; Dori's independent Sol lane
+bookkeeping remains applicable.
+
+The matrix verifies the local ULW checkout against the locked base and overlay
+before importing ULW. It blocks `fetch` and `fetch.preconnect` before native
+imports, rejects model-registry access through a fixture proxy, and attaches no
+provider transport. It checks prompt rendering and extension lifecycle
+composition, not an interactive OMP CLI, provider-generated compaction, model
+task completion, or messenger ingress/recovery. Those surfaces need separate
+evidence.
+
 Linux `check` also executes the bound ULW code-mode and task-host checks against
 the guarded bound native source. Keep the upstream assertions, including the
 documented 18.20.2 accounting behavior: a failure on the selected 18.20.0 host
@@ -169,6 +231,13 @@ synthetic loopback providers. Missing managed overlays must send no request for
 Dori or lane roles, including direct dispatch, while ordinary sessions still
 reach the local provider. These tests neither use real provider credentials nor
 establish live TUI, messenger, provider, or external-user behavior.
+
+Manager-only extension tools need both default-inactive presentation and an
+execution guard based on the selected role and native `ctx.agent.kind`. Inherited
+roles or copied role flags alone do not grant manager access. For each such tool,
+cover authorized main-session access, child/grandchild visibility with explicit
+tool selection, direct child-call rejection, and preservation of ordinary main
+and child tools. See the [manager-tool boundary](docs/runtime.md#manager-tool-boundary).
 
 ## Ready for review
 

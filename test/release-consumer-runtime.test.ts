@@ -12,7 +12,10 @@ import { sourceManifest } from "../src/update/source.ts";
 import { archive, fixture, withArchive } from "./release-consumer-setup.ts";
 import { git } from "./update-setup.ts";
 
-test.each([false, true])(
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each([false, true])(
   "managed dependency resolution follows release update and rollback (side=%s)",
   async (side) => {
     const f = fixture(side);
@@ -82,7 +85,7 @@ test.each([false, true])(
   },
 );
 
-test("explicit dependency paths and ordinary source checkouts remain user choices", async () => {
+posix("explicit dependency paths and ordinary source checkouts remain user choices", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("first\n").bundle, undefined);
   const sourceRoot = releasePath(f.paths, one.current);
@@ -118,7 +121,7 @@ test("explicit dependency paths and ordinary source checkouts remain user choice
   expect(readFileSync(f.paths.config, "utf8")).toBe(customConfig);
 });
 
-test("managed dependency resolution holds on invalid or linked lock metadata and an absent pinned cache", () => {
+posix("managed dependency resolution holds on invalid or linked lock metadata and an absent pinned cache", () => {
   const f = fixture();
   const sourceRoot = join(f.paths.releases, `${"a".repeat(40)}-${"b".repeat(16)}`);
   mkdirSync(sourceRoot, { mode: 0o700 });

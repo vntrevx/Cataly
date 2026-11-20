@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { expandHome } from "../../skills/dori-mode/scripts/src/config.ts";
+import { platform } from "../platform/index.ts";
 import { classifyOmpArgv, isOmpArgv, mayRunOmpArgv, nonPidPreservingPrefix } from "../runtime/omp-argv.ts";
 import { canonical, contains, object, UpdateError } from "./config.ts";
 import { checkNativeArgv } from "./native-argv.ts";
@@ -83,9 +84,8 @@ const command = (value: unknown, label: string, agent = false): UpdateCommand =>
   const name = text(value["name"], `${label}.name`);
   if (!NAME.test(name)) throw new UpdateError(`${label}.name must match ${NAME}`);
   const cwd = value["cwd"] === undefined ? undefined : text(value["cwd"], `${label}.cwd`);
-  if (cwd !== undefined && (isAbsolute(cwd) || cwd.split(/[\\/]/).includes(".."))) {
+  if (cwd !== undefined && (platform.isAbsolutePath(cwd) || cwd.split(/[\\/]/).includes("..")))
     throw new UpdateError(`${label}.cwd must be relative to the isolated candidate`);
-  }
   const engine = value["engine"];
   if (engine !== undefined && engine !== "omp" && engine !== "external") {
     throw new UpdateError(`${label}.engine must be omp or external`);
@@ -133,7 +133,7 @@ const checkAgent = (agent: UpdateCommand, label: string): void => {
 
 const remoteOf = (value: unknown, base: string): string => {
   const remote = text(value, "remote");
-  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(remote)) {
+  if (platform.isAbsolutePath(remote) || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(remote)) {
     const path = canonical(resolve(base, remote));
     if (!existsSync(path)) throw new UpdateError("local remote path does not exist");
     return path;

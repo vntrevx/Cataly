@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { bootCheck } from "../src/boot.ts";
 import { Decisions } from "../src/decisions.ts";
+import { shellQuote } from "../src/launch-footer.ts";
 import { Reports } from "../src/reports.ts";
 import { Worklog } from "../src/worklog.ts";
 import { depsFor, fakeClock, newWorld, type TestState, withState } from "./fakes.ts";
@@ -97,7 +98,7 @@ test("a damaged decision line fails the boot, a late answer is only a warning, a
   try {
     mkdirSync(join(other.dir, "decisions.jsonl"));
     const unreadable = await bootCheck({ ...deps, decisions: new Decisions(other.dir) });
-    expect(unreadable.lines).toContain(`DECISIONS unreadable ${join(other.dir, "decisions.jsonl")}`);
+    expect(unreadable.lines).toContain(`DECISIONS unreadable ${shellQuote(join(other.dir, "decisions.jsonl"))}`);
     expect(unreadable.exitCode).toBe(1);
   } finally {
     other.done();

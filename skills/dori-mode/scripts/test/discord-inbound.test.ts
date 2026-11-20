@@ -29,11 +29,18 @@ test("cold start baselines latest history, then admits only owner text in the ex
   await intake.poll((message) => received.push(message));
   expect(received).toEqual([
     { channel: "20", message: "101", reference: null, text: 'hello\n"quoted" $(data)', replyTo: null, attachments: [] },
-    { channel: "20", message: "107", reference: "101", text: "reply", replyTo: null, attachments: [] },
+    {
+      channel: "20",
+      message: "107",
+      reference: "101",
+      text: "reply",
+      replyTo: { id: "101", author: null, text: null, status: "unresolved" },
+      attachments: [],
+    },
   ]);
   expect(received.map(formatDiscordInbound)).toEqual([
     'INBOUND discord 20 101 from=owner ref=- "hello\\n\\"quoted\\" $(data)"',
-    'INBOUND discord 20 107 from=owner ref=101 "reply"',
+    'INBOUND discord 20 107 from=owner ref=101 "reply"\nINBOUND_REPLY discord 20 107 {"id":"101","author":null,"text":null,"status":"unresolved"}',
   ]);
   expect(received.map(formatDiscordInbound).join("\n")).not.toContain("private");
   expect(cursor.store.load()).toBe("111");

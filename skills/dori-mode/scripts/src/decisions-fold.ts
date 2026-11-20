@@ -20,13 +20,26 @@ export type DecisionFold = {
   readonly boundBy: ReadonlyMap<string, string>;
 };
 
-const asked = ({ id, at, question, source, lane, thread, options, recommend, worklog }: Event & { op: "ask" }) => ({
+const asked = ({
+  id,
+  at,
+  question,
+  source,
+  lane,
+  thread,
+  kind,
+  options,
+  recommend,
+  worklog,
+}: Event & { op: "ask" }) => ({
   id,
   question,
   source,
   askedAt: at,
   ...(lane !== undefined ? { lane } : {}),
   ...(thread !== undefined ? { thread } : {}),
+  // A question recorded before kinds existed, or without one, is the owner's to answer.
+  kind: kind ?? "owner",
   options: options ?? [],
   ...(recommend !== undefined ? { recommend } : {}),
   ...(worklog !== undefined ? { worklog } : {}),
@@ -77,8 +90,20 @@ export const foldDecisions = (path: string, text: string): DecisionFold => {
         continue;
       }
       if (!item) throw new DecisionError(`decision ${event.id} was never asked`);
-      // Two writers can both see the decision open and append. The first answer or withdrawal wins; anything after
-      // it is the same race's normal result, ignored and named.
+      // Whether the lead may choose here never depends on another writer (kind, thread and options are fixed at the
+      // ask), so a choice that breaks these is damage, even after the decision was settled, never a lost race.
+      if (event.op === "choose") {
+        if (item.kind !== "routine")
+          throw new DecisionError(`decision ${event.id} is the owner's to answer; the lead chooses only a routine one`);
+        if (event.thread !== item.thread)
+          throw new DecisionError(
+            `decision ${event.id} belongs to thread ${item.thread ?? "-"}; a choice recorded for ${event.thread} is not its`,
+          );
+        if (event.option > item.options.length)
+          throw new DecisionError(`decision ${event.id} has no option ${event.option}`);
+      }
+      // Two writers can both see the decision open and append. The first answer, choice or withdrawal wins; anything
+      // after it is the same race's normal result, ignored and named.
       const state = settled(item);
       if (state !== undefined) {
         ignore(`decision ${event.id} was already ${state}; ${event.op} ignored`);
@@ -95,7 +120,19 @@ export const foldDecisions = (path: string, text: string): DecisionFold => {
         continue;
       }
       if (event.op === "withdraw") items.set(event.id, { ...item, withdrawnAt: event.at, reason: event.reason });
-      else {
+      else if (event.op === "choose") {
+        const { at, option, source, reason } = event;
+        items.set(event.id, {
+          ...item,
+          answeredAt: at,
+          // In range: checked above against these options.
+          answer: item.options[option - 1]!,
+          option,
+          answerSource: source,
+          authority: "lead",
+          reason,
+        });
+      } else {
         if (event.option !== undefined && event.option > item.options.length)
           throw new DecisionError(`decision ${event.id} has no option ${event.option}`);
         const { at, answer, source, option } = event;
@@ -105,6 +142,7 @@ export const foldDecisions = (path: string, text: string): DecisionFold => {
           answer,
           ...(option !== undefined ? { option } : {}),
           answerSource: source,
+          authority: "owner",
         });
       }
       resolvedBy.set(event.id, event.n);

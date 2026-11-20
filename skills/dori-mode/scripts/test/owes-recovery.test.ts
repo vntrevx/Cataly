@@ -14,7 +14,7 @@ for (const tail of ["intact", "inbound", "sent", "marks"] as const) {
       await recordOwes(state.dir, inbound("100"), 1000);
       const path = (name: string) => join(state.dir, "owes", `${name}.jsonl`);
       if (tail === "inbound" || tail === "intact") {
-        await recordSent(state.dir, "20", 1001);
+        await recordSent(state.dir, "20", "100", ["701"], 1001);
         await recordMark(state.dir, "20", "100", 1001);
         expect(openOwes(state.dir, 1002)).toEqual([]);
         if (tail === "inbound") appendFileSync(path(tail), '{"id":"torn"');
@@ -22,7 +22,7 @@ for (const tail of ["intact", "inbound", "sent", "marks"] as const) {
         expect(openOwes(state.dir, 1004).map((owe) => owe.message)).toEqual(["101"]);
       } else {
         appendFileSync(path(tail), '{"channel":', { mode: 0o600 });
-        await recordSent(state.dir, "20", 1001);
+        await recordSent(state.dir, "20", "100", ["701"], 1001);
         await recordMark(state.dir, "20", "100", 1002);
         expect(openOwes(state.dir, 1003)).toEqual([]);
       }

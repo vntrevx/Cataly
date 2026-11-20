@@ -41,6 +41,9 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     const limit = Number(url.searchParams.get("limit"));
     // The first head is startup access/baseline; each later head begins a poll.
     if (limit === 1 && ++heads > 1 && !url.searchParams.has("before")) {
+      if (scenario === "long-rate-limit") {
+        return new Response("{}", { status: 429, headers: { "retry-after": "3600" } });
+      }
       polls++;
       if (polls === 1)
         history.push(message("101", "10", "first owner text"), message("102", "11", "private other user"));

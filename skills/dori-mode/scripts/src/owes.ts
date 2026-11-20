@@ -1,19 +1,15 @@
 /**
- * Owes: owner messages on Discord create tracked obligations. The Dori MAIN settle hook requests bounded
- * continuations for recent obligations missing their channel-send or exact-message mark receipt.
- *
- * The failure this exists for (2026-11-17): an owner message woke the lead, the lead answered in its terminal only,
- * and the owner saw silence. A rule in memory did not prevent it, so the obligation is data with a gate on it:
- *
- * - The Dori extension appends an owe for every `INBOUND discord <ch> <msg> from=owner` line it is handed.
- * - `dori send discord` appends a receipt after the API accepts the message.
- * - The extension's synchronous `session_stop` hook requests at most MAX_CONTINUATIONS for each recent open owe.
- *
+ * A Discord owner request stays owed until its exact read mark and complete reply receipt exist.
+ * Terminal output, reactions alone and unrelated channel sends are not answers. The CLI records every accepted
+ * part only after the complete reply succeeds; legacy channel/time-only receipts cannot settle a request.
  * Inbound deliveries and CLI receipts share capped JSONL snapshots. Each file's writer lock covers deduplication
  * and atomic publication; corrupt old lines are skipped without swallowing the next admitted record.
+ * The bounded ledgers retain the existing stale-owe and continuation limits.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDiscordSnowflake } from "./messenger/discord-inbound-state.ts";
+import { MessengerError } from "./messenger/http.ts";
 import { readLines, updateLines } from "./owes-file.ts";
 
 /** An obligation older than this is stale: a crash must not resurrect yesterday's unanswered message. */
@@ -29,7 +25,13 @@ export type InboundOwe = {
   readonly text: string;
 };
 
-type SentReceipt = { readonly channel: string; readonly at: number };
+type SentReceipt = {
+  readonly deliveryId: string;
+  readonly requestId: string;
+  readonly channel: string;
+  readonly remoteIds: readonly string[];
+  readonly at: number;
+};
 type MarkReceipt = { readonly channel: string; readonly message: string; readonly at: number };
 
 const dir = (stateDir: string): string => join(stateDir, "owes");
@@ -68,7 +70,19 @@ const isOwe = (v: unknown): v is InboundOwe => {
 const isReceipt = (v: unknown): v is SentReceipt => {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SentReceipt>;
-  return typeof r.channel === "string" && typeof r.at === "number" && Number.isFinite(r.at);
+  const request = typeof r.requestId === "string" ? /^([1-9]\d{0,19}):([1-9]\d{0,19})$/.exec(r.requestId) : null;
+  return (
+    isDiscordSnowflake(r.channel) &&
+    request?.[1] === r.channel &&
+    isDiscordSnowflake(request[2]) &&
+    Array.isArray(r.remoteIds) &&
+    r.remoteIds.length > 0 &&
+    r.remoteIds.every(isDiscordSnowflake) &&
+    new Set(r.remoteIds).size === r.remoteIds.length &&
+    r.deliveryId === `discord:${r.channel}:${r.remoteIds[0]}` &&
+    typeof r.at === "number" &&
+    Number.isFinite(r.at)
+  );
 };
 
 const isMark = (v: unknown): v is MarkReceipt => {
@@ -125,11 +139,25 @@ export const recordOwes = async (stateDir: string, text: string, at: number, sig
   );
 };
 
-/** Records a complete send accepted by Discord; the channel match still needs each exact-message mark. */
-export const recordSent = async (stateDir: string, channel: string, at: number): Promise<void> => {
+/** Records one complete reply, after every part was accepted, for exactly the named owner request. */
+export const recordSent = async (
+  stateDir: string,
+  channel: string,
+  message: string,
+  remoteIds: readonly string[],
+  at: number,
+): Promise<void> => {
+  const receipt: SentReceipt = {
+    deliveryId: `discord:${channel}:${remoteIds[0]}`,
+    requestId: `${channel}:${message}`,
+    channel,
+    remoteIds,
+    at,
+  };
+  if (!isReceipt(receipt)) throw new MessengerError("discord send: incomplete delivery receipt; outcome uncertain", 0);
   ensureDir(stateDir);
   await updateLines(sentPath(stateDir), (previous) => ({
-    lines: [...previous, JSON.stringify({ channel, at })],
+    lines: [...previous, JSON.stringify(receipt)],
     value: undefined,
   }));
 };
@@ -149,8 +177,8 @@ export const recordMark = async (stateDir: string, channel: string, message: str
 };
 
 /**
- * An owe is settled only by both halves: a message Discord accepted on the channel, and the read receipt on that
- * exact message. Both must come after the owner wrote, so an earlier reply cannot settle a later question.
+ * Both the complete reply and read mark must name this exact request and follow its admission.
+ * A successful send is evidence of API acceptance, not proof that the owner read the answer.
  */
 export const openOwes = (stateDir: string, now: number): InboundOwe[] => {
   const receipts = readLines(sentPath(stateDir))
@@ -166,7 +194,7 @@ export const openOwes = (stateDir: string, now: number): InboundOwe[] => {
     if (!owe || seen.has(owe.id)) continue;
     seen.add(owe.id);
     if (now - owe.at > OWE_TTL_MS) continue;
-    const answered = receipts.some((r) => r.channel === owe.channel && r.at >= owe.at);
+    const answered = receipts.some((r) => r.requestId === owe.id && r.channel === owe.channel && r.at >= owe.at);
     const marked = marks.some((m) => m.channel === owe.channel && m.message === owe.message && m.at >= owe.at);
     if (answered && marked) continue;
     open.push(owe);
@@ -197,7 +225,7 @@ export const bumpAttempts = (stateDir: string, ids: readonly string[]): Record<s
 
 /** Supported CLI guidance with exact per-message mark commands, not an unavailable helper alias. */
 export const reminder = (owes: readonly InboundOwe[]): string => {
-  // A send covers its channel, but each obligation needs its own mark; bound previews and commands to five.
+  // Bound the reminder, but each listed request still needs its own linked reply.
   const shown = owes.slice(0, 5);
   const lines = shown.flatMap((owe) => [
     `- channel ${owe.channel}, owner message ${owe.message} (${new Date(owe.at).toISOString()}): ${JSON.stringify(owe.text)}`,
@@ -207,7 +235,7 @@ export const reminder = (owes: readonly InboundOwe[]): string => {
   return [
     "BLOCKED: a recent owner message is missing one or both local Discord receipts.",
     "Check what remains before acting: do not duplicate an accepted answer or reaction. Use each mark command only if missing.",
-    '  dori send discord --to <channel> --text "<the answer you just gave>"',
+    '  dori send discord --to <channel> --reply <owner message id> --text "<the answer you just gave>"',
     ...lines,
   ].join("\n");
 };
