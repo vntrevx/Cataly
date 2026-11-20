@@ -26,7 +26,8 @@
         "test/record-discord-gateway.ts",
         "test/record-fetch.ts",
         "test/record-discord.ts",
-        "test/record-telegram-startup.ts"
+        "test/record-telegram-startup.ts",
+        "test/record-telegram-epoch.ts"
       ],
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },

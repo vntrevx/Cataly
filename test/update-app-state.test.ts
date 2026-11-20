@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readMonitorManifests } from "../skills/dori-mode/scripts/src/boot-monitors.ts";
-import { fileTgInboundStore } from "../skills/dori-mode/scripts/src/messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "../skills/dori-mode/scripts/src/messenger/telegram-inbound-state.ts";
 import { Registry, type Lane } from "../skills/dori-mode/scripts/src/registry.ts";
 import { Store } from "../src/store.ts";
 import { applicationManifest } from "../src/update/app-state.ts";
@@ -38,7 +38,8 @@ describe("candidate application state recovery", () => {
       summary: "Existing blocked receipt",
     };
     store.saveReceipt(receipt);
-    fileTgInboundStore(join(skill, "telegram-offset")).save(314);
+    const cursor = { offset: 314, observedAt: 1_700_000_000_000, seen: ["a".repeat(64)] };
+    fileTgInboundStore(skill, 900).save(cursor);
     const monitors = {
       version: 1,
       sessionId: "candidate-session",
@@ -52,7 +53,7 @@ describe("candidate application state recovery", () => {
     const before = applicationManifest(application);
     const snapshot = snapshotUpdate(f.updater.context, job.id, join(f.directory, "app-snapshot"), application);
     await registry.write({ ...lane, status: "closed" });
-    fileTgInboundStore(join(skill, "telegram-offset")).save(999);
+    fileTgInboundStore(skill, 900).save({ offset: 999, observedAt: 1_700_000_001_000, seen: ["b".repeat(64)] });
     const restored = restoreUpdate(f.updater.context, snapshot, join(f.directory, "app-restored"));
     const restoredApplication = join(restored, "app-state");
     const restoredSkill = join(restoredApplication, "skill");
@@ -61,8 +62,11 @@ describe("candidate application state recovery", () => {
     expect((await new Registry(restoredSkill).read(lane.key))?.pausedFrom).toBe("working");
     expect((await registry.read(lane.key))?.status).toBe("closed");
     expect(new Store(join(restoredApplication, "harness")).receipt(receipt.pr, receipt.sha)).toEqual(receipt);
-    expect(fileTgInboundStore(join(restoredSkill, "telegram-offset")).load()).toBe(314);
-    expect(fileTgInboundStore(join(skill, "telegram-offset")).load()).toBe(999);
+    const restoredCursor = fileTgInboundStore(restoredSkill, 900).load();
+    expect(restoredCursor?.offset).toBe(314);
+    expect(restoredCursor?.observedAt).toBe(cursor.observedAt);
+    expect(restoredCursor?.seen).toEqual(cursor.seen);
+    expect(fileTgInboundStore(skill, 900).load()?.offset).toBe(999);
     const watched = readMonitorManifests(join(restoredSkill, "sessions"), [], join(restoredSkill, "monitors"));
     expect(watched.errors).toEqual([]);
     expect(watched.manifests[0]?.data).toEqual(monitors);

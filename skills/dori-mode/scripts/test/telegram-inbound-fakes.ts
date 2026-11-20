@@ -1,5 +1,10 @@
 import type { Http, HttpRequest, HttpResponse } from "../src/messenger/http.ts";
 import { Telegram } from "../src/messenger/telegram.ts";
+import {
+  fileTgInboundStore,
+  type TgInboundState,
+  type TgInboundStore,
+} from "../src/messenger/telegram-inbound-state.ts";
 import { fakeClock } from "./fakes.ts";
 
 export const OWNER = 5250;
@@ -36,3 +41,15 @@ export const telegramFake = (batches: U[][]) => {
 };
 
 export const mk = (http: Http): Telegram => new Telegram(http, fakeClock(0), "T");
+
+// Unit tests still exercise poll/emit behavior on Windows, where the private file store cannot open.
+export const testTgInboundStore = (dir: string, bot: number): TgInboundStore => {
+  if (process.platform !== "win32") return fileTgInboundStore(dir, bot);
+  let state: TgInboundState | undefined;
+  return {
+    load: () => state,
+    save: (next) => {
+      state = next;
+    },
+  };
+};

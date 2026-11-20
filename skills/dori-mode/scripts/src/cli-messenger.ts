@@ -11,7 +11,8 @@ import { Slack } from "./messenger/slack.ts";
 import { formatSlackInbound, pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
-import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
+import { fileTgInboundStore } from "./messenger/telegram-inbound-state.ts";
+import { envInt, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
 import { slackScope, type SlackScope, ThreadLedger } from "./messenger/thread-ledger.ts";
@@ -98,7 +99,6 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
     realClock,
     process.env["DORI_TELEGRAM_TOKEN"] || die("DORI_TELEGRAM_TOKEN is not set"),
   );
-  const store = fileTgInboundStore(`${stateDir}/telegram-offset`);
   const num = (name: string): number => {
     try {
       return envInt(name, process.env[name]);
@@ -115,13 +115,8 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   const identity = await tg.call<{ id?: unknown; is_bot?: unknown }>("getMe", {}).catch(() => {
     throw new MessengerError("Telegram inbound bot identity could not be verified; check token and API access", 0);
   });
-  if (
-    !identity ||
-    identity.is_bot !== true ||
-    typeof identity.id !== "number" ||
-    !Number.isSafeInteger(identity.id) ||
-    identity.id <= 0
-  )
+  const botId = identity?.id;
+  if (identity?.is_bot !== true || typeof botId !== "number" || !Number.isSafeInteger(botId) || botId <= 0)
     throw new MessengerError("Telegram getMe returned an invalid bot identity", 0);
   const webhook = await tg.call<{ url?: unknown }>("getWebhookInfo", {}).catch(() => {
     throw new MessengerError("Telegram inbound webhook status could not be verified; check API access", 0);
@@ -130,12 +125,15 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
     throw new MessengerError("Telegram getWebhookInfo returned an invalid webhook status", 0);
   if (webhook.url !== "")
     throw new MessengerError("Telegram inbound refused an active webhook; use a polling bot (webhook unchanged)", 409);
+  using store = fileTgInboundStore(stateDir, botId);
+  store.checkWritable();
+  store.load(); // Validate persisted state before advertising readiness; polling re-reads it before use.
   console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
   // The INBOUND line stays exactly as monitors parse it; receive lag goes to its own jsonl.
   const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
   await telegramInboundLoop(
     tg,
-    store,
+    async () => store,
     {
       ownerId,
       ...(groupChatId !== undefined ? { groupChatId } : {}),
