@@ -10,10 +10,18 @@ import { checkDone } from "../src/signals.ts";
 import { queueFixture, roomy, type QueueFixture } from "./launch-queue-fixture.ts";
 
 let f: QueueFixture;
+let oldState: string | undefined;
+// loadConfig honours DORI_STATE_DIR over a config's stateDir; pin it to this fixture so a host value cannot leak in.
 beforeEach(async () => {
   f = await queueFixture();
+  oldState = process.env["DORI_STATE_DIR"];
+  process.env["DORI_STATE_DIR"] = f.state.dir;
 });
-afterEach(() => f.state.done());
+afterEach(() => {
+  if (oldState === undefined) delete process.env["DORI_STATE_DIR"];
+  else process.env["DORI_STATE_DIR"] = oldState;
+  f.state.done();
+});
 
 const doneSignal = "file done.marker";
 
