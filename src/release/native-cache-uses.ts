@@ -14,9 +14,10 @@ const SOURCE_ACTION = /^(?:native|assert-native|consumer|lease-path)$/;
 /**
  * Whether a process is a Dori writer that creates, verifies or launches identities, judged by the base names of its
  * words so absolute and relative paths (`bun scripts/source-dependencies.ts native ...`) count alike: the home it
- * names for `source-dependencies.ts`, `"env"` when its environment's HOME decides, undefined when it is no writer.
- * Writers from this release lease what they use; an older running checkout does not, so while one runs for this cache
- * no identity is confirmed unused.
+ * names for `source-dependencies.ts`, `"env"` when its environment's HOME decides, `""` when its home is unknown here,
+ * undefined when it is no writer. `upstream` commands provision under their deployment config's `home`, which their
+ * HOME does not reveal, so they hold every cache. Writers from this release lease what they use; an older running
+ * checkout does not, so while one runs for this cache no identity is confirmed unused.
  */
 function writerHome(args: string): string | undefined {
   const words = args.split(/\s+/);
@@ -26,8 +27,9 @@ function writerHome(args: string): string | undefined {
     if (base[at] === "source-dependencies.ts" && SOURCE_ACTION.test(next)) return words[at + 3] ?? "";
     if (base[at] === "install-source.sh") return "env";
     if (base[at] === "cli.ts" && /^(?:install|rollback)$/.test(next)) return "env";
-    if (["cli.ts", "dori", "dori-harness"].includes(base[at]!) && /^(?:update|upstream)$/.test(next))
-      if (SUBCOMMAND.test(base[at + 2] ?? "")) return "env";
+    if (["cli.ts", "dori", "dori-harness"].includes(base[at]!) && SUBCOMMAND.test(base[at + 2] ?? ""))
+      if (next === "update") return "env";
+      else if (next === "upstream") return "";
   }
   return undefined;
 }

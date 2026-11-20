@@ -6,6 +6,8 @@
 
 - Append compact role guidance once per root Dori/lane prompt, preserving existing host and ULW composition. Plain and child sessions are unchanged, and lane bookkeeping remains Sol-only.
 
+- `dori update cache --prune` no longer judges a running `dori upstream check|stage|watch|restart|recover` by its HOME: deployment provisions under its config's `home`, so such a writer keeps every identity. macOS now reads a writer's HOME (`update install|rollback`, `install-source.sh`) from its process environment.
+
 - Slack thread positions are bound to the authenticated workspace/account rather than shared channel/root IDs. `dori inbound slack` keeps its existing readiness line and physical channel IDs; `--qualified-routes` opts into account-qualified readiness and destinations. Replies reject mismatched parents, qualified destinations reject another account before mutation, and nonempty legacy ledgers require explicit matching operator adoption with a durable receipt; existing non-self/non-bot intake and post-emit cursor semantics remain unchanged.
 
 - `dori park` and `dori reopen` accept saved OMP sessions whose first line is OMP's fixed-width title slot (v1) before the session header; any other leading record, a second title, a missing header, or a different session id or cwd is still refused.
