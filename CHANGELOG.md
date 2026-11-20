@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound native OMP keeps pending custom notices with their original transcript across `/new`, `/clear`, and session switches. An unchanged reload retains eligible notices and passive next-turn payloads without restarting old provider work; a changed transcript drops them. External delivery waits for transition and rollback reconciliation, and CI exercises ownership against the bound native source.
+
 - Append compact role guidance once per root Dori/lane prompt, preserving existing host and ULW composition. Plain and child sessions are unchanged, and lane bookkeeping remains Sol-only.
 
 - Slack thread positions are bound to the authenticated workspace/account rather than shared channel/root IDs. `dori inbound slack` keeps its existing readiness line and physical channel IDs; `--qualified-routes` opts into account-qualified readiness and destinations. Replies reject mismatched parents, qualified destinations reject another account before mutation, and nonempty legacy ledgers require explicit matching operator adoption with a durable receipt; existing non-self/non-bot intake and post-emit cursor semantics remain unchanged.

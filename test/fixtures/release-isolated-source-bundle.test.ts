@@ -54,24 +54,24 @@ if (tools !== undefined) {
       join(f.paths.root, "consumer-discovery", basename(sourceOne), "omp.yml"),
       "{prompt}",
     ]);
-    const dependency = (sourceRoot: string) =>
-      join(
-        f.paths.dependencies,
-        `omp-ulw-${readSourceBundle(sourceRoot).lock.commit}-${readSourceBundle(sourceRoot).identity}`,
-        "index.ts",
-      );
+    const dependency = (sourceRoot: string) => {
+      const { lock, identity } = readSourceBundle(sourceRoot);
+      return join(f.paths.dependencies, `omp-ulw-${lock.commit}-${identity}`, "index.ts");
+    };
     const effective = (sourceRoot: string) =>
       resolveConsumerOmpUlwPath("", { home: f.paths.home, sourceRoot, useDefault: true });
-    expect(effective(sourceOne)).toBe(dependency(sourceOne));
-    expect(readFileSync(effective(sourceOne), "utf8")).toContain('selected = "first"');
+    const firstUlw = effective(sourceOne);
+    expect(firstUlw).toBe(dependency(sourceOne));
+    expect(readFileSync(firstUlw, "utf8")).toContain('selected = "first"');
 
     const second = boundRelease(f, "second", first.source);
     const two = await installBundle(f.paths, second.bundle, one);
     const sourceTwo = releasePath(f.paths, two.current);
     expect(command(sourceOne)[0]).toBe(join(sourceOne, "scripts/consumer/omp"));
     expect(command(sourceTwo)[0]).toBe(join(sourceTwo, "scripts/consumer/omp"));
-    expect(effective(sourceTwo)).toBe(dependency(sourceTwo));
-    expect(readFileSync(effective(sourceTwo), "utf8")).toContain('selected = "second"');
+    const secondUlw = effective(sourceTwo);
+    expect(secondUlw).toBe(dependency(sourceTwo));
+    expect(readFileSync(secondUlw, "utf8")).toContain('selected = "second"');
     expect(resolveConsumerOmpCommand(["/owner/custom-omp"], { home: f.paths.home, sourceRoot: sourceTwo })).toEqual([
       "/owner/custom-omp",
     ]);

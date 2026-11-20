@@ -71,6 +71,7 @@ export async function requiredSourceRequest(
     ({ session } = await createAgentSession({
       cwd,
       agentDir: join(cwd, "agent"),
+      agentId: `required-source-${manager.getSessionId()}`,
       sessionManager: manager,
       authStorage: auth,
       modelRegistry: registry,
