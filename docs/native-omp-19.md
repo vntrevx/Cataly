@@ -33,6 +33,8 @@ Cataly `2f47812` keeps external custom messages with their original transcript t
 
 The rebase also retains main's consumer setup preview/snapshot/journal transaction, while recognizing all supported bound 19.x manifests rather than only 18.20.0. Main's Windows admission, role-fixture and native-close changes remain in their existing code and tests.
 
+Rebasing onto Cataly `d76b2b9` leaves the native overlay unchanged and ports main's newer native callers to the 19.0.1 API. The genuine-host admission fixture uses `cacheWarming: "off"` and 19's renamed `deferHintCompression`. The shared argv table adds 19's `--no-judge`, `--no-spotlight` and `--offline` booleans. Headless lanes require the `nativeVersion` from `native-omp.lock` instead of a fixed 18.20.0, and 19 keeps the `rpc-ui` goal, dialog and admission requests they use. Historical seance session headers stay readable for usage accounting; the seance agent was removed upstream in 18.20.3.
+
 ## Structural reduction and upstream candidates
 
 Every remaining hunk is general-purpose upstream material: **85 upstreamable, 0 safely replaceable by a public extension hook/config, 0 Dori-specific**. Documentation-only hunks and comments already made redundant by upstream were removed from the native overlay. The distinct operation-atomicity comment stays with the todo change. The only Dori-specific native documentation, the extension-monitor versus native-job distinction, now lives in [runtime.md](runtime.md#omp-identity-goal-and-approval-records). Role selection, lane state, ASK, voice, monitors and ULW already live outside the native patch.
