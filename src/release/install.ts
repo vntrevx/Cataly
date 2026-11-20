@@ -40,6 +40,11 @@ import {
   verifyRelease,
 } from "./state.ts";
 
+// Pre-19 controllers validate both manifests before checking whether automatic updates are disabled.
+function controllerReads(current: InstalledState["current"], previous: InstalledState["current"]): boolean {
+  return current.requirements.omp.startsWith("19.") || !previous.requirements.omp.startsWith("19.");
+}
+
 export function preflightInstallation(paths: ConsumerPaths): void {
   pointer(paths.live);
   if (paths.dori === join(paths.home, ".dori")) {
@@ -128,6 +133,10 @@ export async function installBundle(
   preflightInstallation(paths);
   assertInstalledPointer(paths, before);
   const manifest = validateReleaseManifest(bundle.manifest);
+  if (before && !controllerReads(manifest, before.current))
+    throw new Error(
+      `Release ${manifest.tag} cannot read the OMP 19 receipt of installed ${before.current.tag}; use "dori update rollback" to restore a retained pre-19 release`,
+    );
   const receipts = readdirSync(paths.manifests)
     .filter((name) => name.endsWith(".json"))
     .map((name) => validateReleaseManifest(readJson(join(paths.manifests, name))));
@@ -194,13 +203,10 @@ export async function rollbackRelease(
   const source = verifyRelease(paths, before.previous);
   const dependency = await provisionDependency(paths, before.previous, source);
   const published = await installReferences(paths, source, dependency, before.previous, config);
-  // Pre-19 controllers validate both manifests before checking whether automatic updates are disabled.
-  const retainPrevious =
-    before.previous.requirements.omp.startsWith("19.") || !before.current.requirements.omp.startsWith("19.");
   const after: InstalledState = {
     version: 1,
     current: before.previous,
-    ...(retainPrevious ? { previous: before.current } : {}),
+    ...(controllerReads(before.previous, before.current) ? { previous: before.current } : {}),
   };
   activateRelease(paths, before, after, undefined, {
     snapshot: published,

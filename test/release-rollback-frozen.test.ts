@@ -1,8 +1,18 @@
 import { expect, test } from "bun:test";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { extractArchive, readArchive } from "../src/release/archive.ts";
+import { automaticUpdate } from "../src/release/automatic.ts";
 import { readAutomaticState } from "../src/release/automatic-state.ts";
 import type { VerifiedBundle } from "../src/release/bundle.ts";
 import { saveJson } from "../src/release/files.ts";
@@ -78,7 +88,8 @@ posix.each([
     writeFileSync(join(prior.source, path), bytes, { mode: 0o600 });
   }
   chmodSync(join(prior.source, "scripts/consumer/omp"), 0o755);
-  const one = await installBundle(f.paths, repack(prior.bundle, prior.source), undefined);
+  const legacy = repack(prior.bundle, prior.source);
+  const one = await installBundle(f.paths, legacy, undefined);
   const oldSource = releasePath(f.paths, one.current);
   const oldBytes = sourceManifest(oldSource);
   const oldNative = oldVersion === "18.20.0" ? nativeDirectory(oldSource, f.paths.home) : undefined;
@@ -93,6 +104,14 @@ posix.each([
   const newNative = nativeDirectory(newSource, f.paths.home);
   const newNativeBytes = sourceManifest(newNative);
   const newLauncher = readFileSync(join(newNative, "bin/omp"));
+  // A manual install of the older release would record the OMP 19 receipt its frozen controller rejects.
+  const installed = readFileSync(f.paths.state);
+  const receipts = readdirSync(f.paths.manifests).sort();
+  await expect(installBundle(f.paths, legacy, two)).rejects.toThrow('use "dori update rollback"');
+  expect(readFileSync(f.paths.state)).toEqual(installed);
+  expect(readdirSync(f.paths.manifests).sort()).toEqual(receipts);
+  expect(readlinkSync(f.paths.live)).toBe(newSource);
+  expect(readFileSync(f.paths.config)).toEqual(config);
   const rolled = await rollbackRelease(f.paths, two);
   expect(rolled.current).toEqual(one.current);
   expect(rolled.previous).toBeUndefined();
@@ -122,6 +141,27 @@ posix.each([
   expect(readFileSync(f.paths.config)).toEqual(config);
   // The unsupported previous pointer is consumed, not replaced by a forged manifest or an executable shim.
   await expect(rollbackRelease(f.paths, rolled)).rejects.toThrow("No retained previous release");
+});
+
+posix("automatic update never activates a newer pre-19 controller over an OMP 19 receipt", async () => {
+  const f = fixture();
+  const one = await installBundle(f.paths, nativeRelease(f, "one", "19.0.0"), undefined);
+  const later = boundRelease(f, "later").bundle;
+  expect(later.manifest.requirements.omp).toBe("18.20.0");
+  const candidate = { ...later, manifest: { ...later.manifest, prerelease: false } };
+  const installed = readFileSync(f.paths.state);
+  const receipts = readdirSync(f.paths.manifests).sort();
+  const config = readFileSync(f.paths.config);
+  const source = releasePath(f.paths, one.current);
+  expect(await automaticUpdate(f.paths, { now: 42, acquire: async () => candidate, checkTools: () => {} })).toBe(
+    source,
+  );
+  expect(readAutomaticState(f.paths)).toMatchObject({ outcome: "failed" });
+  expect(readAutomaticState(f.paths).detail).toContain('use "dori update rollback"');
+  expect(readFileSync(f.paths.state)).toEqual(installed);
+  expect(readdirSync(f.paths.manifests).sort()).toEqual(receipts);
+  expect(readlinkSync(f.paths.live)).toBe(source);
+  expect(readFileSync(f.paths.config)).toEqual(config);
 });
 
 posix("same-generation OMP 19 rollback retains its displaced release for redo", async () => {
