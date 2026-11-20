@@ -147,12 +147,17 @@ posix(
     const child = Bun.spawn([image, "60"], { stdout: "ignore", stderr: "ignore" });
     try {
       // macOS kills a copied binary renamed while its exec is still loading it; rename only once exec has settled
-      // (two successive readings name the copied image with one start time).
+      // (two successive readings both name the copied image with one start time), within a short deadline.
+      const settledBy = Date.now() + 5_000;
       let settled = processIdentity(child.pid);
       for (;;) {
+        if (child.exitCode !== null || child.signalCode !== null)
+          throw new Error(`copied child exited before its exec settled (${child.exitCode ?? child.signalCode})`);
+        if (Date.now() > settledBy) throw new Error("copied child's exec did not settle within 5 s");
         await Bun.sleep(1);
         const next = processIdentity(child.pid);
-        if (settled && next?.startTicks === settled.startTicks && next.executable === image) break;
+        if (settled?.executable === image && next?.executable === image && next.startTicks === settled.startTicks)
+          break;
         settled = next;
       }
       const identity = processIdentity(child.pid)!;
