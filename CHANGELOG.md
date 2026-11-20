@@ -272,4 +272,4 @@ The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, pu
 
 - Unreleased: Isolate automated worktree discovery, completion checks and non-forced cleanup from inherited `GIT_*` overrides. Ordinary commands retain their environment; a foreign Git context can no longer hide local work or redirect worktree cleanup. Other Git probe failures hold completion instead of being treated as a missing checkout.
 
-- Unreleased: Bind opted-in lane reports and checkpoints to the original received request and launch run, preserve late-run attribution across reopen/wake, and explicitly link exact Discord reply receipts without treating unsupported delivery paths as verified.
+- Unreleased: Bind opted-in lane reports and checkpoints to the original received request and launch run, preserve late-run attribution across reopen/wake, and explicitly link exact Discord reply receipts without treating unsupported delivery paths as verified. Validate every retained execution chain before launch/reopen side effects without dropping completed checkpoint effects, and reject explicitly valueless delivery options before acknowledging a report.

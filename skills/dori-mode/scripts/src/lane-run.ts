@@ -9,27 +9,31 @@ type RunContext = { readonly generation: string | undefined; readonly provenance
 export const runContext = (reports: Reports, lane: Lane, runId: string | undefined): RunContext | null => {
   if (lane.requestId === undefined) return { generation: lane.lifecycleEpoch };
   if (!isRequestId(lane.requestId)) throw new ReportError(`invalid original request for ${lane.key}`);
-  if (!isRunId(runId)) return null;
-  let context: RunContext | null = null;
+  const contexts = new Map<string, RunContext>();
   for (const event of reports.events(lane.key)) {
-    if (event.type !== "execution" || event.runId !== runId) continue;
+    if (event.type !== "execution") continue;
     if (event.requestId !== lane.requestId) throw new ReportError(`execution request changed for ${lane.key}`);
+    const context = contexts.get(event.runId);
     if (event.phase === "started") {
       if (context) throw new ReportError(`duplicate execution start for ${lane.key}`);
-      context = { generation: event.generation, provenance: { requestId: event.requestId, runId } };
+      contexts.set(event.runId, {
+        generation: event.generation,
+        provenance: { requestId: event.requestId, runId: event.runId },
+      });
       continue;
     }
     if (!context || context.generation !== event.generation)
       throw new ReportError(`execution binding has no matching start for ${lane.key}`);
-    const provenance = { requestId: event.requestId, runId, nativeRef: event.nativeRef };
+    const provenance = { requestId: event.requestId, runId: event.runId, nativeRef: event.nativeRef };
     if (
       context.provenance?.nativeRef &&
       JSON.stringify(provenanceIdentity(context.provenance)) !== JSON.stringify(provenanceIdentity(provenance))
     )
       throw new ReportError(`execution native reference changed for ${lane.key}`);
-    context = { generation: event.generation, provenance };
+    contexts.set(event.runId, { generation: event.generation, provenance });
   }
-  return context;
+  // Validate every retained execution before selecting a run, including a producer's not-yet-recorded UUID.
+  return isRunId(runId) ? (contexts.get(runId) ?? null) : null;
 };
 
 /** Called with the producer's same-generation registry guard; the native ID requires verified live readback. */

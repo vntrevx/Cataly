@@ -37,12 +37,14 @@ const report: Command = async ({ key, need, opt, values, lane, config, deps }) =
   } else die("--kind must be milestone, blocker, question, halted or done");
 };
 
-const relayed: Command = async ({ key, need, opt, values, lane, deps, config }) => {
+const relayed: Command = async ({ key, need, values, lane, deps, config }) => {
   const target = await lane(key ?? die("relayed needs a lane key"));
   if (target.reportProtocol !== "jsonl-v1")
     die("relayed requires a launched jsonl-v1 lane, not an adopted screen report");
   const id = need("report");
-  const deliveryId = opt("delivery");
+  const deliveryId = values["delivery"] === undefined ? undefined : need("delivery");
+  if (deliveryId !== undefined && !deliveryId.startsWith("discord:"))
+    die("--delivery requires an exact Discord receipt ID");
   const reports = new Reports(config.stateDir);
   const updated = await deps.registry.transition(target, (current) => {
     const entry = reports.read(target.key, reportScope(current))?.lastReport;

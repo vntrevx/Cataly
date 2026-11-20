@@ -66,6 +66,50 @@ test("relayed --delivery links only the exact Discord request's complete receipt
   });
 });
 
+test.each([false, true])(
+  "relayed refuses valueless --delivery before acknowledgment (following flag=%s)",
+  async (followingFlag) => {
+    await withDiscordCli(async (f) => {
+      const stateDir = dirname(f.tmp);
+      await seedRequest(stateDir);
+      const previous = await reportNow(f, "Previously relayed answer");
+      const acknowledged = await f.invoke(["relayed", KEY, "--report", previous.id]);
+      expect(acknowledged.code).toBe(0);
+      const report = await reportNow(f, "Answer awaiting delivery receipt");
+      const registry = new Registry(stateDir);
+      const before = await registry.read(KEY);
+      expect(before?.lastPostedReportId).toBe(previous.id);
+      expect(before?.lastRelayedAt).toBeGreaterThan(0);
+      const refused = await f.invoke([
+        "relayed",
+        KEY,
+        "--report",
+        report.id,
+        "--delivery",
+        ...(followingFlag ? ["--json"] : []),
+      ]);
+      const after = await registry.read(KEY);
+      expect({
+        refused: refused.code !== 0,
+        reportId: after?.lastPostedReportId,
+        relayedAt: after?.lastRelayedAt,
+      }).toEqual({
+        refused: true,
+        reportId: before?.lastPostedReportId,
+        relayedAt: before?.lastRelayedAt,
+      });
+      expect(refused.err).toContain("--delivery");
+      expect(after).toEqual(before);
+
+      // Omitting the option remains an explicit unlinked acknowledgement, including after a rejected typo.
+      const omitted = await f.invoke(["relayed", KEY, "--report", report.id, "--json"]);
+      expect(omitted.code).toBe(0);
+      expect(JSON.parse(omitted.out).delivery.state).toBe("unverified");
+      expect((await registry.read(KEY))?.lastPostedReportId).toBe(report.id);
+    });
+  },
+);
+
 const refusals: [string, (stateDir: string, reportAt: number) => Promise<void>, string][] = [
   ["missing", () => Promise.resolve(), DELIVERY],
   ["external", (dir, at) => recordSent(dir, CHANNEL, "555555555555555555", PARTS, at + 1), DELIVERY],
