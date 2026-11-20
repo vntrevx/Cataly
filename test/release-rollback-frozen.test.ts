@@ -21,7 +21,7 @@ import { validateReleaseManifest } from "../src/release/manifest.ts";
 import { nativeDirectory } from "../src/release/native.ts";
 import { manifestPath, releasePath, verifyRelease } from "../src/release/state.ts";
 import { digest, sourceManifest } from "../src/update/source.ts";
-import { archive, type ConsumerFixture, fixture, withArchive } from "./release-consumer-setup.ts";
+import { archive, type ConsumerFixture, fixture, portableFixture, withArchive } from "./release-consumer-setup.ts";
 import { boundRelease } from "./release-native-recovery-setup.ts";
 import { nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 
@@ -144,8 +144,12 @@ posix.each([
 });
 
 posix("automatic update never activates a newer pre-19 controller over an OMP 19 receipt", async () => {
-  const f = fixture();
+  // The candidate must support this host profile so the controller hold, not the profile check, rejects it.
+  const f = portableFixture();
   const one = await installBundle(f.paths, nativeRelease(f, "one", "19.0.0"), undefined);
+  const selected = JSON.parse(readFileSync(f.paths.config, "utf8"));
+  selected.runtime = process.platform === "darwin" ? "hc" : "herdr";
+  saveJson(f.paths.config, selected);
   const later = boundRelease(f, "later").bundle;
   expect(later.manifest.requirements.omp).toBe("18.20.0");
   const candidate = { ...later, manifest: { ...later.manifest, prerelease: false } };
