@@ -64,6 +64,15 @@ export const resumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> =>
   }
 };
 
+/** OMP's optional fixed-width title slot (v1), only ever the first physical line before the session header. */
+const isTitleSlot = (entry: Record<string, unknown>): boolean =>
+  entry["type"] === "title" &&
+  entry["v"] === 1 &&
+  typeof entry["title"] === "string" &&
+  typeof entry["updatedAt"] === "string" &&
+  typeof entry["pad"] === "string" &&
+  (entry["source"] === undefined || entry["source"] === "auto" || entry["source"] === "user");
+
 const readResumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> => {
   if (!lane.session) throw new LaunchError(`lane ${lane.key} has no recorded session; sync it before parking`);
   let file = lane.sessionFile;
@@ -75,14 +84,20 @@ const readResumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> => {
   }
   const stream = createReadStream(file, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let first = true;
   try {
     for await (const line of lines) {
-      const header = JSON.parse(line) as { type?: unknown; id?: unknown; cwd?: unknown };
+      const header = JSON.parse(line) as Record<string, unknown>;
+      if (first && isTitleSlot(header)) {
+        first = false;
+        continue;
+      }
+      const cwd = header["cwd"];
       if (
-        header.type !== "session" ||
-        header.id !== lane.session ||
-        typeof header.cwd !== "string" ||
-        realpathSync(header.cwd) !== realpathSync(lane.cwd ?? deps.config.defaultCwd)
+        header["type"] !== "session" ||
+        header["id"] !== lane.session ||
+        typeof cwd !== "string" ||
+        realpathSync(cwd) !== realpathSync(lane.cwd ?? deps.config.defaultCwd)
       )
         throw new LaunchError(`lane ${lane.key} saved session identity or cwd differs`);
       return realpathSync(file);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `dori park` and `dori reopen` accept saved OMP sessions whose first line is OMP's fixed-width title slot (v1) before the session header; any other leading record, a second title, a missing header, or a different session id or cwd is still refused.
+
 - Discord replies retain their original message ID and copied snapshot, distinguish unresolved, unavailable and observed-empty context, and reject reference or snapshot channel mismatches before owner delivery or checkpoint. Outgoing replies bind to the exact physical channel or thread and require the original target to exist; a deleted or other-channel target no longer silently becomes an unlinked post. Normal `INBOUND` grammar, split-message ordering and non-pinging mentions remain unchanged.
 
 - `dori decision` records who may settle each choice: `ask --kind routine` (reversible, in scope, at least two options, in the work's thread) lets the lead record `decision choose <id> <N> --reason TEXT --source REF --thread REF` after posting its choice and reason in that thread, while unmarked and pre-existing decisions stay owner-only; `list` shows `kind` and the answer's `authority`, `digest` shows `kind`, the same rules hold for hand-written or raced records, and no decision answer or choice grants a native execution approval.
