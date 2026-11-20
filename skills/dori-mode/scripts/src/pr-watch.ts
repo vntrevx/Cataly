@@ -83,7 +83,7 @@ export const prKey = (ref: PrRef): string => `${ref.repo.toLowerCase()}#${ref.nu
 export const prName = (ref: PrRef): string => `${ref.repo}#${ref.number}`;
 
 // One whitespace-free token for lane keys and thread refs: they are printed inside space-separated event lines.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to reject them
+// oxlint-disable-next-line no-control-regex -- the pattern deliberately matches control characters to reject them
 export const UNSAFE = /[\s\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
 export const isToken = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 200 && !UNSAFE.test(value);
@@ -91,7 +91,7 @@ const line = (value: unknown): value is string =>
   typeof value === "string" &&
   value.trim().length > 0 &&
   value.length <= 400 &&
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to reject them
+  // oxlint-disable-next-line no-control-regex -- the pattern deliberately matches control characters to reject them
   !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value);
 const isoTime = (value: unknown): value is string =>
   typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;

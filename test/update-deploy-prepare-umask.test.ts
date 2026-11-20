@@ -8,8 +8,11 @@ import { fixtureGit, overlayFixture } from "./source-bundle-setup.ts";
 import { preparationFixture } from "./update-deploy-prepare-setup.ts";
 import { git } from "./update-setup.ts";
 
+// POSIX-only: the cases run preparation under a caller umask through /bin/sh and assert 0o222/0o077 modes.
+const it = test.skipIf(process.platform === "win32");
+
 // Real clone, frozen local dependencies and bundle admission; the explicit native is a version fixture.
-test.each(["0000", "0002", "0077"])(
+it.each(["0000", "0002", "0077"])(
   "managed preparation admits locked source under caller umask %s",
   async (mask) => {
     const f = preparationFixture();

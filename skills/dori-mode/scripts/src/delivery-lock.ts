@@ -17,15 +17,16 @@ export type Held<T> = { readonly ok: true; readonly value: T } | { readonly ok: 
  * those. A holder that died is taken over; a live one on this host keeps it however long its I/O takes (the 30-second
  * limit is for the waiter, not the holder). Gives up after `waitMs`, naming the holder.
  */
-export const withDeliveryLock = async <T>(
+const withLaneLock = async <T>(
   deps: Pick<FlowDeps, "registry" | "clock">,
   key: string,
   fn: () => Promise<T>,
-  waitMs = DELIVERY_WAIT_MS,
+  waitMs: number,
+  scope: "deliver" | "launch",
 ): Promise<Held<T>> => {
   mkdirSync(deps.registry.dir, { recursive: true });
-  const lock = join(deps.registry.dir, `${key}.deliver.lock`);
-  const fail = (m: string) => new Error(`lane delivery lock of ${key} ${m}`);
+  const lock = join(deps.registry.dir, `${key}.${scope}.lock`);
+  const fail = (m: string) => new Error(`lane ${scope === "deliver" ? "delivery" : "launch"} lock of ${key} ${m}`);
   const deadline = deps.clock.now() + waitMs;
   for (;;) {
     // A slow tell or pause may hold it past takeLock's two-minute age limit: a live holder is never taken over.
@@ -41,3 +42,18 @@ export const withDeliveryLock = async <T>(
     await deps.clock.sleep(RETRY_MS);
   }
 };
+
+export const withDeliveryLock = <T>(
+  deps: Pick<FlowDeps, "registry" | "clock">,
+  key: string,
+  fn: () => Promise<T>,
+  waitMs = DELIVERY_WAIT_MS,
+): Promise<Held<T>> => withLaneLock(deps, key, fn, waitMs, "deliver");
+
+/** Starting or queueing a lane must never hold off pause/tell while startup confirmation waits. */
+export const withLaunchLock = <T>(
+  deps: Pick<FlowDeps, "registry" | "clock">,
+  key: string,
+  fn: () => Promise<T>,
+  waitMs = DELIVERY_WAIT_MS,
+): Promise<Held<T>> => withLaneLock(deps, key, fn, waitMs, "launch");

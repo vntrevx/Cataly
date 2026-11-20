@@ -8,7 +8,10 @@ import { withState } from "./fakes.ts";
 const options = { ownerId: "10", channelIds: ["20"] };
 const ignored = (id: string) => ownerMessage(id, { author: { id: "11" } });
 
-test("1,000 filtered messages across overlapping pages use one durable checkpoint", async () => {
+// POSIX-only: the Discord cursor store requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("1,000 filtered messages across overlapping pages use one durable checkpoint", async () => {
   const state = withState();
   try {
     const store = fileDiscordInboundStore(state.dir, "20");
@@ -152,7 +155,6 @@ for (const failed of [false, true]) {
         ignored("106"),
         ignored("107"),
       ]);
-      world.state.blocked.set("/channels/20", lookup.promise);
       world.state.responses.set("/channels/20", JSON.stringify({ id: "20", type: 11, name: "task", parent_id: "30" }));
       world.state.responses.set(
         "/channels/30",
@@ -164,6 +166,7 @@ for (const failed of [false, true]) {
       const where = inboundContext(world.discord, purposes, () => 0);
       const cursor = memoryDiscordCursor("100");
       const intake = await discordInbound(world.discord, () => cursor.store, options);
+      world.state.blocked.set("/channels/20", lookup.promise);
       const entered = Promise.withResolvers<void>();
       const attempts: string[] = [];
       const groups: string[] = [];

@@ -99,7 +99,7 @@ describe("OMP harness launches", () => {
       expect(d.agentCmd).toBe("omp");
       expect(agentCommand(d, "dori")).toBe("omp --dori-role dori");
       expect(d.doriCmd).toContain("bun '");
-      expect(d.doriCmd).toContain("src/cli.ts");
+      expect(d.doriCmd).toContain(join("src", "cli.ts"));
       writeFileSync(join(d.store.root, ".omp-dori"), "primary\n");
       expect(defaultDeps().agentCmd).toContain(join(d.store.root, "bin/omp"));
       expect(defaultDeps().agentCmd).not.toBe("omp");

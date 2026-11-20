@@ -12,8 +12,8 @@ import { parseArgs } from "node:util";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const fail = (message) => { throw new Error(message); };
-const api = "https://api.github.com/repos/vntrevx/omp-dori";
-const downloads = "https://github.com/vntrevx/omp-dori/releases/download";
+const api = "https://api.github.com/repos/vntrevx/Cataly";
+const downloads = "https://github.com/vntrevx/Cataly/releases/download";
 const max = 128 * 1024 * 1024;
 let temporary;
 try {

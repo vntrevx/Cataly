@@ -5,9 +5,12 @@ import { shq } from "../src/delivery.ts";
 import { processStart } from "../src/release/process-cwd.ts";
 import { processFiles } from "../src/release/process-files.ts";
 import { bootId } from "../src/update/proc.ts";
-import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
+import { keptFor, processLineReader, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
 
 afterEach(removePruneFixtures);
+
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
 
 // A thread group whose leader exited still runs: what its other threads hold open or mapped keeps the entry (Astra,
 // 35e104e). The program opens or maps a file whose path comes through the environment, from a working directory
@@ -30,7 +33,7 @@ const threadHolder = async (cwd: string, target: string, hold: "open" | "map") =
     stdin: "pipe",
     stdout: "pipe",
   });
-  expect(new TextDecoder().decode((await child.stdout.getReader().read()).value)).toBe("worker\n");
+  expect(await processLineReader(child.stdout)()).toBe("worker\n");
   // The leader is a zombie once it has left (a state in /proc, so polled for).
   while (readFileSync(`/proc/${child.pid}/stat`, "utf8").split(") ")[1]?.[0] !== "Z") await Bun.sleep(10);
   return child;
@@ -72,21 +75,24 @@ test("Astra (35e104e): a dead owner's stage stays while an exited leader's threa
   }
 });
 
-test("a live process whose open files cannot be read keeps every identity, even when its working directory is read", () => {
-  const c = pruneFixture();
-  const x = c.native("x");
-  const files = () => ({ files: new Map<string, string[]>(), unread: [String(process.pid)] });
-  // This test process's own working directory is readable; only its files are reported unreadable here.
-  const held = c.prune({ files });
-  expect(keptFor(held, x.directory)?.[0]).toStartWith(`unreadable open files of process ${process.pid}@`);
-  expect(c.prune({ files, trust: [`${process.pid}@${processStart(String(process.pid))}`] }).quarantined).toHaveLength(
-    1,
-  );
-});
+posix(
+  "a live process whose open files cannot be read keeps every identity, even when its working directory is read",
+  () => {
+    const c = pruneFixture();
+    const x = c.native("x");
+    const files = () => ({ files: new Map<string, string[]>(), unread: [String(process.pid)] });
+    // This test process's own working directory is readable; only its files are reported unreadable here.
+    const held = c.prune({ files });
+    expect(keptFor(held, x.directory)?.[0]).toStartWith(`unreadable open files of process ${process.pid}@`);
+    expect(c.prune({ files, trust: [`${process.pid}@${processStart(String(process.pid))}`] }).quarantined).toHaveLength(
+      1,
+    );
+  },
+);
 
 // Astra (9bf008e): a stage is removed at once, so a descriptor opened after an earlier stage's check must still be
 // seen. Two killed owners' stages; a process opens a file in the one left once the other is gone.
-test("a dead owner's stage is checked against processes' files read afresh, not an earlier stage's look", () => {
+posix("a dead owner's stage is checked against processes' files read afresh, not an earlier stage's look", () => {
   const c = pruneFixture();
   const ended = Bun.spawnSync(["/bin/sh", "-c", "echo $$"]).stdout.toString().trim();
   const stages = ["a", "b"].map((name) => {
@@ -105,7 +111,7 @@ test("a dead owner's stage is checked against processes' files read afresh, not 
   expect(stages.filter(existsSync)).toHaveLength(1);
 });
 
-test("process files are read the macOS way through lsof, and are unavailable where lsof is missing", async () => {
+posix("process files are read the macOS way through lsof, and are unavailable where lsof is missing", async () => {
   const c = pruneFixture();
   const x = c.native("x");
   const target = join(x.directory, "receipt.json");
@@ -128,7 +134,7 @@ test("process files are read the macOS way through lsof, and are unavailable whe
   }
 });
 
-test.each([0, 1])("a lsof listing with exit %i keeps uncertainty conservative", (status) => {
+posix.each([0, 1])("a lsof listing with exit %i keeps uncertainty conservative", (status) => {
   const c = pruneFixture();
   const x = c.native("lsof");
   const bin = join(c.root, "bin");

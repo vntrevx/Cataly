@@ -16,7 +16,7 @@ export type WatchOptions = {
 export type WatchMemory = { self?: string; readonly warned: Map<string, string> };
 export type WatchPass = { readonly lines: string[]; readonly commit: () => void };
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to strip them
+// oxlint-disable-next-line no-control-regex -- the pattern deliberately matches control characters to strip them
 const UNPRINTABLE = /[\s\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]+/g;
 /** Text from GitHub is data: one line, no terminal or bidi controls, cut to a readable length. */
 const excerpt = (value: string, max = 160): string => {

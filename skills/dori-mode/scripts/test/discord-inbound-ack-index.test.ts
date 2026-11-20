@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { withState } from "./fakes.ts";
 
-test("exact acknowledgement seeks the full channel and snowflake index without removing another channel", () => {
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("exact acknowledgement seeks the full channel and snowflake index without removing another channel", () => {
   const state = withState();
   const source = new URL("../src/messenger/discord-inbound-queue.ts", import.meta.url).href;
   const script = `

@@ -15,7 +15,9 @@ test("local and URL transcription use the real hook and remove private downloads
       const r = await f.invoke(["transcribe", url]);
       expect([r.code, r.err, r.out, r.keys]).toEqual([0, "", "audio bytes", ["GET /audio/voice.ogg?token=private"]]);
       const receipt = r.audio[0]!;
-      expect([receipt.content, receipt.fileMode, receipt.dirMode]).toEqual(["audio bytes", 0o600, 0o700]);
+      // POSIX gets the private modes; Windows reports 0666 for any writable file or directory (the ACL is unmodelled).
+      const modes = process.platform === "win32" ? [0o666, 0o666] : [0o600, 0o700];
+      expect([receipt.content, receipt.fileMode, receipt.dirMode]).toEqual(["audio bytes", ...modes]);
       expect(dirname(dirname(receipt.file))).toBe(f.tmp);
       expect(receipt.file).not.toBe(previous);
       expect(existsSync(receipt.file)).toBe(false);

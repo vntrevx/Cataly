@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { platform, procfsOn } from "../platform/index.ts";
 import { procStat } from "../update/proc.ts";
 
 /**
@@ -7,7 +8,7 @@ import { procStat } from "../update/proc.ts";
  */
 export function processStart(pid: string): string | undefined {
   try {
-    if (process.platform !== "linux") return procStat(Number(pid)).startTicks || undefined;
+    if (!platform.procfs) return procStat(Number(pid)).startTicks || undefined;
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     // The command name (field 2) is parenthesized and may hold spaces; fields after it are space-separated from 3 on.
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
@@ -69,10 +70,10 @@ export type ProcessCwds = { readonly cwds: Map<string, string>; readonly unreada
  * is not dumpable) is listed in `unreadable`, and so is, without /proc, any live pid lsof did not report. Null when no
  * directory could be read at all, so a caller can hold instead of treating every process as using nothing.
  */
-export function processCwds(pids: readonly string[], platform = process.platform): ProcessCwds | null {
+export function processCwds(pids: readonly string[], os = platform.os): ProcessCwds | null {
   const cwds = new Map<string, string>();
   const unreadable: string[] = [];
-  if (platform === "linux") {
+  if (procfsOn(os)) {
     for (const pid of pids) {
       if (processIsKernelThread(pid) === true) continue;
       try {

@@ -61,8 +61,13 @@ export async function prepareUlwUpdate(
     try {
       await git(["apply", "--3way", "--index", "--", mergePatch], checkout);
     } catch {
+      const conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z", "--"], checkout))
+        .split("\0")
+        .filter(Boolean);
       throw new Error(
-        "ULW overlay needs a reviewed port: automatic three-way application conflicted; installed/source pins unchanged",
+        `ULW overlay needs a reviewed port: automatic three-way application failed${
+          conflicts.length ? ` with conflicts in ${JSON.stringify(conflicts)}` : ""
+        }; installed/source pins unchanged`,
       );
     }
     const patchPath = join(temporary, "omp-ulw.patch");

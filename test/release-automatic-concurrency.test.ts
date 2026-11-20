@@ -11,7 +11,10 @@ import { processIdentity } from "../src/update/deployment-process.ts";
 import { portableFixture as fixture } from "./release-consumer-setup.ts";
 import { blockStatePublication } from "./release-native-recovery-setup.ts";
 
-test.each(["due", "disabled", "ttl", "managed", "-h", "-v", "--help", "--version"])(
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each(["due", "disabled", "ttl", "managed", "-h", "-v", "--help", "--version"])(
   "a %s launch verifies and runs without waiting for another consumer updater",
   async (mode) => {
     const f = fixture();
@@ -33,7 +36,7 @@ test.each(["due", "disabled", "ttl", "managed", "-h", "-v", "--help", "--version
   },
 );
 
-test("a concurrently registered launch holds the updater at activation, not the new launch", async () => {
+posix("a concurrently registered launch holds the updater at activation, not the new launch", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const next = f.release("two").bundle;
@@ -58,7 +61,7 @@ test("a concurrently registered launch holds the updater at activation, not the 
   expect(readAutomaticState(f.paths).outcome).toBe("held");
 });
 
-test("a launch lease remains live across shell exec and is reclaimed only after that process exits", async () => {
+posix("a launch lease remains live across shell exec and is reclaimed only after that process exits", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const child = Bun.spawn(["/bin/sh", "-c", "read token; exec sleep 60"], {
@@ -98,7 +101,7 @@ test("a launch lease remains live across shell exec and is reclaimed only after 
   expect(readdirSync(join(f.paths.root, "consumer-launches"))).toEqual([]);
 });
 
-test("the owner of an automatic startup may activate while other live launch owners still veto it", async () => {
+posix("the owner of an automatic startup may activate while other live launch owners still veto it", async () => {
   const f = fixture();
   await installBundle(f.paths, f.release("one").bundle, undefined);
   const next = f.release("two").bundle;
@@ -120,7 +123,7 @@ test("the owner of an automatic startup may activate while other live launch own
   expect(readAutomaticState(f.paths).outcome).toBe("installed");
 });
 
-test("a registered launcher recovers a failed state publication and still runs the old verified release", async () => {
+posix("a registered launcher recovers a failed state publication and still runs the old verified release", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const next = f.release("two").bundle;
@@ -145,7 +148,7 @@ test("a registered launcher recovers a failed state publication and still runs t
   expect(readAutomaticState(f.paths).outcome).toBe("failed");
 });
 
-test("a real contender waits across the launch-lock mkdir/owner gap without stealing it", async () => {
+posix("a real contender waits across the launch-lock mkdir/owner gap without stealing it", async () => {
   const f = fixture();
   const lock = join(f.paths.root, "consumer-launch.lock");
   mkdirSync(lock, { mode: 0o700 });
@@ -180,7 +183,7 @@ test("a real contender waits across the launch-lock mkdir/owner gap without stea
   }
 });
 
-test("simultaneous real shell launches all pass while the long update lock is occupied", async () => {
+posix("simultaneous real shell launches all pass while the long update lock is occupied", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const source = releasePath(f.paths, one.current);

@@ -9,7 +9,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test.each(["explicit", "environment", "loaded", "loaded-override"] as const)(
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each(["explicit", "environment", "loaded", "loaded-override"] as const)(
   "cache reports references across known homes with %s selection",
   async (selection) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-cache-homes-")));

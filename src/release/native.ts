@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { platform } from "../platform/index.ts";
 import { shq } from "../delivery.ts";
 import { command } from "../update/deployment-process.ts";
 import { digest } from "../update/source.ts";
@@ -38,11 +39,7 @@ export type NativeReceipt = {
 };
 const LAUNCHER = "packages/coding-agent/scripts/omp";
 export function nativeDirectory(source: string, home: string): string {
-  return join(
-    home,
-    ".cache/omp-dori",
-    `native-${process.platform}-${process.arch}-${readSourceBundle(source, true).identity}`,
-  );
+  return join(home, ".cache/omp-dori", `${platform.nativeCacheLabel()}-${readSourceBundle(source, true).identity}`);
 }
 
 /**
@@ -52,7 +49,7 @@ export function nativeDirectory(source: string, home: string): string {
  */
 export function leaseNativePath(home: string, path: string, holder = process.pid): void {
   const cache = join(home, ".cache/omp-dori");
-  const entry = new RegExp(`^native-${process.platform}-${process.arch}-([a-f0-9]{64})$`);
+  const entry = new RegExp(`^${platform.nativeCacheLabel()}-([a-f0-9]{64})$`);
   const inside = (candidate: string, root: string) =>
     candidate.startsWith(`${root}/`) ? entry.exec(candidate.slice(root.length + 1).split("/", 1)[0]!)?.[1] : undefined;
   const real = (candidate: string) => {

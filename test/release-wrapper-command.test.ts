@@ -11,7 +11,10 @@ import { sourceManifest } from "../src/update/source.ts";
 import { archive, fixture, withArchive } from "./release-consumer-setup.ts";
 import { boundRelease } from "./release-native-recovery-setup.ts";
 
-test("isolated wrappers quote the loaded release and clear foreign selection in a shell-sensitive home", async () => {
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("isolated wrappers quote the loaded release and clear foreign selection in a shell-sensitive home", async () => {
   const f = fixture(true);
   const paths = consumerPaths(
     f.paths.home,

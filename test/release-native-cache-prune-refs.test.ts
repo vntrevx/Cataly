@@ -11,6 +11,9 @@ import { overlayFixture } from "./source-bundle-setup.ts";
 
 afterEach(removePruneFixtures);
 
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
 type Case = {
   readonly keepSource?: boolean;
   /** Arranges the use; returns the extra roots to scan, the reason expected and how to undo a permission change. */
@@ -127,7 +130,7 @@ const CASES: Record<string, Case> = {
   },
 };
 
-test.each(Object.keys(CASES))("a prune keeps an identity in use through %s", (name) => {
+posix.each(Object.keys(CASES))("a prune keeps an identity in use through %s", (name) => {
   const { keepSource, arrange } = CASES[name]!;
   // Permission cases mean nothing to root, which reads through them.
   if (process.getuid?.() === 0 && name.includes("EACCES")) return;
@@ -178,7 +181,7 @@ test("B6 a live process of this user whose working directory cannot be read keep
   }
 });
 
-test.each(["node_modules", ".git"])("a skipped %s subtree holds a prune until explicitly scanned", (name) => {
+posix.each(["node_modules", ".git"])("a skipped %s subtree holds a prune until explicitly scanned", (name) => {
   const c = pruneFixture();
   const used = c.native("used");
   const free = c.native("free");

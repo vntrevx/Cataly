@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { fileDiscordInboundStore } from "../src/messenger/discord-inbound-state.ts";
 import { withState } from "./fakes.ts";
 
+// POSIX-only: the Discord queue and cursor stores require private uid-owned directories.
+const posix = test.skipIf(process.platform === "win32");
+
 const inboundCli = async (
   args: string[],
   environment: Record<string, string> = {},
@@ -54,7 +57,7 @@ const inboundCli = async (
   }
 };
 
-test("public Discord intake defaults to three seconds and honors --loop in minutes", async () => {
+posix("public Discord intake defaults to three seconds and honors --loop in minutes", async () => {
   for (const [args, milliseconds] of [
     [[], 3_000],
     [["--loop", "0.1"], 6_000],
@@ -65,23 +68,31 @@ test("public Discord intake defaults to three seconds and honors --loop in minut
       "INBOUND_READY discord owner=10 channel=20 bot=99",
       'INBOUND discord 20 101 from=owner ref=- "first owner text"',
       'INBOUND discord 20 103 from=owner ref=101 "owner reply"',
+      'INBOUND_REPLY discord 20 103 {"id":"101","author":null,"text":null,"status":"unresolved"}',
     ]);
     const receipt = out.split("\n").find((line) => line.startsWith("DISCORD_INBOUND_QA "));
     expect(JSON.parse(receipt?.slice("DISCORD_INBOUND_QA ".length) ?? "null")).toEqual({
       delays: [milliseconds, milliseconds],
       polls: 2,
-      requests: 7,
+      requests: 8, // Existing quiet probes plus the default-on configured-channel metadata read.
     });
   }
 });
 
-test("an extra channel list naming the same channel is read once and announced once", async () => {
+posix("a REST poll exits nonzero on a Retry-After above the automatic wait budget", async () => {
+  const { out, err, code, cursor } = await inboundCli([], { DORI_TEST_DISCORD_CASE: "long-rate-limit" });
+  expect({ code, cursor }).toEqual({ code: 1, cursor: "100" });
+  expect(err).toContain("HTTP 429; Retry-After exceeds the 60s automatic retry limit");
+  expect(out.trim()).toBe("INBOUND_READY discord owner=10 channel=20 bot=99");
+});
+
+posix("an extra channel list naming the same channel is read once and announced once", async () => {
   const { out, err, code } = await inboundCli(["--loop", "0"], { DORI_DISCORD_CHANNEL_IDS: " 20 ,20" });
   expect({ code, err }).toEqual({ code: 0, err: "" });
   expect(out.trim().split("\n")[0]).toBe("INBOUND_READY discord owner=10 channel=20 bot=99");
 });
 
-test("explicit --loop 0 performs one poll and exits with its cursor persisted", async () => {
+posix("explicit --loop 0 performs one poll and exits with its cursor persisted", async () => {
   const { out, err, code, cursor } = await inboundCli(["--loop", "0"]);
   expect({ code, err, cursor }).toEqual({ code: 0, err: "", cursor: "102" });
   expect(out.trim().split("\n")).toEqual([
@@ -90,7 +101,7 @@ test("explicit --loop 0 performs one poll and exits with its cursor persisted", 
   ]);
 });
 
-test("invalid owner, authentication, permission and content-intent setup never announce readiness", async () => {
+posix("invalid owner, authentication, permission and content-intent setup never announce readiness", async () => {
   for (const environment of [
     { DORI_DISCORD_OWNER_ID: "1e3" },
     { DORI_DISCORD_TOKEN: "invalid-token" },
@@ -98,6 +109,7 @@ test("invalid owner, authentication, permission and content-intent setup never a
     { DORI_TEST_DISCORD_CASE: "intent" },
     { DORI_DISCORD_SCOPE: "everything" },
     { DORI_DISCORD_CHANNEL_IDS: "20,abc" },
+    { DORI_DISCORD_THREADS: "sometimes" },
   ] as const) {
     const { out, err, code, cursor } = await inboundCli(["--loop", "0"], environment);
     expect({ code, out, cursor }).toEqual({ code: 1, out: "", cursor: undefined });
@@ -106,7 +118,7 @@ test("invalid owner, authentication, permission and content-intent setup never a
   }
 });
 
-test("--context ends each group with where it was posted and the purposes recorded there", async () => {
+posix("--context ends each group with where it was posted and the purposes recorded there", async () => {
   const purposes = (dir: string) =>
     writeFileSync(
       join(dir, "discord-channels.json"),
@@ -140,3 +152,18 @@ test("--context ends each group with where it was posted and the purposes record
   const plain = await inboundCli(["--loop", "0"], { DORI_TEST_DISCORD_CASE: "context-denied" }, purposes);
   expect(plain.out.trim().split("\n").slice(1)).toEqual([message]);
 });
+
+for (const threads of [undefined, "on", "off"] as const) {
+  posix(`public thread setting ${threads ?? "unset"} retains owner output and explicit cursor`, async () => {
+    const result = await inboundCli(["--loop", "0"], threads === undefined ? {} : { DORI_DISCORD_THREADS: threads });
+    expect({ code: result.code, err: result.err, cursor: result.cursor }).toEqual({
+      code: 0,
+      err: "",
+      cursor: "102",
+    });
+    expect(result.out.trim().split("\n")).toEqual([
+      "INBOUND_READY discord owner=10 channel=20 bot=99",
+      'INBOUND discord 20 101 from=owner ref=- "first owner text"',
+    ]);
+  });
+}

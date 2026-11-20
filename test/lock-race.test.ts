@@ -23,6 +23,9 @@ function shellLock(root: string, owner: string): void {
 }
 const ownerOf = (root: string): string => (REAL_READ(join(lockDir(root, NAME), "owner"), "utf8") as string).trim();
 
+// POSIX-only: a FIFO, /bin/sh and SIGKILL carry the command past its wrapper.
+const posix = test.skipIf(process.platform === "win32");
+
 test("a stale takeover paused after reading the dead owner never moves or removes a live replacement's lock", () => {
   const w = lockWorld();
   const dead = "gone 2026-11-14 09:00:00 pid=66";
@@ -86,7 +89,7 @@ test("a takeover whose claimer died is finished by the next waiter, and nothing 
   expect(fs.readdirSync(lockDir(w.root, NAME))).toEqual(["owner"]);
 });
 
-test("a lock whose wrapper was killed stays held while its command still runs", async () => {
+posix("a lock whose wrapper was killed stays held while its command still runs", async () => {
   const root = lockWorld().root;
   // The command outlives its wrapper: it prints its pid, then waits for a line on a FIFO this test writes.
   const go = join(root, "go");

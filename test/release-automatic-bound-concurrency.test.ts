@@ -9,7 +9,10 @@ import { processIdentity } from "../src/update/deployment-process.ts";
 import { fixture } from "./release-consumer-setup.ts";
 import { boundRelease } from "./release-native-recovery-setup.ts";
 
-test.each([false, true])(
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each([false, true])(
   "simultaneous bound-native admission shares only verified immutable caches (side=%s)",
   async (side) => {
     const f = fixture(side);
@@ -53,7 +56,7 @@ test.each([false, true])(
   30_000,
 );
 
-test.each(["", "not-a-kernel-start"])(
+posix.each(["", "not-a-kernel-start"])(
   "a malformed live launch start identity is held, never pruned (%s)",
   async (startTicks) => {
     const f = fixture();

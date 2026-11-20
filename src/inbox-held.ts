@@ -47,15 +47,13 @@ export function currentInbox(d: Deps, from: SessionRef): SessionRef {
 /** A session's queued messages, 1-based in inbox order. The text is never shown whole: its first 60 characters, JSON-escaped. */
 export function inboxList(d: Deps, target: string): { paneId: string; entries: InboxEntry[] } {
   const ref = currentInbox(d, resolveTarget(d, target));
-  const entries = d.store.queued(ref).map(
-    (m, i): InboxEntry => ({
-      index: i + 1,
-      state: m.attempt?.state === "ambiguous" ? "held" : m.attempt?.state === "typed" ? "typed" : "queued",
-      from: m.from,
-      at: m.at,
-      preview: JSON.stringify(m.text.slice(0, PREVIEW_CHARS)) + (m.text.length > PREVIEW_CHARS ? "..." : ""),
-    }),
-  );
+  const entries = d.store.queued(ref).map((m, i): InboxEntry => ({
+    index: i + 1,
+    state: m.attempt?.state === "ambiguous" ? "held" : m.attempt?.state === "typed" ? "typed" : "queued",
+    from: m.from,
+    at: m.at,
+    preview: JSON.stringify(m.text.slice(0, PREVIEW_CHARS)) + (m.text.length > PREVIEW_CHARS ? "..." : ""),
+  }));
   return { paneId: refText(ref), entries };
 }
 

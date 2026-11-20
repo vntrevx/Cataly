@@ -6,6 +6,9 @@ import { fileDiscordInboundStore } from "../src/messenger/discord-inbound-state.
 import { ownerMessage } from "./discord-inbound-fakes.ts";
 import { withState } from "./fakes.ts";
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 const start = (dir: string, gateway: boolean, hold = false, context?: "context" | "context-denied") => {
   const config = join(dir, "config.json");
   writeFileSync(config, JSON.stringify({ stateDir: dir, runtime: "herdr", hooks: {} }));
@@ -54,42 +57,45 @@ ${err}`).not.toContain("synthetic-inbound-token");
 for (const fresh of [true, false])
   for (const firstGateway of [false, true])
     for (const secondGateway of [false, true])
-      test(`${fresh ? "fresh" : "existing empty"} ${firstGateway ? "Gateway" : "REST"} intake excludes a second ${secondGateway ? "Gateway" : "REST"} intake`, async () => {
-        const state = withState();
-        if (!fresh) discordInboundQueue(state.dir).close();
-        expect(existsSync(join(state.dir, "discord-inbound/gateway.sqlite"))).toBe(!fresh);
-        const first = start(state.dir, firstGateway, true);
-        try {
-          const reader = first.stdout.getReader();
-          const decoder = new TextDecoder();
-          let seen = "";
+      posix(
+        `${fresh ? "fresh" : "existing empty"} ${firstGateway ? "Gateway" : "REST"} intake excludes a second ${secondGateway ? "Gateway" : "REST"} intake`,
+        async () => {
+          const state = withState();
+          if (!fresh) discordInboundQueue(state.dir).close();
+          expect(existsSync(join(state.dir, "discord-inbound/gateway.sqlite"))).toBe(!fresh);
+          const first = start(state.dir, firstGateway, true);
           try {
-            while (!seen.includes("INBOUND_READY discord ")) {
-              const chunk = await reader.read();
-              if (chunk.done) throw new Error("First intake exited before readiness");
-              seen += decoder.decode(chunk.value);
+            const reader = first.stdout.getReader();
+            const decoder = new TextDecoder();
+            let seen = "";
+            try {
+              while (!seen.includes("INBOUND_READY discord ")) {
+                const chunk = await reader.read();
+                if (chunk.done) throw new Error("First intake exited before readiness");
+                seen += decoder.decode(chunk.value);
+              }
+            } finally {
+              reader.releaseLock();
             }
+            expect(first.exitCode).toBeNull();
+            const second = await run(state.dir, secondGateway);
+            expect(first.exitCode).toBeNull();
+            expect({ code: second.code, out: second.out }).toEqual({ code: 1, out: "" });
+            expect(second.err.trim().split("\n")).toHaveLength(1);
+            expect(second.err).toContain("other intake processes");
+            first.kill("SIGTERM");
+            await first.exited;
+            expect(await new Response(first.stderr).text()).toBe("");
+            discordInboundQueue(state.dir).close();
           } finally {
-            reader.releaseLock();
+            if (first.exitCode === null) first.kill("SIGTERM");
+            await first.exited;
+            state.done();
           }
-          expect(first.exitCode).toBeNull();
-          const second = await run(state.dir, secondGateway);
-          expect(first.exitCode).toBeNull();
-          expect({ code: second.code, out: second.out }).toEqual({ code: 1, out: "" });
-          expect(second.err.trim().split("\n")).toHaveLength(1);
-          expect(second.err).toContain("other intake processes");
-          first.kill("SIGTERM");
-          await first.exited;
-          expect(await new Response(first.stderr).text()).toBe("");
-          discordInboundQueue(state.dir).close();
-        } finally {
-          if (first.exitCode === null) first.kill("SIGTERM");
-          await first.exited;
-          state.done();
-        }
-      });
+        },
+      );
 
-test("public Gateway CLI backfills, emits live text, persists the cursor and closes its queue", async () => {
+posix("public Gateway CLI backfills, emits live text, persists the cursor and closes its queue", async () => {
   const state = withState();
   try {
     const { out, err, code } = await run(state.dir, true);
@@ -115,7 +121,7 @@ test("public Gateway CLI backfills, emits live text, persists the cursor and clo
 });
 
 for (const context of ["context", "context-denied"] as const)
-  test(`Gateway CLI preserves message/context groups and cursor commits with ${context}`, async () => {
+  posix(`Gateway CLI preserves message/context groups and cursor commits with ${context}`, async () => {
     const state = withState();
     try {
       const { out, err, code } = await run(state.dir, true, context);
@@ -150,7 +156,7 @@ for (const context of ["context", "context-denied"] as const)
     }
   });
 
-test("REST mode refuses pending Gateway work before baselining any channel", async () => {
+posix("REST mode refuses pending Gateway work before baselining any channel", async () => {
   const state = withState();
   try {
     const queue = discordInboundQueue(state.dir);
@@ -174,18 +180,21 @@ test("REST mode refuses pending Gateway work before baselining any channel", asy
 });
 
 for (const gateway of [false, true])
-  test(`public ${gateway ? "Gateway" : "REST"} CLI reports queue corruption as one sanitized nonzero error`, async () => {
-    const state = withState();
-    try {
-      const dir = join(state.dir, "discord-inbound");
-      mkdirSync(dir, { mode: 0o700 });
-      writeFileSync(join(dir, "gateway.sqlite"), "corrupt", { mode: 0o600 });
-      const { out, err, code } = await run(state.dir, gateway);
-      expect({ code, out }).toEqual({ code: 1, out: "" });
-      expect(err.trim().split("\n")).toHaveLength(1);
-      expect(err).toContain("queue storage failed");
-      expect(err).not.toContain(state.dir);
-    } finally {
-      state.done();
-    }
-  });
+  posix(
+    `public ${gateway ? "Gateway" : "REST"} CLI reports queue corruption as one sanitized nonzero error`,
+    async () => {
+      const state = withState();
+      try {
+        const dir = join(state.dir, "discord-inbound");
+        mkdirSync(dir, { mode: 0o700 });
+        writeFileSync(join(dir, "gateway.sqlite"), "corrupt", { mode: 0o600 });
+        const { out, err, code } = await run(state.dir, gateway);
+        expect({ code, out }).toEqual({ code: 1, out: "" });
+        expect(err.trim().split("\n")).toHaveLength(1);
+        expect(err).toContain("queue storage failed");
+        expect(err).not.toContain(state.dir);
+      } finally {
+        state.done();
+      }
+    },
+  );

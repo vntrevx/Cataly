@@ -1,5 +1,5 @@
 import type { Clock } from "../run.ts";
-import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { DeliveryUncertainError, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 import type { ThreadLedger } from "./thread-ledger.ts";
 
 export type SlackAuth = { readonly token: string; readonly cookie?: string };
@@ -23,26 +23,65 @@ export class Slack {
   }
 
   async call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const readOnly = [
+      "auth.test",
+      "conversations.replies",
+      "subscriptions.thread.getView",
+      "client.counts",
+      "client.getWebSocketURL",
+    ].includes(method);
     const res = await withBackoff(this.http, this.clock, {
       method: "POST",
+      readOnly,
+      operation: `slack ${method}`,
       url: `${this.base}/${method}`,
       headers: this.headers(true),
       body: JSON.stringify(params),
     });
-    const body = JSON.parse(res.body || "{}") as Record<string, unknown>;
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(res.body || "{}");
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected object");
+      body = parsed as Record<string, unknown>;
+    } catch {
+      if (!readOnly && res.status < 300) throw new DeliveryUncertainError(`slack ${method}`, res.status);
+      throw new MessengerError(`slack ${method}: malformed API response`, res.status);
+    }
+    if (
+      !readOnly &&
+      res.status < 300 &&
+      (typeof body["ok"] !== "boolean" ||
+        ["internal_error", "fatal_error", "request_timeout", "service_unavailable"].includes(String(body["error"])))
+    )
+      throw new DeliveryUncertainError(`slack ${method}`, res.status);
     if (res.status !== 200 || body["ok"] !== true)
       throw new MessengerError(
         `slack ${method}: ${String(body["error"] ?? res.status)}`,
         res.status,
         String(body["error"] ?? ""),
       );
-    if (this.ledger && method === "chat.postMessage" && typeof body["ts"] === "string") {
-      const channel = String(body["channel"] ?? params["channel"]);
-      await this.ledger.record(
-        channel,
-        typeof params["thread_ts"] === "string" ? params["thread_ts"] : body["ts"],
-        body["ts"],
-      );
+    if (method === "chat.postMessage") {
+      const channel = body["channel"];
+      const ts = body["ts"];
+      if (typeof channel !== "string" || !channel || typeof ts !== "string" || !ts)
+        throw new DeliveryUncertainError("slack chat.postMessage: missing channel/message ID", 200);
+      try {
+        await this.ledger?.record(channel, typeof params["thread_ts"] === "string" ? params["thread_ts"] : ts, ts);
+      } catch (error) {
+        const reason =
+          error instanceof MessengerError
+            ? "lock failure"
+            : error instanceof SyntaxError
+              ? "invalid ledger data"
+              : "local I/O failure";
+        throw new MessengerError(
+          `slack chat.postMessage: confirmed posted ${channel}/${ts}; local thread tracking failed (${reason}); do not resend. Repair local tracking using this receipt.`,
+          res.status,
+          "DELIVERY_CONFIRMED_LOCAL_ERROR",
+          "confirmed",
+          { channel, messageId: ts },
+        );
+      }
     }
     return body;
   }
@@ -70,6 +109,7 @@ export class Slack {
     const slot = await this.call("files.getUploadURLExternal", { filename, length: bytes.byteLength });
     const put = await withBackoff(this.http, this.clock, {
       method: "POST",
+      operation: "slack external upload",
       url: String(slot["upload_url"]),
       body: bytes,
     });

@@ -1,3 +1,4 @@
+// oxlint-disable-next-line import/no-unassigned-import -- a preloaded recorder: importing it installs the Gateway fixtures
 import "./record-discord-inbound.ts";
 
 // Real CLI lifecycle, synthetic HTTP/WebSocket events only; no Discord socket is opened.

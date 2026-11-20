@@ -42,7 +42,7 @@ test("two writers binding one message: the first binding holds it, and the later
   );
   const read = plain.read();
   const x = read.items.find((d) => d.question === "X?");
-  expect(x).toEqual({ id: x?.id ?? "", question: "X?", source: "s:2", askedAt: at(2), options: [] });
+  expect(x).toEqual({ id: x?.id ?? "", question: "X?", source: "s:2", askedAt: at(2), kind: "owner", options: [] });
   expect(read.items.find((d) => d.id === y.id)?.message).toBe("m:1");
   expect(read.problems).toEqual([]);
   expect(read.warnings).toEqual([

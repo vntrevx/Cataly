@@ -6,7 +6,7 @@ import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudi
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
 import { ChannelPurposeError } from "./messenger/discord-channels.ts";
 import { discordPresence } from "./messenger/discord-presence.ts";
-import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
+import { fetchHttp, inboundPollRetryDelay, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
 import { pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
@@ -33,7 +33,7 @@ const send: Command = async (cli) => {
   const text = await messageText(cli);
   const thread = opt("thread");
   const edit = opt("edit");
-  const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
+  const token = (name: string) => process.env[name] || die(`${name} is not set`);
   if (platform === "slack") {
     // An --edit given empty ("$UNSET") or not a message ts is refused before any request: it must never post anew.
     if (values["edit"] !== undefined && !/^\d+\.\d+$/.test(edit ?? ""))
@@ -87,7 +87,7 @@ const presence: Command = async ({ key }) => {
     console.log("PRESENCE_READY slack");
     await every(1, async () => console.log(`PRESENCE slack ${await p.hold()}`));
   } else if (key === "discord") {
-    const token = process.env["DORI_DISCORD_TOKEN"] ?? die("DORI_DISCORD_TOKEN is not set");
+    const token = process.env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set");
     await untilStopped(discordPresence(openDiscordSocket, token, discordClock, (line) => console.log(line)));
   } else die("presence needs slack or discord");
 };
@@ -96,7 +96,7 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   const tg = new Telegram(
     fetchHttp,
     realClock,
-    process.env["DORI_TELEGRAM_TOKEN"] ?? die("DORI_TELEGRAM_TOKEN is not set"),
+    process.env["DORI_TELEGRAM_TOKEN"] || die("DORI_TELEGRAM_TOKEN is not set"),
   );
   const store = fileTgInboundStore(`${stateDir}/telegram-offset`);
   const num = (name: string): number => {
@@ -111,6 +111,25 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   let reactWarned = false;
   const groupChatId = process.env["DORI_TELEGRAM_GROUP_ID"] === undefined ? undefined : num("DORI_TELEGRAM_GROUP_ID");
   const topicId = process.env["DORI_TELEGRAM_TOPIC_ID"] === undefined ? undefined : num("DORI_TELEGRAM_TOPIC_ID");
+  // Authentication and transport readiness must finish before advertising or consuming inbound work.
+  const identity = await tg.call<{ id?: unknown; is_bot?: unknown }>("getMe", {}).catch(() => {
+    throw new MessengerError("Telegram inbound bot identity could not be verified; check token and API access", 0);
+  });
+  if (
+    !identity ||
+    identity.is_bot !== true ||
+    typeof identity.id !== "number" ||
+    !Number.isSafeInteger(identity.id) ||
+    identity.id <= 0
+  )
+    throw new MessengerError("Telegram getMe returned an invalid bot identity", 0);
+  const webhook = await tg.call<{ url?: unknown }>("getWebhookInfo", {}).catch(() => {
+    throw new MessengerError("Telegram inbound webhook status could not be verified; check API access", 0);
+  });
+  if (typeof webhook?.url !== "string")
+    throw new MessengerError("Telegram getWebhookInfo returned an invalid webhook status", 0);
+  if (webhook.url !== "")
+    throw new MessengerError("Telegram inbound refused an active webhook; use a polling bot (webhook unchanged)", 409);
   console.log(`INBOUND_READY telegram owner=${ownerId} group=${groupChatId ?? "-"} topic=${topicId ?? "-"}`);
   // The INBOUND line stays exactly as monitors parse it; receive lag goes to its own jsonl.
   const recordLag = inboundLagLog(`${stateDir}/telegram-lag.jsonl`, (m) => console.log(`WARN ${m}`.slice(0, 300)));
@@ -144,32 +163,38 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   );
 };
 
-const inbound: Command = async ({ key, loopMinutes, config, values }) => {
+const inbound: Command = async ({ key, loopMinutes, config, deps, values }) => {
   const minutes = loopMinutes();
   const context = values["context"] === true;
   if (context && key !== "discord") die("--context is supported for discord only");
+  const wake = values["wake-lanes"] === true;
+  if (wake && key !== "discord") die("--wake-lanes is supported for discord only");
   if (key === "telegram") return await telegramInbound(config.stateDir, minutes);
   if (key === "discord")
-    return await discordInboundCommand(
-      config.stateDir,
-      values["gateway"] === true,
-      values["loop"] === undefined ? 3 / 60 : minutes,
+    return await discordInboundCommand(deps, {
+      gateway: values["gateway"] === true,
+      pollMinutes: values["loop"] === undefined ? 3 / 60 : minutes,
       context,
-    );
+      wake,
+    });
   if (key !== "slack") die("inbound supports slack, telegram or discord");
   const auth = slackAuth(envSlackToken() ?? die(NO_SLACK_TOKEN));
   const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
   const slack = new Slack(fetchHttp, realClock, auth, undefined, ledger);
   const me = String((await slack.call("auth.test", {}))["user_id"] ?? die("auth.test returned no user_id"));
   console.log("INBOUND_READY slack");
-  await every(minutes, async () => {
-    // Full text, JSON-escaped on one line, as Telegram's: a monitor reads nothing but this line.
-    await pollSlackInbound(slack, ledger, { selfUserId: me }, (i) =>
-      console.log(
-        `INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify(i.text ?? "")}`,
-      ),
-    );
-  });
+  await every(
+    minutes,
+    async () => {
+      // Full text, JSON-escaped on one line, as Telegram's: a monitor reads nothing but this line.
+      await pollSlackInbound(slack, ledger, { selfUserId: me }, (i) =>
+        console.log(
+          `INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify(i.text ?? "")}`,
+        ),
+      );
+    },
+    inboundPollRetryDelay,
+  );
 };
 
 export const messengerCommands: Readonly<Record<string, Command>> = {

@@ -10,8 +10,11 @@ import { withState } from "./fakes.ts";
 
 const options = { ownerId: "10", channelIds: ["20"] };
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 // Use the actual queue, atomic cursor store, backfill batching and asynchronous context lookup together.
-test("a queued backfill awaits context before checkpointing and draining live successors", async () => {
+posix("a queued backfill awaits context before checkpointing and draining live successors", async () => {
   const state = withState();
   const queue = discordInboundQueue(state.dir);
   const lookup = Promise.withResolvers<void>();
@@ -27,7 +30,6 @@ test("a queued backfill awaits context before checkpointing and draining live su
       ownerMessage("106", { author: { id: "11" } }),
       ownerMessage("107", { author: { id: "11" } }),
     ]);
-    rest.state.blocked.set("/channels/20", lookup.promise);
     rest.state.responses.set("/channels/20", JSON.stringify({ id: "20", type: 11, name: "task", parent_id: "30" }));
     rest.state.responses.set("/channels/30", JSON.stringify({ id: "30", type: 0, name: "dev", topic: "Project work" }));
     const purposes = new DiscordChannels(state.dir);
@@ -49,6 +51,7 @@ test("a queued backfill awaits context before checkpointing and draining live su
       },
       options,
     );
+    rest.state.blocked.set("/channels/20", lookup.promise);
     const socket = new FakeGateway("offline");
     const entered = Promise.withResolvers<void>();
     const attempts: string[] = [];
@@ -101,7 +104,7 @@ test("a queued backfill awaits context before checkpointing and draining live su
 });
 
 for (const fault of ["emit", "save"] as const)
-  test(`a late ${fault} failure retains the FIFO and replays every successor after restart`, async () => {
+  posix(`a late ${fault} failure retains the FIFO and replays every successor after restart`, async () => {
     const state = withState();
     let queue = discordInboundQueue(state.dir);
     const release = Promise.withResolvers<void>();

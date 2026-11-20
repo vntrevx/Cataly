@@ -6,6 +6,7 @@ import { type DecisionFold, foldDecisions } from "./decisions-fold.ts";
 import {
   type Decision,
   type DecisionAsk,
+  type DecisionChoice,
   DecisionError,
   type DecisionRead,
   type Event,
@@ -27,7 +28,9 @@ type RaceSeam = { readonly beforeAppend?: () => void; readonly beforeReadback?: 
 /**
  * The product choices the lead put to the owner and is waiting on. decisions.jsonl is the record: one O_APPEND write
  * per change, so concurrent writers never lose each other's lines, and the lead re-posts the open list from it, not
- * from memory. The first answer or withdrawal of a decision wins, and so does the first binding of a message.
+ * from memory. The first answer, choice or withdrawal of a decision wins, and so does the first binding of a message.
+ * Only the owner answers an `owner` decision; the lead may choose an option of a `routine` one. Nothing here grants a
+ * permission: a native execution approval is answered only at its own prompt.
  */
 export class Decisions {
   readonly path: string;
@@ -62,6 +65,7 @@ export class Decisions {
       source: input.source.trim(),
       ...(lane !== undefined ? { lane } : {}),
       ...(thread !== undefined ? { thread } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(options.length ? { options } : {}),
       ...(input.recommend !== undefined ? { recommend: input.recommend } : {}),
       ...(input.worklog !== undefined ? { worklog: input.worklog } : {}),
@@ -75,7 +79,10 @@ export class Decisions {
     return this.write({ op: "posted", ...stamp(id, now), message: message.trim() });
   }
 
-  /** A bare number names an option; any other text is free text. A number outside the options is refused, never guessed. */
+  /**
+   * The owner's answer, from the owner's own message, for a decision of either kind. A bare number names an option;
+   * any other text is free text. A number outside the options is refused, never guessed.
+   */
   answer(id: string, text: string, source: string, now: number): Decision {
     const decision = this.openDecision(id);
     const answer = text.trim();
@@ -89,6 +96,33 @@ export class Decisions {
       answer,
       source: source.trim(),
       ...(option !== undefined ? { option } : {}),
+    });
+  }
+
+  /**
+   * Records one numbered routine choice, its reason, and a caller-supplied source reference in the decision's thread.
+   * This does not verify message delivery. An owner decision, invalid option, or different thread is refused without
+   * writing. A recorded choice settles the question, never a permission.
+   */
+  choose(id: string, option: string, choice: DecisionChoice, now: number): Decision {
+    const decision = this.openDecision(id);
+    if (decision.kind !== "routine")
+      throw new DecisionError(`decision ${id} is the owner's to answer; the lead chooses only a routine one`);
+    const picked = option.trim();
+    const count = decision.options.length;
+    const number = /^\d+$/.test(picked) ? Number(picked) : undefined;
+    if (number === undefined || !inRange(number, count))
+      throw new DecisionError(`decision ${id} takes the lead's choice of option 1 to ${count}; ${picked} is not one`);
+    const thread = choice.thread.trim();
+    if (thread !== decision.thread)
+      throw new DecisionError(`decision ${id} belongs to thread ${decision.thread ?? "-"}, not ${thread}`);
+    return this.write({
+      op: "choose",
+      ...stamp(id, now),
+      option: number,
+      reason: choice.reason.trim(),
+      source: choice.source.trim(),
+      thread,
     });
   }
 
@@ -137,7 +171,7 @@ export class Decisions {
     if (!item) throw new DecisionError(`decision ${event.id} did not read back`);
     const reason = ignored.get(event.n);
     if (reason !== undefined) throw new DecisionError(reason);
-    if ((event.op === "answer" || event.op === "withdraw") && resolvedBy.get(event.id) !== event.n)
+    if (event.op !== "ask" && event.op !== "posted" && resolvedBy.get(event.id) !== event.n)
       throw new DecisionError(`decision ${event.id} did not read back as resolved by this ${event.op}`);
     if (event.op === "posted" && boundBy.get(event.id) !== event.n)
       throw new DecisionError(`decision ${event.id} posted ${event.message} was replaced by a later posted`);

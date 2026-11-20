@@ -13,6 +13,9 @@ import { ownProcessCwds, ownProcessFiles } from "./source-bundle-setup.ts";
 
 afterEach(removePruneFixtures);
 
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
 const GRACE = 600_000;
 type Late = { readonly scan: number; readonly publish: (c: PruneFixture, x: NativeReceipt) => void };
 const wrapper = (c: PruneFixture, x: NativeReceipt) => writeFileSync(join(c.refs, "omp"), c.wrapper(x.omp));
@@ -44,7 +47,7 @@ const LATE: Record<string, Late> = {
   },
 };
 
-test.each(Object.keys(LATE))("%s keeps the identity: it is put back before its grace period ends", (name) => {
+posix.each(Object.keys(LATE))("%s keeps the identity: it is put back before its grace period ends", (name) => {
   const { scan, publish } = LATE[name]!;
   const c = pruneFixture();
   const x = c.native("x");
@@ -62,7 +65,7 @@ test.each(Object.keys(LATE))("%s keeps the identity: it is put back before its g
   expect(existsSync(name.includes("made again") ? `${x.directory}.pruning/bin/omp` : x.omp)).toBe(true);
 });
 
-test("Astra process-after-ps: a shell that enters a quarantined copy keeps it, and puts it back", async () => {
+posix("Astra process-after-ps: a shell that enters a quarantined copy keeps it, and puts it back", async () => {
   const c = pruneFixture();
   const x = c.native("x");
   c.prune({ graceMs: GRACE, now: 0 });
@@ -111,7 +114,7 @@ await command(["/bin/sh", "-c", 'echo $$ > "$1"; exec sleep 60', "stage-child", 
   }
 });
 
-test("Astra R3: a lock a killed recoverer left mid-takeover (lock and tombstone one file) never blocks prunes", () => {
+posix("Astra R3: a lock a killed recoverer left mid-takeover (lock and tombstone one file) never blocks prunes", () => {
   const c = pruneFixture();
   const x = c.native("x");
   // The state the reviewer built: an ended holder's lock, already hard-linked to its tombstone, not yet unlinked.
@@ -167,7 +170,7 @@ test.each(["file", "directory"])(
 );
 
 // Owner decision (R1): an older writer's absence cannot be proven, so no prune removes anything unless asked.
-test("Astra R1 (cfbfb77): a reference after the third scan, two prunes past the grace period, removes nothing", () => {
+posix("Astra R1 (cfbfb77): a reference after the third scan, two prunes past the grace period, removes nothing", () => {
   const c = pruneFixture();
   const x = c.native("x");
   let scans = 0;
@@ -181,8 +184,9 @@ test("Astra R1 (cfbfb77): a reference after the third scan, two prunes past the 
   expect(existsSync(x.omp) || existsSync(`${x.directory}.pruning/bin/omp`)).toBe(true);
 });
 
-test("without --delete-quarantined nothing is removed after any grace period; with it only unused copies go", () => {
-  const c = pruneFixture();
+posix("without --delete-quarantined nothing is removed after any grace period; with it only unused copies go", () => {
+  // This private cache has only wrapper references from this worker; the test starts no live holder process.
+  const c = pruneFixture(() => ownProcessFiles([String(process.pid)]));
   const unused = c.native("unused");
   const used = c.native("used");
   c.prune({ graceMs: GRACE, now: 0 });
@@ -198,21 +202,24 @@ test("without --delete-quarantined nothing is removed after any grace period; wi
   expect(existsSync(`${fresh.directory}.pruning/bin/omp`)).toBe(true);
 });
 
-test("a use that appears after the asked prune's look is seen at its check before removal and puts the copy back", () => {
-  const c = pruneFixture();
-  const x = c.native("x");
-  c.prune({ graceMs: GRACE, now: 0 });
-  let scans = 0;
-  // Scan 1 is the live entries, 2 the quarantined copies (its walk already done), 3 the check of `.deleting-<nonce>`.
-  const readCwds = (pids: readonly string[]) => {
-    if (++scans === 2) wrapper(c, x);
-    return ownProcessCwds(pids);
-  };
-  const asked = c.prune({ readCwds, graceMs: GRACE, now: GRACE, deleteQuarantined: true });
-  expect(scans).toBe(3);
-  expect(asked.removed).toEqual([]);
-  expect(asked.kept.find((entry) => entry.directory === x.directory)?.protectedBy).toEqual(
-    expect.arrayContaining([`reference ${join(c.refs, "omp")}`, "kept at the check before removal"]),
-  );
-  expect(existsSync(x.omp)).toBe(true);
-});
+posix(
+  "a use that appears after the asked prune's look is seen at its check before removal and puts the copy back",
+  () => {
+    const c = pruneFixture();
+    const x = c.native("x");
+    c.prune({ graceMs: GRACE, now: 0 });
+    let scans = 0;
+    // Scan 1 is the live entries, 2 the quarantined copies (its walk already done), 3 the check of `.deleting-<nonce>`.
+    const readCwds = (pids: readonly string[]) => {
+      if (++scans === 2) wrapper(c, x);
+      return ownProcessCwds(pids);
+    };
+    const asked = c.prune({ readCwds, graceMs: GRACE, now: GRACE, deleteQuarantined: true });
+    expect(scans).toBe(3);
+    expect(asked.removed).toEqual([]);
+    expect(asked.kept.find((entry) => entry.directory === x.directory)?.protectedBy).toEqual(
+      expect.arrayContaining([`reference ${join(c.refs, "omp")}`, "kept at the check before removal"]),
+    );
+    expect(existsSync(x.omp)).toBe(true);
+  },
+);

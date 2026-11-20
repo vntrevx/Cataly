@@ -61,7 +61,7 @@ export function lockQueue(root: string, ref: SessionRef, now: number): (() => vo
   const held = take();
   if (!held) return undefined;
   return () => {
-    for (let unlock: (() => void) | undefined = held; unlock; ) {
+    for (let unlock: (() => void) | undefined = held; unlock;) {
       let owns = false;
       try {
         owns = mergeOwnSpool(root, ref);
@@ -89,7 +89,7 @@ export function lockRoute(root: string, ref: SessionRef, now: number): (() => vo
  */
 export function destinationOf(root: string, ref: SessionRef): SessionRef {
   const seen = new Set<string>();
-  for (let at = ref; ; ) {
+  for (let at = ref; ;) {
     const key = `${at.runtime}:${at.id}`;
     if (seen.has(key)) return at;
     seen.add(key);
@@ -137,7 +137,7 @@ export async function queueMessage(
   recheck?: () => SessionRef,
 ): Promise<Queued> {
   let target = ref;
-  for (let tries = 0; ; ) {
+  for (let tries = 0; ;) {
     const current = target;
     const route = lockRoute(root, current, msg.at);
     if (route) {

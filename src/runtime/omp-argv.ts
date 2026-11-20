@@ -1,4 +1,5 @@
 // What a configured argv runs: OMP's launch forms behind the prefixes Dori reads. Process lines are omp.ts's.
+import { platform } from "../platform/index.ts";
 import { OMP_EXECUTABLE, sourceOmpArgv } from "./omp.ts";
 import { ASSIGNMENT, envCommandAt, LAUNCHERS, launcherCommandAt, RUNNER, RUNNERS, SHELLS } from "./omp-prefixes.ts";
 // A word naming OMP's executable or published entry (the change-before detector's words), or the source launcher's
@@ -12,10 +13,15 @@ const OMP_WORD =
 const OMP_TOKEN = /(?:^|[^\w.-])omp(?:[^\w.-]|$)|pi-coding-agent[/\\]dist[/\\]cli\.js|coding-agent\/scripts\/omp\.ts/;
 const SCRIPT_OPTION = /^(?:-[A-Za-z]*c[A-Za-z]*|-S|--split-string|--call)$/;
 const SCRIPT_PROGRAMS = new Set([...SHELLS, ...Object.keys(LAUNCHERS), ...RUNNERS, "env", "bun"]);
+// OMP's own executable or published entry, also as Windows spells it (`C:\bin\omp.exe`, `\dist\cli.js`).
+const isOmpExecutable = (word: string): boolean =>
+  OMP_EXECUTABLE.test(word) ||
+  (platform.windowsExecutableNames &&
+    (platform.programName(word) === "omp" || /@oh-my-pi[\\/]pi-coding-agent[\\/]dist[\\/]cli\.js$/i.test(word)));
 // `words` start at a program (assignments aside): only that program's script option is read as a script.
 const names = (words: readonly string[]): boolean => {
   const program = words.find((word) => !ASSIGNMENT.test(word)) ?? "";
-  const scripted = SCRIPT_PROGRAMS.has(program.split("/").at(-1)!);
+  const scripted = SCRIPT_PROGRAMS.has(platform.programName(program));
   return words.some((word, at) => {
     if (OMP_WORD.test(word)) return true;
     if (!scripted) return false;
@@ -30,7 +36,7 @@ const runsOmpPackage = (argv: readonly string[]): boolean =>
   argv.some((_, at) => isRunner(argv, at)) && argv.some((word) => OMP_PACKAGE_MENTION.test(word));
 // A package manager word, or Bun with its `x` subcommand later in the argv.
 const isRunner = (argv: readonly string[], at: number): boolean => {
-  const name = argv[at]?.split("/").at(-1) ?? "";
+  const name = platform.programName(argv[at] ?? "");
   return RUNNERS.includes(name) || (name === "bun" && argv.slice(at + 1).includes("x"));
 };
 
@@ -40,8 +46,7 @@ const isRunner = (argv: readonly string[], at: number): boolean => {
  * cannot be read unambiguously, which must not be taken for either.
  */
 export type OmpArgv =
-  | { readonly kind: "omp" | "other"; readonly command: readonly string[] }
-  | { readonly kind: "unparsed" };
+  { readonly kind: "omp" | "other"; readonly command: readonly string[] } | { readonly kind: "unparsed" };
 
 /**
  * Where the command starts once each readable prefix is removed in turn (`env -i env -u X nice timeout 600 omp` reads
@@ -59,7 +64,7 @@ function prefixEnd(argv: readonly string[]): {
   let forking: string | undefined;
   for (;;) {
     while (ASSIGNMENT.test(argv[at] ?? "")) at++;
-    const word = argv[at]?.split("/").at(-1) ?? "";
+    const word = platform.programName(argv[at] ?? "");
     const subcommand = argv[at + 1];
     // Bun's command word can be `x`; an `x` after a script is that script's data, not a package runner.
     const bunCommand = word === "bun" ? argv.slice(at + 1).find((arg) => !arg.startsWith("-")) : undefined;
@@ -123,8 +128,8 @@ const assignsOmp = (argv: readonly string[], at: number): boolean =>
 /** What a command without assignment, env or launcher prefixes runs. */
 function classifyCommand(command: readonly string[]): OmpArgv {
   if (sourceOmpArgv(command)) return { kind: "omp", command };
-  const name = command[0]?.split("/").at(-1) ?? "";
-  if (OMP_EXECUTABLE.test(command[0] ?? "")) return { kind: "omp", command };
+  const name = platform.programName(command[0] ?? "");
+  if (isOmpExecutable(command[0] ?? "")) return { kind: "omp", command };
   // A shell runs a script Dori cannot read: one that names OMP must declare its engine.
   if (SHELLS.has(name)) return names(command) ? { kind: "unparsed" } : { kind: "other", command };
   if (name !== "bun" && name !== "node") return { kind: "other", command };
@@ -135,8 +140,8 @@ function classifyCommand(command: readonly string[]): OmpArgv {
     script++;
     while (command[script]?.startsWith("-")) script++;
   }
-  if (OMP_EXECUTABLE.test(command[script] ?? "")) return { kind: "omp", command };
-  if (script > prefix && command.slice(script + 1).some((arg) => OMP_EXECUTABLE.test(arg))) return { kind: "unparsed" };
+  if (isOmpExecutable(command[script] ?? "")) return { kind: "omp", command };
+  if (script > prefix && command.slice(script + 1).some((arg) => isOmpExecutable(arg))) return { kind: "unparsed" };
   return { kind: "other", command };
 }
 

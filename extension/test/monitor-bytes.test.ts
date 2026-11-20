@@ -24,6 +24,7 @@ afterEach(() => {
 const start = (code: string, filter = ".", name = "bytes") =>
   monitors.start(name, [process.execPath, "-e", code], filter, "/", "s1");
 const exited = () => until(() => messages.join("\n").includes("monitor exited"));
+const posix = test.skipIf(process.platform === "win32");
 
 test("preserves split UTF-8, CRLF, empty lines, and an unterminated final line", async () => {
   start(
@@ -39,7 +40,8 @@ test("preserves split UTF-8, CRLF, empty lines, and an unterminated final line",
   ).toEqual(["[bytes] hit \u00e9\u{1f642}", "[bytes] ", "[bytes] \uFEFFhit tail\r"]);
 });
 
-test("spools oversized stdout/stderr losslessly even with a nonmatching filter", async () => {
+// POSIX-only: the spool file and directory must carry 0o600 and 0o700 mode bits.
+posix("spools oversized stdout/stderr losslessly even with a nonmatching filter", async () => {
   start(
     'process.stdout.write("x".repeat(8*1024*1024)+"\\r\\nkeep\\n");process.stderr.write("y".repeat(65537))',
     "^keep$",

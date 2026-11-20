@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { inboundPollRetryDelay } from "./http.ts";
 import type { Telegram } from "./telegram.ts";
 
 /** `message` for a new message, `edit` when the owner edited an earlier one. */
@@ -52,12 +53,8 @@ export const envInt = (name: string, raw: string | undefined): number => {
 export type TgInboundStore = { load(): number; save(offset: number): void };
 
 /**
- * The inbound watch loop. Without `--loop` (loopMin <= 0) it is one-shot: a single
- * bounded poll, then it returns — scripts rely on that. With `--loop`, it re-polls
- * immediately after any poll that returned updates — kept or gate-dropped alike, since
- * more may be waiting behind that batch — and only sleeps after a truly empty poll
- * (the 25s long-poll already returns on arrival, so bursts deliver without waiting
- * out the interval).
+ * A one-shot (loopMin <= 0) does one bounded poll. In loop mode, re-poll immediately
+ * if any updates arrived (even gate-dropped), otherwise sleep before polling again.
  */
 export const telegramInboundLoop = async (
   tg: Telegram,
@@ -69,15 +66,16 @@ export const telegramInboundLoop = async (
   sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
 ): Promise<void> => {
   for (;;) {
-    let polled: { inbound: readonly TgInbound[]; updates: number } | undefined;
+    let wait = loopMin * 60_000;
     try {
-      polled = await pollTelegramInbound(tg, store, opts, emit);
+      const { updates } = await pollTelegramInbound(tg, store, opts, emit);
+      if (loopMin > 0 && updates > 0) continue;
     } catch (e) {
+      wait = inboundPollRetryDelay(e, wait);
       warn(e instanceof Error ? e.message : String(e));
     }
     if (loopMin <= 0) return; // one-shot: one bounded drain
-    if (polled !== undefined && polled.updates > 0) continue; // more may be waiting behind this batch
-    await sleep(loopMin * 60_000);
+    await sleep(wait);
   }
 };
 

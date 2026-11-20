@@ -5,11 +5,14 @@ import { consumerPaths } from "../src/release/files.ts";
 import { installBundle } from "../src/release/install.ts";
 import { fixture } from "./release-consumer-setup.ts";
 
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
 test.each([".dori/nested", ".", ".dori/.."])("consumer side home %s cannot overlap primary ownership", (target) => {
   expect(() => consumerPaths("/sandbox/home", join("/sandbox/home", target))).toThrow("primary");
 });
 
-test("consumer check rejects a legacy side target before creating its home", () => {
+posix("consumer check rejects a legacy side target before creating its home", () => {
   const f = fixture();
   const legacy = f.release("legacy\n");
   const selected = join(f.paths.home, "legacy-side");
@@ -30,7 +33,7 @@ test("consumer check rejects a legacy side target before creating its home", () 
   expect(existsSync(selected)).toBe(false);
 });
 
-test.each(["check", "install", "rollback"])(
+posix.each(["check", "install", "rollback"])(
   "%s holds an explicit profile conflicting with preserved config",
   async (command) => {
     const f = fixture(true);
@@ -62,7 +65,7 @@ test.each(["check", "install", "rollback"])(
   },
 );
 
-test.each(["check", "install", "status", "rollback"])(
+posix.each(["check", "install", "status", "rollback"])(
   "%s rejects an unsupported selected runtime before creating its home",
   (command) => {
     const f = fixture();

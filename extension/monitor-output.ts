@@ -46,8 +46,8 @@ export class MonitorOutputFile {
 /** Scan each incoming chunk once; retained partial-line storage does not grow with the input. */
 export async function readMonitorOutput(
   stream: ReadableStream<Uint8Array>,
-  line: (text: string) => void,
-  notice: (text: string) => void,
+  line: (text: string) => unknown,
+  notice: (text: string) => unknown,
   stopped: () => boolean,
 ): Promise<void> {
   const buffer = Buffer.alloc(LINE_MAX_BYTES);
@@ -61,6 +61,7 @@ export async function readMonitorOutput(
       if (stopped()) return;
       let start = 0;
       while (start < chunk.byteLength) {
+        if (stopped()) return;
         const lf = chunk.indexOf(10, start);
         const end = lf < 0 ? chunk.byteLength : lf;
         const part = chunk.subarray(start, end);
@@ -68,7 +69,7 @@ export async function readMonitorOutput(
           spill = new MonitorOutputFile();
           spill.write(buffer.subarray(0, used));
           used = 0;
-          notice(
+          await notice(
             `line exceeds ${LINE_MAX_BYTES} bytes; filter not evaluated; raw output file=${JSON.stringify(spill.path)} (still writing)`,
           );
         }
@@ -77,7 +78,7 @@ export async function readMonitorOutput(
           if (lf >= 0) {
             spill.write(chunk.subarray(lf, lf + 1));
             spill.close();
-            notice(`oversized line saved: ${spill.bytes} bytes; file=${JSON.stringify(spill.path)}`);
+            await notice(`oversized line saved: ${spill.bytes} bytes; file=${JSON.stringify(spill.path)}`);
             spill = undefined;
           }
         } else {
@@ -85,7 +86,7 @@ export async function readMonitorOutput(
           used += part.byteLength;
           if (lf >= 0) {
             // Only the stream's initial BOM is stripped, as with one streaming TextDecoder.
-            line((first ? initialDecoder : decoder).decode(buffer.subarray(0, used)).replace(/\r$/, ""));
+            await line((first ? initialDecoder : decoder).decode(buffer.subarray(0, used)).replace(/\r$/, ""));
             used = 0;
           }
         }
@@ -96,10 +97,10 @@ export async function readMonitorOutput(
     if (stopped()) return;
     if (spill) {
       spill.close();
-      notice(`oversized line saved: ${spill.bytes} bytes; file=${JSON.stringify(spill.path)}`);
+      await notice(`oversized line saved: ${spill.bytes} bytes; file=${JSON.stringify(spill.path)}`);
     } else if (used) {
       const tail = (first ? initialDecoder : decoder).decode(buffer.subarray(0, used));
-      if (tail) line(tail);
+      if (tail) await line(tail);
     }
   } catch (error) {
     const saved = spill ? `; partial file=${JSON.stringify(spill.path)} (${spill.bytes} bytes)` : "";

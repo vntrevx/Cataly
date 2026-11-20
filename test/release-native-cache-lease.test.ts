@@ -12,12 +12,15 @@ import { preparationFixture } from "./update-deploy-prepare-setup.ts";
 
 afterEach(removePruneFixtures);
 
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
 const LEASE = resolve(import.meta.dir, "../src/release/native-cache-lease.ts");
 const DEPENDENCIES = resolve(import.meta.dir, "../scripts/source-dependencies.ts");
 const ready = async (child: { stdout: ReadableStream<Uint8Array> }) =>
   new TextDecoder().decode((await child.stdout.getReader().read()).value);
 
-test("a writer leases first and waits while a prune holds the lock, then goes on", async () => {
+posix("a writer leases first and waits while a prune holds the lock, then goes on", async () => {
   const c = pruneFixture();
   const x = c.native("x");
   const release = claimNativePrune(c.home);
@@ -74,28 +77,31 @@ test("a script's lease holder is the named shell, else its parent", () => {
   expect(scriptLeaseHolder({})).toBe(process.ppid > 1 ? process.ppid : process.pid);
 });
 
-test("the prune lock is a kernel lock: held while its holder runs, free once it ends, refused if not a file", async () => {
-  const c = pruneFixture();
-  const x = c.native("x");
-  const lock = join(c.home, ".cache/omp-dori/native-prune.lock");
-  const code = `const { claimNativePrune } = await import(${JSON.stringify(LEASE)}); claimNativePrune(process.argv[1]); console.log("held"); await Bun.stdin.text();`;
-  const holder = Bun.spawn([process.execPath, "-e", code, c.home], { stdin: "pipe", stdout: "pipe" });
-  try {
-    expect(await ready(holder)).toBe("held\n");
+posix(
+  "the prune lock is a kernel lock: held while its holder runs, free once it ends, refused if not a file",
+  async () => {
+    const c = pruneFixture();
+    const x = c.native("x");
+    const lock = join(c.home, ".cache/omp-dori/native-prune.lock");
+    const code = `const { claimNativePrune } = await import(${JSON.stringify(LEASE)}); claimNativePrune(process.argv[1]); console.log("held"); await Bun.stdin.text();`;
+    const holder = Bun.spawn([process.execPath, "-e", code, c.home], { stdin: "pipe", stdout: "pipe" });
+    try {
+      expect(await ready(holder)).toBe("held\n");
+      expect(() => c.prune()).toThrow(`Another native cache prune holds ${lock}`);
+      expect(() => leaseNativeIdentity(c.home, x.identity, process.pid, 0)).toThrow("A native cache prune holds");
+    } finally {
+      // Killed, not released: the kernel lets go of its lock all the same.
+      holder.kill("SIGKILL");
+      await holder.exited;
+    }
+    // The next prune runs, and sees the lease the waiting writer took.
+    expect(keptFor(c.prune(), x.directory)).toEqual([`lease of process ${process.pid}`]);
+    expect(existsSync(lock)).toBe(true);
+    rmSync(lock);
+    mkdirSync(lock);
     expect(() => c.prune()).toThrow(`Another native cache prune holds ${lock}`);
-    expect(() => leaseNativeIdentity(c.home, x.identity, process.pid, 0)).toThrow("A native cache prune holds");
-  } finally {
-    // Killed, not released: the kernel lets go of its lock all the same.
-    holder.kill("SIGKILL");
-    await holder.exited;
-  }
-  // The next prune runs, and sees the lease the waiting writer took.
-  expect(keptFor(c.prune(), x.directory)).toEqual([`lease of process ${process.pid}`]);
-  expect(existsSync(lock)).toBe(true);
-  rmSync(lock);
-  mkdirSync(lock);
-  expect(() => c.prune()).toThrow(`Another native cache prune holds ${lock}`);
-});
+  },
+);
 
 test("--trust-process lets one unreadable process pass only while it is still that process", async () => {
   if (process.platform !== "linux") return;
@@ -153,7 +159,7 @@ test("a root process whose working directory cannot be read holds unless --trust
   expect(trusted.quarantined.map((entry) => entry.directory)).toEqual([x.directory]);
 });
 
-test("direct legacy inspection leases its identity before executable or fence verification", async () => {
+posix("direct legacy inspection leases its identity before executable or fence verification", async () => {
   const c = pruneFixture();
   const x = c.native("legacy");
   const f = preparationFixture();
@@ -166,7 +172,7 @@ test("direct legacy inspection leases its identity before executable or fence ve
   expect(keptFor(c.prune(), x.directory)).toEqual([`lease of process ${process.pid}`]);
 });
 
-test("a FIFO prune lock is refused by both prunes and writers without blocking", () => {
+posix("a FIFO prune lock is refused by both prunes and writers without blocking", () => {
   const c = pruneFixture();
   const x = c.native("fifo");
   const lock = join(c.home, ".cache/omp-dori/native-prune.lock");

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { oneName } from "./fit.ts";
-import { agentCommand, harnessLaunchEnv, prompt, type Deps } from "./harness.ts";
+import { agentCommand, harnessLaneEnv, prompt, type Deps } from "./harness.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -49,7 +49,7 @@ export async function startLane(
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
   const ref = await openSession(
     rt,
-    { name: key, role: "lane", container: "tab", cwd, env: { ...harnessLaunchEnv(d), DORI_LANE: key }, group },
+    { name: key, role: "lane", container: "tab", cwd, env: harnessLaneEnv(d, key), group },
     `${agentCommand(d, "lane")} ${shq(kickoff)}`,
   );
 

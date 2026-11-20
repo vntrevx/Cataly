@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { closeLane } from "../src/done-flow.ts";
 import { launchLane, prepareLaunch } from "../src/launch.ts";
@@ -35,7 +35,7 @@ test("successful close records a pending lesson with the lane's repo", async () 
       new Lessons(state.dir)
         .read()
         .lessons.map(({ rule, evidence, lane, cwd, outcome }) => ({ rule, evidence, lane, cwd, outcome })),
-    ).toEqual([{ ...lesson, lane: lane.key, cwd: "/repo", outcome: "pending" }]);
+    ).toEqual([{ ...lesson, lane: lane.key, cwd: resolve(lane.cwd ?? "."), outcome: "pending" }]);
   } finally {
     state.done();
   }

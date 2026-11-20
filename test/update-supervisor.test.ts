@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { runUpdate } from "../src/update/cli.ts";
-import { fixture } from "./update-setup.ts";
+import { fixture, it } from "./update-setup.ts";
 
 const SUPERVISOR = resolve(import.meta.dir, "../scripts/update-supervisor.ts");
 
@@ -47,7 +47,7 @@ exit "\${1:-2}"
 }
 
 describe("update supervisor", () => {
-  test("a verified live controller lock is retried on the next tick instead of holding the service", async () => {
+  it("a verified live controller lock is retried on the next tick instead of holding the service", async () => {
     const base = fixture();
     const { run } = supervise({ ...base.config, intervalSeconds: 1 }, [5, 2]);
     const result = await run();
@@ -57,7 +57,7 @@ describe("update supervisor", () => {
     expect(result.code).toBe(2);
   }, 15_000);
 
-  test("a config that omits intervalSeconds uses the shared loader default", async () => {
+  it("a config that omits intervalSeconds uses the shared loader default", async () => {
     const base = fixture();
     const { intervalSeconds: _omitted, ...config } = base.config;
     const { run } = supervise(config, [2]);
@@ -94,7 +94,7 @@ describe("controller lock conflicts", () => {
   };
   const owner = { version: 1, pid: process.pid, host: hostname(), nonce: "live-owner" };
 
-  test("a live same-host owner that predates its lock is retryable", async () => {
+  it("a live same-host owner that predates its lock is retryable", async () => {
     expect(await conflict({ ...owner, at: new Date().toISOString() })).toBe(5);
   });
 

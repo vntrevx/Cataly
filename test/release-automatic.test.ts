@@ -10,6 +10,9 @@ import { supportsReleaseProfile } from "../src/release/manifest.ts";
 import { loadInstalled, releasePath } from "../src/release/state.ts";
 import { portableFixture as fixture } from "./release-consumer-setup.ts";
 
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
 const stable = (bundle: VerifiedBundle): VerifiedBundle => ({
   ...bundle,
   manifest: { ...bundle.manifest, prerelease: false },
@@ -17,7 +20,7 @@ const stable = (bundle: VerifiedBundle): VerifiedBundle => ({
 const checkTools = () => {};
 const DAY = 86_400_000;
 
-test.each([false, true])(
+posix.each([false, true])(
   "automatic stable release activation preserves data and retains rollback (side=%s)",
   async (side) => {
     const f = fixture(side);
@@ -51,7 +54,7 @@ test.each([false, true])(
   },
 );
 
-test("offline attempts back off for a day while the verified installed release stays runnable", async () => {
+posix("offline attempts back off for a day while the verified installed release stays runnable", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   let attempts = 0;
@@ -65,7 +68,7 @@ test("offline attempts back off for a day while the verified installed release s
   expect(attempts).toBe(1);
 });
 
-test("preview and older releases are never automatically selected", async () => {
+posix("preview and older releases are never automatically selected", async () => {
   for (const kind of ["preview", "older"] as const) {
     const f = fixture();
     const old = stable(f.release("old").bundle);
@@ -79,7 +82,7 @@ test("preview and older releases are never automatically selected", async () => 
   }
 });
 
-test("a live lane or Dori session holds automatic activation without signalling it", async () => {
+posix("a live lane or Dori session holds automatic activation without signalling it", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const sessions = join(f.paths.dori, "state/sessions");
@@ -96,7 +99,7 @@ test("a live lane or Dori session holds automatic activation without signalling 
   expect(process.kill(process.pid, 0)).toBe(true);
 });
 
-test("a session appearing during the network check holds activation", async () => {
+posix("a session appearing during the network check holds activation", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const candidate = stable(f.release("two").bundle);
@@ -110,7 +113,7 @@ test("a session appearing during the network check holds activation", async () =
   expect(readAutomaticState(f.paths).outcome).toBe("held");
 });
 
-test("rollback pauses automatic updates until explicitly resumed", async () => {
+posix("rollback pauses automatic updates until explicitly resumed", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, stable(f.release("one").bundle), undefined);
   const candidate = stable(f.release("two").bundle);
@@ -131,7 +134,7 @@ test("rollback pauses automatic updates until explicitly resumed", async () => {
   expect(loadInstalled(f.paths)?.current).toEqual(candidate.manifest);
 });
 
-test.each(["source", "dependency", "metadata"])(
+posix.each(["source", "dependency", "metadata"])(
   "tampered %s fails closed even when updates are disabled",
   async (kind) => {
     const f = fixture();
@@ -155,7 +158,7 @@ test.each(["source", "dependency", "metadata"])(
   },
 );
 
-test.each(["ulw", "native"])("explicit %s overrides are preserved without an automatic check", async (kind) => {
+posix.each(["ulw", "native"])("explicit %s overrides are preserved without an automatic check", async (kind) => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const config = JSON.parse(readFileSync(f.paths.config, "utf8"));
@@ -176,7 +179,7 @@ test.each(["ulw", "native"])("explicit %s overrides are preserved without an aut
   expect(readFileSync(f.paths.config)).toEqual(bytes);
 });
 
-test.each(["OMP_ULW_SRC", "OMP_ULW_REF", "OMP_ULW_REPO", "DORI_OMP", "DORI_AGENT_ARGV", "DORI_OMP_ULW_PATH"])(
+posix.each(["OMP_ULW_SRC", "OMP_ULW_REF", "OMP_ULW_REPO", "DORI_OMP", "DORI_AGENT_ARGV", "DORI_OMP_ULW_PATH"])(
   "explicit %s environment selection suppresses automatic updates",
   async (name) => {
     const f = fixture();
@@ -204,7 +207,7 @@ test.each(["OMP_ULW_SRC", "OMP_ULW_REF", "OMP_ULW_REPO", "DORI_OMP", "DORI_AGENT
   },
 );
 
-test("the activation callback holds a newly prepared release before switching either pointer", async () => {
+posix("the activation callback holds a newly prepared release before switching either pointer", async () => {
   const f = fixture();
   const before = await installBundle(f.paths, f.release("one").bundle, undefined);
   const pointer = readlinkSync(f.paths.live);
@@ -217,7 +220,7 @@ test("the activation callback holds a newly prepared release before switching ei
   expect(loadInstalled(f.paths)).toEqual(before);
 });
 
-test("an older retained physical release stays pinned even beyond the immediate rollback slot", async () => {
+posix("an older retained physical release stays pinned even beyond the immediate rollback slot", async () => {
   const f = fixture();
   const one = await installBundle(f.paths, f.release("one").bundle, undefined);
   const two = await installBundle(f.paths, f.release("two").bundle, one);

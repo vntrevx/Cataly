@@ -15,7 +15,10 @@ test("a Linux process table whose working directories cannot be read is unavaila
   expect(processCwds(["999999999"], "linux")).toBeNull();
 });
 
-test("when no working directory can be read, the report says so for every identity", () => {
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("when no working directory can be read, the report says so for every identity", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-native-cwd-")));
   roots.push(root);
   const home = join(root, "home");

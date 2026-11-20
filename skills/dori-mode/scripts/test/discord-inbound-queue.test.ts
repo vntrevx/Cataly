@@ -10,54 +10,69 @@ import { settle } from "./discord-inbound-live-fakes.ts";
 import { FakeGateway, gatewayTimers } from "./discord-presence-fakes.ts";
 import { withState } from "./fakes.ts";
 
-test("invalid and explicitly unwatched dispatches never enter the blocked disk queue", async () => {
-  const state = withState();
-  const queue = discordInboundQueue(state.dir);
-  const hold = Promise.withResolvers<void>();
-  const rest = discordRestWorld([]);
-  const cursor = memoryDiscordCursor("100");
-  const intake = await discordInbound(rest.discord, () => cursor.store, { ownerId: "10", channelIds: ["20"] });
-  rest.state.blocked.set("/channels/20/messages", hold.promise);
-  const socket = new FakeGateway("offline");
-  const live = discordInboundLive(
-    intake,
-    () => socket,
-    "offline",
-    gatewayTimers().clock,
-    () => {
-      throw new Error("unexpected emit");
-    },
-    () => {},
-    queue,
-  );
-  const pushes = spyOn(queue, "push");
-  try {
-    socket.hello();
-    socket.ready(1);
-    await settle();
-    pushes.mockClear();
-    for (let i = 1; i <= 2_000; i++)
-      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: i + 1, d: ownerMessage(String(i), { channel_id: "21" }) });
-    for (const d of [null, {}, { id: "bad", channel_id: "20" }, { id: "2001", channel_id: "bad" }])
-      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2002, d });
-    expect(pushes).toHaveBeenCalledTimes(0);
-    socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2003, d: ownerMessage("2001", { author: { id: "11" } }) });
-    expect(pushes).toHaveBeenCalledTimes(1);
-    expect(cursor.store.load()).toBe("100");
-    hold.resolve();
-    await settle();
-    expect(cursor.store.load()).toBe("2001");
-  } finally {
-    pushes.mockRestore();
-    hold.resolve();
-    live.close();
-    await live.done;
-    queue.close();
-    state.done();
-  }
-});
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
 
-test("a rejected same-process consumer preserves the first queue's lock against other processes", async () => {
+for (const [mode, threads] of [
+  ["channel only", false],
+  ["parent following", true],
+] as const)
+  posix(`invalid and known-unwatched dispatches never enter the blocked disk queue (${mode})`, async () => {
+    const state = withState();
+    const queue = discordInboundQueue(state.dir);
+    const hold = Promise.withResolvers<void>();
+    const rest = discordRestWorld([]);
+    const cursor = memoryDiscordCursor("100");
+    const intake = await discordInbound(rest.discord, () => cursor.store, {
+      ownerId: "10",
+      channelIds: ["20"],
+      threads,
+    });
+    if (threads) expect(await intake.resolveThread("21", new AbortController().signal)).toBeUndefined();
+    rest.state.blocked.set("/channels/20/messages", hold.promise);
+    const socket = new FakeGateway("offline");
+    const live = discordInboundLive(
+      intake,
+      () => socket,
+      "offline",
+      gatewayTimers().clock,
+      () => {
+        throw new Error("unexpected emit");
+      },
+      () => {},
+      queue,
+    );
+    const pushes = spyOn(queue, "push");
+    try {
+      socket.hello();
+      socket.ready(1);
+      await settle();
+      pushes.mockClear();
+      for (let i = 1; i <= 2_000; i++)
+        socket.receive({ op: 0, t: "MESSAGE_CREATE", s: i + 1, d: ownerMessage(String(i), { channel_id: "21" }) });
+      expect(rest.requests.filter((request) => new URL(request.url).pathname.endsWith("/channels/21"))).toHaveLength(
+        threads ? 1 : 0,
+      );
+      for (const d of [null, {}, { id: "bad", channel_id: "20" }, { id: "2001", channel_id: "bad" }])
+        socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2002, d });
+      expect(pushes).toHaveBeenCalledTimes(0);
+      socket.receive({ op: 0, t: "MESSAGE_CREATE", s: 2003, d: ownerMessage("2001", { author: { id: "11" } }) });
+      expect(pushes).toHaveBeenCalledTimes(1);
+      expect(cursor.store.load()).toBe("100");
+      hold.resolve();
+      await settle();
+      expect(cursor.store.load()).toBe("2001");
+    } finally {
+      pushes.mockRestore();
+      hold.resolve();
+      live.close();
+      await live.done;
+      queue.close();
+      state.done();
+    }
+  });
+
+posix("a rejected same-process consumer preserves the first queue's lock against other processes", async () => {
   const state = withState();
   const queue = discordInboundQueue(state.dir);
   try {
@@ -95,7 +110,7 @@ test("a rejected same-process consumer preserves the first queue's lock against 
 });
 
 for (const kind of ["symlink", "corrupt"] as const) {
-  test(`a ${kind} queue produces a sanitized state error`, () => {
+  posix(`a ${kind} queue produces a sanitized state error`, () => {
     const state = withState();
     try {
       const dir = join(state.dir, "discord-inbound");
@@ -113,27 +128,31 @@ for (const kind of ["symlink", "corrupt"] as const) {
   });
 }
 
-test("the 256 MiB database budget stops insertion and preserves already queued records", () => {
-  const state = withState();
-  const queue = discordInboundQueue(state.dir);
-  try {
-    const content = "x".repeat(1024 * 1024);
-    expect(() => {
-      for (let i = 1; i <= 300; i++) queue.push("message", ownerMessage(String(i), { content }));
-    }).toThrow("256 MiB queue limit");
-    expect(JSON.parse(queue.first()!.payload).id).toBe("1");
-    const path = join(state.dir, "discord-inbound/gateway.sqlite");
-    expect(statSync(path).size).toBeLessThanOrEqual(256 * 1024 * 1024);
-    expect(statSync(`${path}-wal`).size).toBeLessThan(16 * 1024 * 1024);
-    queue.remove(queue.first()!.id);
-    expect(queue.first()!.id).toBe(2);
-  } finally {
-    queue.close();
-    state.done();
-  }
-}, 30_000);
+posix(
+  "the 256 MiB database budget stops insertion and preserves already queued records",
+  () => {
+    const state = withState();
+    const queue = discordInboundQueue(state.dir);
+    try {
+      const content = "x".repeat(1024 * 1024);
+      expect(() => {
+        for (let i = 1; i <= 300; i++) queue.push("message", ownerMessage(String(i), { content }));
+      }).toThrow("256 MiB queue limit");
+      expect(JSON.parse(queue.first()!.payload).id).toBe("1");
+      const path = join(state.dir, "discord-inbound/gateway.sqlite");
+      expect(statSync(path).size).toBeLessThanOrEqual(256 * 1024 * 1024);
+      expect(statSync(`${path}-wal`).size).toBeLessThan(16 * 1024 * 1024);
+      queue.remove(queue.first()!.id);
+      expect(queue.first()!.id).toBe(2);
+    } finally {
+      queue.close();
+      state.done();
+    }
+  },
+  30_000,
+);
 
-test("a process killed after a WAL commit leaves its pending message recoverable", async () => {
+posix("a process killed after a WAL commit leaves its pending message recoverable", async () => {
   const state = withState();
   const source = JSON.stringify(join(import.meta.dir, "../src/messenger/discord-inbound-queue.ts"));
   const child = Bun.spawn(
@@ -172,7 +191,7 @@ test("a process killed after a WAL commit leaves its pending message recoverable
   }
 });
 
-test("admission cursors retain canonical decimal validation without writing a failed record", () => {
+posix("admission cursors retain canonical decimal validation without writing a failed record", () => {
   const state = withState();
   const queue = discordInboundQueue(state.dir);
   try {

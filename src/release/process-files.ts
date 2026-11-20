@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { platform, procfsOn } from "../platform/index.ts";
 import { liveTasks, processIsKernelThread } from "./process-cwd.ts";
 
 /** What `processFiles` reads: paths by pid, and live pids whose files could not be read (they may use anything). */
@@ -32,12 +33,13 @@ function groupFiles(pid: string, tasks: readonly string[]): string[] {
  * every open descriptor (a directory included) and every mapped file, read through any thread that still runs (a
  * leader that exited leaves its threads running); elsewhere what `lsof` lists for this user. `unread` holds live pids
  * whose files could not be read, whatever their working directory shows. Null when nothing at all could be read.
+ * Linux callers inspecting a known process set may provide its PIDs instead of enumerating all of `/proc`.
  */
-export function processFiles(platform = process.platform): ProcessFiles | null {
+export function processFiles(os = platform.os, linuxPids?: readonly string[]): ProcessFiles | null {
   const files = new Map<string, string[]>();
   const unread: string[] = [];
   const uid = process.getuid?.();
-  if (platform !== "linux") {
+  if (!procfsOn(os)) {
     let lsof: ReturnType<typeof Bun.spawnSync>;
     try {
       lsof = Bun.spawnSync(["lsof", "-n", ...(uid === undefined ? [] : ["-u", String(uid)]), "-F", "pn"], {
@@ -57,7 +59,7 @@ export function processFiles(platform = process.platform): ProcessFiles | null {
     }
     return { files, unread };
   }
-  for (const pid of readdirSync("/proc")) {
+  for (const pid of linuxPids ?? readdirSync("/proc")) {
     if (!/^\d+$/.test(pid)) continue;
     try {
       if (uid !== undefined && statSync(`/proc/${pid}`).uid !== uid) continue;

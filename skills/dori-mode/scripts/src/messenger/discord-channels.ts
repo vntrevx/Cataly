@@ -19,7 +19,7 @@ const MAX_PURPOSE = 500;
 const LOCK_WAIT_MS = 5_000;
 // C0 and C1 controls, DEL, the Unicode line and paragraph separators and bidirectional overrides and isolates: a
 // purpose is one line of text that reads as it is stored.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: the pattern deliberately matches control characters to reject them
+// oxlint-disable-next-line no-control-regex -- the pattern deliberately matches control characters to reject them
 const NOT_ONE_LINE = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 /** A purpose is one line of 1 to 500 characters after trimming; anything else is refused before it is stored. */

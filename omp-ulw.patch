@@ -1,10 +1,10 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 99025e0f65e95af44b48444c7a5ff49bd9726bfb..3b82d846904012e30b76f7cc9c909e1dcf3aad03 100644
+index 094adbbbec0d8ee163e15c90f3abe5f1e0b38e5f..6fb81428d67ba68e99e07eb2c4668d3b7f682345 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
-@@ -2,6 +2,14 @@
+@@ -6,6 +6,14 @@
  
- [English](CHANGELOG.md) | [한국어](CHANGELOG.ko.md)
+ - Both models use Senpi catalog matching and a [standalone OMP preset](prompts/gpt-6.2.ts) based on the [OpenAI guide](https://developers.openai.com/api/docs/guides/latest-model). Answer follow-up questions and reviews without editing; implement and verify requested changes and corrections to authorized work. Writing guidance preserves necessary comparisons, verification limits and progress updates.
  
 +### 2026-11-15 Local profile and native host compatibility
 +
@@ -590,17 +590,18 @@ index a01dd885d22c4f635a72bedc7b0fa48869552818..4b5f5bfda886f29525ce2a6f63e72a04
      "skills/",
      "README*.md",
 diff --git a/presets.ts b/presets.ts
-index c0e1774f9cc46b8f5639d59728c5873bd037250b..a89bf4e4ea310ded6ceafb4c2618db5273e79f5f 100644
+index 738af5e3a2474ab2c58a1be8c427d533eb40cacd..13aec7063e008388a2351ce31c53d96ab4eed787 100644
 --- a/presets.ts
 +++ b/presets.ts
-@@ -1,4 +1,5 @@
+@@ -1,5 +1,6 @@
  import { ASYNC_DEFAULT, MONITOR_CONDITIONS, TURN_END_IS_WAIT, buildPreset, resolvePresetName } from "./upstream/presets.js";
+ import { gpt62Body } from "./prompts/gpt-6.2";
 +import { buildPreset as buildPinnedPreset } from "./upstream/presets-deepseek-pin.js";
  
  export interface PresetModel { id: string; name?: string; provider?: string }
  export interface PresetOptions { surface: "terminal" | "app"; toolNames: string[]; subagent?: boolean }
-@@ -25,7 +26,10 @@ export function renderPreset(model: PresetModel, options: PresetOptions): { name
-   if (!name) return undefined;
+@@ -52,7 +53,10 @@ export function renderPreset(model: PresetModel, options: PresetOptions): { name
+   }
    // Upstream gates its question directive on its own tool name; transport is adapted below.
    const selectedTools = options.toolNames.map(tool => tool === "ask" ? "request_user_input" : tool);
 -  const preset = buildPreset(name, { surface: options.surface, selectedTools });
@@ -610,7 +611,7 @@ index c0e1774f9cc46b8f5639d59728c5873bd037250b..a89bf4e4ea310ded6ceafb4c2618db52
 +  const preset = builder(name, { surface: options.surface, selectedTools });
    if (!preset) return undefined;
    let prompt = preset.prompt;
-   const hasAsk = options.toolNames.includes("ask");
+   if (preset.name === "gemini-4-argon") {
 diff --git a/prewalk.ts b/prewalk.ts
 index 7b86054d686ffa08a11f9098e245977b31764260..50d0bba989a4117fe7f34d51560e9a111a8f31a3 100644
 --- a/prewalk.ts
@@ -753,7 +754,7 @@ index 1703026201aec67747b1bc336c006ad10e3dc08f..0979734366c08e971921ecb42687c3f4
          presetRegions++;
          assert(!/\beval\b|await tool\./i.test(region[1]!), `${current.name}: any installed preset region must have no eval steering`);
 diff --git a/tests/presets.test.ts b/tests/presets.test.ts
-index 374db719ad920002bdaffdf5404e806dc086bde3..cca05bba865dc0aa519eede026d4aabd17a2c73d 100644
+index a7ac08845bbfd148249163cb6a68838313df3a1f..26332e6c485cef0a61f872bd4a530947f0040921 100644
 --- a/tests/presets.test.ts
 +++ b/tests/presets.test.ts
 @@ -1,6 +1,7 @@
@@ -764,7 +765,7 @@ index 374db719ad920002bdaffdf5404e806dc086bde3..cca05bba865dc0aa519eede026d4aabd
  
  const toolNames = ["eval", "ask", "task", "bash", "wait", "read", "grep", "glob", "write", "edit", "todo", "web_search"];
  const models: Record<string, string> = {
-@@ -12,7 +13,7 @@ describe("faithful omo presets", () => {
+@@ -13,7 +14,7 @@ describe("faithful omo presets", () => {
      for (const name of presetNames) {
        for (const surface of ["terminal", "app"] as const) {
          for (const activeTools of [toolNames, toolNames.filter(tool => tool !== "eval"), []]) {
@@ -773,7 +774,7 @@ index 374db719ad920002bdaffdf5404e806dc086bde3..cca05bba865dc0aa519eede026d4aabd
            expect(original?.name).toBe(name);
            expect(original?.prompt).not.toMatch(/\$\{|\bundefined\b|\[object Object\]/);
            // gpt-5 is an explicit-only upstream preset, never selected by original auto resolution.
-@@ -221,4 +222,30 @@ describe("faithful omo presets", () => {
+@@ -225,4 +226,30 @@ describe("faithful omo presets", () => {
      expect(renderPreset({ ...model, provider: "openrouter" }, options)?.name).toBe("deepseek-v4-flash");
      expect(renderPreset(model, options)?.name).toBe("deepseek-v4-flash");
    });

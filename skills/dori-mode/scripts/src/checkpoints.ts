@@ -110,7 +110,7 @@ export class Checkpoints {
         closeSync(fd);
       }
       // A new journal's directory entry must be durable too, or a crash could lose the first checkpoint after it was acknowledged.
-      if (created) {
+      if (created && process.platform !== "win32") {
         const dir = openSync(dirname(path), "r");
         try {
           fsyncSync(dir);

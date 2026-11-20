@@ -9,10 +9,10 @@ import { candidateReport } from "../src/update/report.ts";
 import { gitIdentity } from "../src/update/source.ts";
 import { readState, saveJson } from "../src/update/state.ts";
 import { detectionReceipt } from "./update-detection-setup.ts";
-import { fixture, git, publicationFixture } from "./update-setup.ts";
+import { fixture, git, it, publicationFixture } from "./update-setup.ts";
 
 // Real Git setup and multiple publication passes include fixture subprocesses with 10-second deadlines.
-test("public export uses only the checked manifest, preserves modes and independent owner history", async () => {
+it("public export uses only the checked manifest, preserves modes and independent owner history", async () => {
   const f = await publicationFixture();
   const before = gitIdentity(f.job.candidate);
   const history = structuredClone(f.job.history);
@@ -90,7 +90,7 @@ test("public export uses only the checked manifest, preserves modes and independ
   expect(await runUpdate(["check", "--config", config])).toBe(0);
 }, 30_000);
 
-test("the next detected candidate uses the persisted successful baseline while configured base remains unchanged", async () => {
+it("the next detected candidate uses the persisted successful baseline while configured base remains unchanged", async () => {
   const f = await publicationFixture();
   expect((await f.updater.once()).outcome).toBe("promoted");
   const published = git(f.target, "rev-parse", "main");
@@ -109,7 +109,7 @@ test("the next detected candidate uses the persisted successful baseline while c
   expect(git(f.target, "rev-parse", "main")).toBe(published);
 });
 
-test.each(["bytes", "mode"] as const)(
+it.each(["bytes", "mode"] as const)(
   "changed checked %s hold promotion without rewriting ready or its baseline",
   async (kind) => {
     const f = await publicationFixture();
@@ -152,7 +152,7 @@ test("promotion is optional and lexical source identity survives a legitimate re
   expect(loadUpdateConfig(file).localSource).toBe(alias);
 });
 
-test("a forged ported manifest cannot export candidate Git metadata while the checked source stays unchanged", async () => {
+it("a forged ported manifest cannot export candidate Git metadata while the checked source stays unchanged", async () => {
   const f = await publicationFixture();
   const path = join(f.job.directory, "ported-source.json");
   const manifest = JSON.parse(readFileSync(path, "utf8"));

@@ -10,70 +10,77 @@ import { settle } from "./discord-inbound-live-fakes.ts";
 import { FakeGateway, gatewayTimers } from "./discord-presence-fakes.ts";
 import { withState } from "./fakes.ts";
 
-test("a stalled backfill retains dispatches on disk, not a growing Promise chain", async () => {
-  const state = withState();
-  const queue = discordInboundQueue(state.dir);
-  const hold = Promise.withResolvers<void>();
-  const socket = new FakeGateway("offline");
-  const accepted: number[] = [];
-  const live = discordInboundLive(
-    {
-      accepts: () => true,
-      cursorFor: () => undefined,
-      sync: () => hold.promise,
-      accept: (message) => {
-        accepted.push(Number(message.id));
-      },
-    },
-    () => socket,
-    "offline",
-    gatewayTimers().clock,
-    () => {},
-    () => {},
-    queue,
-  );
-  try {
-    socket.hello();
-    socket.ready(1);
-    await settle();
-    Bun.gc(true);
-    const before = process.memoryUsage().heapUsed;
-    for (let id = 1; id <= 3_000; id++) {
-      socket.receive({
-        op: 0,
-        t: "MESSAGE_CREATE",
-        s: id + 1,
-        d: ownerMessage(String(id), { content: "x".repeat(2_000) + id }),
-      });
-    }
-    Bun.gc(true);
-    expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * 1024 * 1024);
-    expect(accepted).toEqual([]);
-    const path = join(state.dir, "discord-inbound/gateway.sqlite");
-    const snapshot = join(state.dir, "snapshot.sqlite");
-    // Intake is blocked and no writer can run during these synchronous copies.
-    copyFileSync(path, snapshot);
-    copyFileSync(`${path}-wal`, `${snapshot}-wal`);
-    const db = new Database(snapshot, { readonly: true });
-    try {
-      expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM pending").get()?.n).toBe(3_001);
-    } finally {
-      db.close();
-    }
-    hold.resolve();
-    await settle();
-    expect(accepted).toEqual(Array.from({ length: 3_000 }, (_, i) => i + 1));
-    expect(queue.first()).toBeNull();
-  } finally {
-    hold.resolve();
-    live.close();
-    await live.done;
-    queue.close();
-    state.done();
-  }
-}, 30_000);
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
 
-test("shutdown retains queued work, and restart emits it once before later READY work", async () => {
+posix(
+  "a stalled backfill retains dispatches on disk, not a growing Promise chain",
+  async () => {
+    const state = withState();
+    const queue = discordInboundQueue(state.dir);
+    const hold = Promise.withResolvers<void>();
+    const socket = new FakeGateway("offline");
+    const accepted: number[] = [];
+    const live = discordInboundLive(
+      {
+        accepts: () => true,
+        cursorFor: () => undefined,
+        sync: () => hold.promise,
+        accept: (message) => {
+          accepted.push(Number(message.id));
+        },
+      },
+      () => socket,
+      "offline",
+      gatewayTimers().clock,
+      () => {},
+      () => {},
+      queue,
+    );
+    try {
+      socket.hello();
+      socket.ready(1);
+      await settle();
+      Bun.gc(true);
+      const before = process.memoryUsage().heapUsed;
+      for (let id = 1; id <= 3_000; id++) {
+        socket.receive({
+          op: 0,
+          t: "MESSAGE_CREATE",
+          s: id + 1,
+          d: ownerMessage(String(id), { content: "x".repeat(2_000) + id }),
+        });
+      }
+      Bun.gc(true);
+      expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * 1024 * 1024);
+      expect(accepted).toEqual([]);
+      const path = join(state.dir, "discord-inbound/gateway.sqlite");
+      const snapshot = join(state.dir, "snapshot.sqlite");
+      // Intake is blocked and no writer can run during these synchronous copies.
+      copyFileSync(path, snapshot);
+      copyFileSync(`${path}-wal`, `${snapshot}-wal`);
+      const db = new Database(snapshot, { readonly: true });
+      try {
+        expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM pending").get()?.n).toBe(3_001);
+      } finally {
+        db.close();
+      }
+      hold.resolve();
+      await settle();
+      expect(accepted).toEqual(Array.from({ length: 3_000 }, (_, i) => i + 1));
+      expect(queue.first()).toBeNull();
+    } finally {
+      hold.resolve();
+      live.close();
+      await live.done;
+      queue.close();
+      state.done();
+    }
+  },
+  30_000,
+);
+
+posix("shutdown retains queued work, and restart emits it once before later READY work", async () => {
   const state = withState();
   let queue = discordInboundQueue(state.dir);
   const rest = discordRestWorld([ownerMessage("100")]);
@@ -133,7 +140,7 @@ test("shutdown retains queued work, and restart emits it once before later READY
   }
 });
 
-test("queued messages in a newly discovered channel are not cold-baselined away on restart", async () => {
+posix("queued messages in a newly discovered channel are not cold-baselined away on restart", async () => {
   const state = withState();
   let queue = discordInboundQueue(state.dir);
   try {
@@ -170,7 +177,7 @@ test("queued messages in a newly discovered channel are not cold-baselined away 
   }
 });
 
-test("an emitter failure retains its record and successors without skipping the cursor", async () => {
+posix("an emitter failure retains its record and successors without skipping the cursor", async () => {
   const state = withState();
   const queue = discordInboundQueue(state.dir);
   try {
@@ -202,7 +209,7 @@ test("an emitter failure retains its record and successors without skipping the 
   }
 });
 
-test("queue files and sidecars remain private and unsafe paths are rejected", () => {
+posix("queue files and sidecars remain private and unsafe paths are rejected", () => {
   const state = withState();
   const path = join(state.dir, "discord-inbound/gateway.sqlite");
   try {

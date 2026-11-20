@@ -10,6 +10,8 @@ import type { UpdateConfig, UpdateJob } from "../src/update/types.ts";
 
 const MODEL = "--model=fixture/no-provider";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
+// POSIX-only: the refused launches spawn through the updater's private 0o700 runtime and POSIX wrappers.
+const it = test.skipIf(process.platform === "win32");
 const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0)) {
@@ -106,7 +108,7 @@ test.each([
   }
 });
 
-test.each([
+it.each([
   ["timeout", ["timeout", "600", "omp"]],
   ["timeout foreground", ["timeout", "--foreground", "600", "omp"]],
   ["caffeinate", ["caffeinate", "-i", "omp"]],

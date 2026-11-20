@@ -4,9 +4,12 @@ import { liveWorld, settle } from "./discord-inbound-live-fakes.ts";
 
 const options = { ownerId: "10", channelIds: ["20"] };
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 // An emitter that returns a promise (the --context path) yields a turn of the event loop before settling, as a
 // channel lookup would; the cursor must still move only after it resolves.
-test("an emitter whose promise rejects stops intake, and a slow one keeps order and cursor", async () => {
+posix("an emitter whose promise rejects stops intake, and a slow one keeps order and cursor", async () => {
   let calls = 0;
   const world = await liveWorld([], options, { "20": "100" }, async () => {
     await settle();

@@ -1,6 +1,6 @@
 # Session runtimes: herdr and hc
 
-**The OMP port retains herdr and hc (herdr-core) through the complete upstream runtime abstraction. Sessions on both can live in one home, and `dori harness migrate` moves sessions between them.** This document describes the source/runtime contract. The [first public preview](releases.md) supports Linux x64/herdr/Discord; Linux hc CI and manual macOS validation are distinct from live consumer support and exact-release QA evidence.
+**The OMP port retains herdr and hc (herdr-core) through the complete upstream runtime abstraction. Sessions on both can live in one home, and `dori harness migrate` moves sessions between them.** This document describes the source/runtime contract. The [first public preview](releases.md) supports Linux x64/herdr/Discord; Linux hc CI and the cross-OS macOS/Windows CI are distinct from live consumer support and exact-release QA evidence. The hc jobs in the release-gating `ci.yml` run on Linux, while `.github/workflows/cross-os.yml` runs macOS and Windows jobs outside that gate.
 
 A session is one terminal with an agent or a loop in it: the lead, duty, the duty loop, the hourly loop, or a lane. herdr gives Dori workspaces, tabs and panes and detects the agent in a pane. hc gives Dori plain terminals with labels, and the agent in a terminal reports its own status. The harness talks to both through one interface, and nothing above that interface knows which runtime it is using.
 
@@ -18,7 +18,7 @@ The native selection must also avoid traversing a command symlink that installat
 
 The primary wrapper captures Bun as an absolute pathname before generating its bound-ULW guard. A relative `PATH` entry therefore keeps selecting the installation-time Bun after the guard changes directory, including when the wrapper is launched from another directory.
 
-Managed release preparation runs Git materialization and frozen dependency installation with a child-local `umask 077` before bundle admission. The caller's mask stays unchanged, and independently group/world-writable bundle files remain rejected.
+Managed release preparation runs Git materialization and frozen dependency installation with a child-local `umask 077` before bundle admission. Root and skill packages use `--production`; the extension retains its full frozen install, including the OMP host dependency. The caller's mask stays unchanged, and independently group/world-writable bundle files remain rejected.
 
 Source-native preparation builds the export viewer with the pinned upstream builder's `--check` mode after frozen dependency installation. The generated filename, size and SHA-256 must match the tracked viewer manifest without rewriting it. Native cache admission and launch require that exact owned asset; missing, modified, writable or additional assets hold admission.
 
@@ -115,6 +115,12 @@ Native goals remain agent-owned. Skill pause/resume reads back active/paused sta
 OMP persists native goals as `mode_change` entries with `mode: "goal" | "goal_paused"` and `data: {goal: {objective, status, ...}}`. The extension replays `entry.data.goal` from the current branch on session start and resume, preserving active/paused status in its pane record; another mode ends the recorded goal. An owned OMP v18.18.8 session persisted the active-to-paused transition in this shape. The session JSONL owns this persistence; the pane JSON is the extension's derived state.
 
 Desired monitor state is `<stateDir>/monitors/<encodeURIComponent(sessionId)>.json` with `{version:1,sessionId,monitors:[{name,argv,filter,cwd}]}`. `dori boot` reads it without private transcript access and remains read-only.
+
+### Manager-tool boundary
+
+`monitor` belongs to the Dori main session: the selected role must be `dori` and native `ctx.agent.kind` must be `main`. Registration is inactive by default. Session start, switch, branch and tree events remove an explicitly selected `monitor` from child tool lists, even when the child inherits the Dori role or receives a copied role flag. The execution guard separately rejects child `start`, `stop` and `list` calls; hiding a tool is not authorization.
+
+Native children still inherit their parent's role-gated ULW behavior. Ordinary tools such as `read`, `edit` and `bash`, including direct work in the main session, retain their existing selection and permission rules. This is an extension tool boundary, not an operating-system sandbox.
 
 ## Grouping
 

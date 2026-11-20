@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fixture, linux } from "./release-bootstrap-setup.ts";
 
-test.each(["{}", '{"runtime":"hc"}'])(
+// POSIX-only: the fixture runs install.sh under bash with shebang runtime stubs.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each(["{}", '{"runtime":"hc"}'])(
   "legacy bootstrap holds unbound or conflicting preserved runtime %s before its old CLI can activate",
   (preserved) => {
     const f = fixture(linux);

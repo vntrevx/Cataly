@@ -6,8 +6,8 @@ import { regularFile } from "./files.ts";
 import { validateReleaseManifest } from "./manifest.ts";
 import type { ReleaseManifest } from "./types.ts";
 
-const API = "https://api.github.com/repos/vntrevx/omp-dori";
-const DOWNLOAD = "https://github.com/vntrevx/omp-dori/releases/download";
+const API = "https://api.github.com/repos/vntrevx/Cataly";
+const DOWNLOAD = "https://github.com/vntrevx/Cataly/releases/download";
 const TAG = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 export type ReleaseSelection = { readonly version?: string; readonly from?: string };
 export type VerifiedBundle = { readonly manifest: ReleaseManifest; readonly files: readonly ArchiveFile[] };

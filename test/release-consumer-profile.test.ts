@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fixture } from "./release-consumer-setup.ts";
 
-test.each([
+// POSIX-only: release installation refuses non-private directories by POSIX mode bits.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each([
   ["linux/x64 primary", { platform: "linux", arch: "x64", runtime: "herdr", side: false }],
   ["linux/x64 side", { platform: "linux", arch: "x64", runtime: "herdr", side: true }],
   ["darwin/arm64 primary", { platform: "darwin", arch: "arm64", runtime: "hc", side: false }],

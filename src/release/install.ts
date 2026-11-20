@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { platform } from "../platform/index.ts";
 import { freezeSource } from "../update/source.ts";
 import { extractArchive } from "./archive.ts";
 import { setAutomaticEnabled } from "./automatic-state.ts";
@@ -83,7 +84,7 @@ async function installReferences(
     if (!regularFile(paths.config)) {
       const example = JSON.parse(readFileSync(join(source, "skills/dori-mode/references/config.example.json"), "utf8"));
       example.ompUlwPath = dependency;
-      example.runtime = process.platform === "darwin" ? "hc" : "herdr";
+      example.runtime = platform.defaultRuntime();
       if (paths.dori !== join(paths.home, ".dori")) example.stateDir = join(paths.dori, "state");
       if (native || paths.dori !== join(paths.home, ".dori"))
         example.agentCommand = [

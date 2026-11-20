@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { hostname } from "node:os";
+import { sep } from "node:path";
 import { dutyTick } from "../src/duty.ts";
 import type { Deps } from "../src/harness.ts";
 import { send } from "../src/inbox.ts";
@@ -92,7 +93,7 @@ describe("a send to a session whose inbox a migration moves meanwhile reaches th
     let migrated: Promise<unknown> = Promise.resolve();
     const paused = onceAt(
       "renameSync",
-      (p) => p.startsWith(`${s.d.store.inboxPath(OLD)}.spool/`) && p.endsWith(".tmp"),
+      (p) => p.startsWith(`${s.d.store.inboxPath(OLD)}.spool${sep}`) && p.endsWith(".tmp"),
       () => {
         release();
         migrated = migrateInbox(s.d, OLD, NEW);

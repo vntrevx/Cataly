@@ -6,18 +6,17 @@ import {
   importExtensionModule,
   loadExtensionFromFactory,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import {
-  emitSessionShutdownEvent,
-  ExtensionRunner,
-} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { emitSessionShutdownEvent, ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import type {
   Extension,
   ExtensionAgentIdentity,
   ExtensionContext,
   ExtensionFactory,
   PreparedExtension,
+  ToolInfo,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { assertNativeHost } from "./host.ts";
 
@@ -64,21 +63,38 @@ export const nativeComposition = async (
     model?: FixtureModel;
     agent?: ExtensionAgentIdentity;
     observeBefore?: string;
+    nativePrompt?: boolean;
+    customPrompt?: string;
+    cwd?: string;
+    prompt?: string;
+    compact?: boolean;
+    activeTools?: string[];
+    tools?: Record<string, string>;
     command?: { name: string; args: string; beforePrompt?: boolean };
   },
 ) => {
   await assertNativeHost();
   const runtime = new ExtensionRuntime();
   const events = new EventBus();
-  const cwd = import.meta.dir;
+  const cwd = options.cwd ?? import.meta.dir;
+  let promptBase = base;
   const session = SessionManager.inMemory(cwd);
   if (options.role) runtime.flagValues.set("dori-role", options.role);
   const extensions: Extension[] = [];
   const beforeDori: string[][] = [];
   const afterAll: string[][] = [];
+  let tools: ToolInfo[] = [];
   const observe = (name: string, snapshots: string[][]) =>
     loadExtensionFromFactory(
       (api) => {
+        tools = Object.entries(options.tools ?? {}).map(
+          ([name, description]): ToolInfo => ({
+            name,
+            description,
+            parameters: api.typebox.Type.Object({}),
+            sourceInfo: { path: import.meta.path, source: "sdk", scope: "temporary", origin: "top-level" },
+          }),
+        );
         api.on("before_agent_start", (event) => {
           snapshots.push([...event.systemPrompt]);
           // Deliberately decline: the real runner must retain the earlier combined winner.
@@ -119,7 +135,7 @@ export const nativeComposition = async (
   const forbidden = (): never => {
     throw new Error("native prompt fixture attempted an action outside prompt composition");
   };
-  let active: string[] = [];
+  let active: string[] = [...(options.activeTools ?? [])];
   const userMessages: string[] = [];
   runner.initialize(
     {
@@ -133,7 +149,7 @@ export const nativeComposition = async (
       appendEntry: (type, data) => void session.appendCustomEntry(type, data),
       setLabel: forbidden,
       getActiveTools: () => [...active],
-      getAllTools: () => [],
+      getAllTools: () => tools,
       setActiveTools: async (names) => {
         active = [...names];
       },
@@ -152,7 +168,7 @@ export const nativeComposition = async (
       shutdown: forbidden,
       getContextUsage: () => undefined,
       compact: forbidden,
-      getSystemPrompt: () => base,
+      getSystemPrompt: () => promptBase,
     },
   );
   const invokeCommand = async (): Promise<void> => {
@@ -165,10 +181,53 @@ export const nativeComposition = async (
   try {
     await runner.emit({ type: "session_start" });
     if (options.command?.beforePrompt) await invokeCommand();
-    const first = await runner.emitBeforeAgentStart("ulw fix the fixture", undefined, base);
-    const second = await runner.emitBeforeAgentStart("ulw fix the fixture", undefined, base);
+    if (options.nativePrompt) {
+      const model = options.model ?? SOL_MODEL;
+      const rendered = await runner.runScoped(() =>
+        buildSystemPrompt({
+          cwd,
+          contextFiles: [],
+          noContextFiles: true,
+          activeRepoContext: null,
+          skills: [],
+          rules: [],
+          alwaysApplyRules: [],
+          personality: "none",
+          ...(options.customPrompt === undefined ? {} : { resolvedCustomPrompt: options.customPrompt }),
+          model: `${model.provider}/${model.id}`,
+          subagent: options.agent?.kind === "sub",
+          toolNames: active,
+          inlineToolDescriptors: true,
+          tools: new Map(tools.map(({ name, description }) => [name, { label: name, description }])),
+        }),
+      );
+      promptBase = [...rendered.systemPrompt, ...base];
+    }
+    const originalBase = [...promptBase];
+    const prompt = options.prompt ?? "ulw fix the fixture";
+    const first = await runner.emitBeforeAgentStart(prompt, undefined, promptBase);
+    const second = await runner.emitBeforeAgentStart(prompt, undefined, promptBase);
+    let postCompaction;
+    if (options.compact) {
+      // Exercise the native persisted-entry and extension hook boundary, not a summary-model request.
+      const retained = session.appendMessage({
+        role: "user",
+        content: "Retained fixture request",
+        timestamp: Date.now(),
+      });
+      const id = session.appendCompaction("Local fixture summary", undefined, retained, 100);
+      const entry = session.getEntries().find((value) => value.id === id);
+      if (entry?.type !== "compaction") throw new Error("native compaction entry is absent");
+      await runner.emit({ type: "session_compact", compactionEntry: entry, fromExtension: false });
+      postCompaction = await runner.emitBeforeAgentStart("Continue the existing work.", undefined, promptBase);
+    }
     if (options.command && !options.command.beforePrompt) await invokeCommand();
     return {
+      base: promptBase,
+      originalBase,
+      mode: runner.createCommandContext().mode,
+      activeTools: active,
+      postCompaction,
       firstResult: first,
       secondResult: second,
       first: first?.systemPrompt,

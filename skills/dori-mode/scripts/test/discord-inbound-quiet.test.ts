@@ -57,6 +57,7 @@ for (const change of ["deleted", "newer"] as const) {
         let body: unknown;
         if (url.pathname.endsWith("/users/@me")) body = { id: "99", bot: true };
         else if (url.pathname.endsWith("/applications/@me")) body = { flags: 1 << 18 };
+        else if (url.pathname.endsWith("/channels/20")) body = { id: "20", type: 0 };
         else {
           const limit = url.searchParams.get("limit");
           if (!url.pathname.endsWith("/channels/20/messages") || !limit) throw new Error("unexpected route");
@@ -148,8 +149,11 @@ for (const explicit of [false, true]) {
   }
 }
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const head of [undefined, "99", "107"]) {
-  test(`a quiet REST head (${head}) leaves retained older owners available to the admitted FIFO`, async () => {
+  posix(`a quiet REST head (${head}) leaves retained older owners available to the admitted FIFO`, async () => {
     const world = queuedWorld({
       history: head ? [ownerMessage(head)] : [],
       messages: [ownerMessage("105"), ownerMessage("109")],

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { consumerPaths, owned, realDirectory, regularFile } from "./files.ts";
@@ -64,6 +64,26 @@ export function resolveConsumerOmpUlwPath(
   }
 }
 
+function managedWindowsAlias(command: string, dori: string, releases: string): boolean {
+  // The same Windows release root can arrive via its short, long or case-variant path.
+  // Identify only the fixed launcher layout; the executable may not exist yet.
+  if (process.platform !== "win32") return false;
+  const path = command.replaceAll("\\", "/");
+  const shim = /^(.+\/)bin\/omp$/.exec(path);
+  const launcher = /^(.+\/)[a-f0-9]{40}-[a-f0-9]{16}\/scripts\/consumer\/omp$/.exec(path);
+  const alias = shim?.[1] ?? launcher?.[1];
+  if (!alias) return false;
+  const root = shim ? dori : releases;
+  try {
+    if (realpathSync(alias) === root) return true;
+    const actual = statSync(alias, { bigint: true });
+    const expected = statSync(root, { bigint: true });
+    return actual.isDirectory() && actual.ino !== 0n && actual.ino === expected.ino && actual.dev === expected.dev;
+  } catch {
+    return false;
+  }
+}
+
 /** Default/previously managed native commands follow this frozen release; absolute custom commands are explicit overrides. */
 export function resolveConsumerOmpCommand(
   configured: readonly string[],
@@ -76,13 +96,17 @@ export function resolveConsumerOmpCommand(
   const doriHome = consumerReleaseHome(source);
   if (!doriHome) return configured;
   const paths = consumerPaths(home, doriHome);
-  const manifest = JSON.parse(readFileSync(join(paths.manifests, `${basename(source)}.json`), "utf8"));
-  if (manifest.requirements.omp !== "18.20.0") return configured;
   const first = configured[0] ?? "omp";
   const managed =
-    first === join(paths.dori, "bin/omp") ||
-    /^[a-f0-9]{40}-[a-f0-9]{16}\/scripts\/consumer\/omp$/.test(relative(paths.releases, first));
+    isAbsolute(first) &&
+    (first.split("/").join(sep) === join(paths.dori, "bin", "omp") ||
+      /^[a-f0-9]{40}-[a-f0-9]{16}\/scripts\/consumer\/omp$/.test(
+        relative(paths.releases, first).split(sep).join("/"),
+      ) ||
+      managedWindowsAlias(first, paths.dori, paths.releases));
   if (first !== "omp" && !managed) return configured;
+  const manifest = JSON.parse(readFileSync(join(paths.manifests, `${basename(source)}.json`), "utf8"));
+  if (manifest.requirements.omp !== "18.20.0") return configured;
   assertNativeSource(source, home);
   return [
     join(source, "scripts/consumer/omp"),
@@ -146,6 +170,9 @@ export function resolveProcessOmpUlwPath(configured: string, home: string): stri
   }
   return selected;
 }
+
+/** Empty assignments override tokens retained by the terminal server; lanes do not host messenger bots. */
+export const laneMessengerOverrides = { DORI_DISCORD_TOKEN: "", DORI_TELEGRAM_TOKEN: "" } as const;
 
 /** Only launch context crosses a terminal server boundary; paths retain the caller's OS resolution. */
 export function doriLaunchEnv(

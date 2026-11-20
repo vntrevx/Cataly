@@ -16,26 +16,47 @@ import {
 import { basename, join } from "node:path";
 import { leaseNativeIdentity } from "../src/release/native-cache-lease.ts";
 import { cachePending } from "../src/release/native-cache-quarantine.ts";
+import { processFiles } from "../src/release/process-files.ts";
 import { keptFor, pruneFixture, removePruneFixtures } from "./native-cache-prune-setup.ts";
-import { nativeCacheFixture, ownProcessCwds, ownProcessFiles } from "./source-bundle-setup.ts";
+import { nativeCacheFixture, ownProcessCwds } from "./source-bundle-setup.ts";
 
 afterEach(removePruneFixtures);
-const nonRoot = test.skipIf(process.getuid?.() === 0);
+// POSIX-only: cache validation checks permission bits and owner uids. Partial removal also requires a non-root user.
+const posix = test.skipIf(process.platform === "win32");
+const nonRoot = test.skipIf(process.platform === "win32" || process.getuid?.() === 0);
+// These fixtures open descriptors in this process only. Run the real reader
+// without scanning unrelated host processes on every prune and recovery pass.
+const fixtureFiles = () =>
+  process.platform === "linux" ? processFiles("linux", [String(process.pid)]) : { files: new Map(), unread: [] };
 
 // All inputs use the original public prune/fixture APIs, including the fresh files callback. No rm implementation is
 // replaced: a real owned, nonempty, unreadable subtree makes native recursive removal fail after unlinking files.
 function partialRemoval() {
-  const c = pruneFixture();
+  const c = pruneFixture(fixtureFiles);
   const x = c.native("partial", true);
   const backup = join(c.root, "saved-source");
   renameSync(x.source, backup);
   writeFileSync(join(x.directory, "00-removal-payload"), "must be unlinked by native rm\n");
-  // Native enumeration is not lexical. Choose a subtree visited after both marker files instead of guessing its name.
-  const blocker = Array.from({ length: 256 }, (_, i) => `removal-blocked-${i}`).find((name) => {
+  // Native enumeration is not lexical. On reverse-insertion filesystems, move
+  // the marker files out and back so the blocker can be visited last there too.
+  const markers = ["receipt.json", "00-removal-payload"];
+  const blocker = Array.from({ length: 256 }, (_, i) => `removal-blocked-${i}`).find((name, i) => {
     const directory = join(x.directory, name);
+    const visitsMarkerFilesFirst = () => {
+      const order = readdirSync(x.directory);
+      return markers.every((marker) => order.indexOf(marker) < order.indexOf(name));
+    };
     mkdirSync(directory);
-    const order = readdirSync(x.directory);
-    if (order.indexOf(name) > Math.max(order.indexOf("receipt.json"), order.indexOf("00-removal-payload"))) return true;
+    if (visitsMarkerFilesFirst()) return true;
+    if (i === 0) {
+      for (const marker of markers) {
+        const path = join(x.directory, marker);
+        const moved = join(c.root, marker);
+        renameSync(path, moved);
+        renameSync(moved, path);
+      }
+      if (visitsMarkerFilesFirst()) return true;
+    }
     rmdirSync(directory);
     return false;
   });
@@ -57,7 +78,7 @@ function partialRemoval() {
           chmodSync(join(cache, name, blocker), 0);
           blocked = true;
         }
-        return ownProcessFiles();
+        return fixtureFiles();
       },
     });
   } catch (error) {
@@ -71,7 +92,12 @@ function partialRemoval() {
   }
   expect(blocked).toBe(true);
   const failureCode = (failure as NodeJS.ErrnoException | undefined)?.code;
-  expect(failureCode === "EACCES" || failureCode === "EPERM").toBe(true);
+  // Darwin's recursive rmSync reports the blocked subtree as ENOTEMPTY where Linux reports EACCES.
+  expect(
+    failureCode === "EACCES" ||
+      failureCode === "EPERM" ||
+      (process.platform === "darwin" && failureCode === "ENOTEMPTY"),
+  ).toBe(true);
   const left = readdirSync(cache).filter((name) => name.startsWith(prefix));
   expect(left).toHaveLength(1);
   const remainder = join(cache, left[0]!);
@@ -107,7 +133,7 @@ nonRoot("partial removal never returns to live; explicit cleanup preserves a new
   expect(cachePending(f.c.home)).toEqual([]);
 });
 
-test("successful explicit removal still removes the unused copy and its quarantine record", () => {
+posix("successful explicit removal still removes the unused copy and its quarantine record", () => {
   const c = pruneFixture();
   const x = c.native("success");
   expect(c.prune({ now: 0 }).removed).toEqual([]);
@@ -117,7 +143,7 @@ test("successful explicit removal still removes the unused copy and its quaranti
   expect(cachePending(c.home)).toEqual([]);
 });
 
-test("an intact pre-check deleting copy still restores when a reference appears", () => {
+posix("an intact pre-check deleting copy still restores when a reference appears", () => {
   const c = pruneFixture();
   const x = c.native("intact");
   c.prune({ now: 0 });
@@ -133,7 +159,7 @@ test("an intact pre-check deleting copy still restores when a reference appears"
 nonRoot("a committed retry uses fresh unknown-file holds and never restores the damaged copy", () => {
   const f = partialRemoval();
   let reads = 0;
-  const held = f.c.prune({ deleteQuarantined: true, files: () => (++reads === 1 ? ownProcessFiles() : null) });
+  const held = f.c.prune({ deleteQuarantined: true, files: () => (++reads === 1 ? fixtureFiles() : null) });
   expect(reads).toBeGreaterThan(1);
   expect(held.removed).toEqual([]);
   expect(keptFor(held, f.remainder)).toContain("open files of processes unavailable");
@@ -192,7 +218,7 @@ test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
   },
 );
 
-test("committed cleanup refuses linked or writable cache children without touching their contents", () => {
+posix("committed cleanup refuses linked or writable cache children without touching their contents", () => {
   const c = pruneFixture();
   const x = c.native("unsafe");
   const outside = join(c.root, "outside");

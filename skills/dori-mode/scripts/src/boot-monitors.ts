@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { formatRef } from "../../../../src/runtime/types.ts";
 import { laneWords } from "./monitor-command.ts";
@@ -12,6 +12,7 @@ export type Monitor = {
   readonly argv?: readonly string[];
   readonly cwd?: string;
   readonly filter?: string;
+  readonly restart?: "on-failure";
   readonly monitorId?: string;
   readonly sessionId?: string;
   readonly persistent?: boolean;
@@ -42,8 +43,15 @@ export type Cleanup = {
   readonly stop: string;
 };
 // The one definition of a finished lane, shared by the VANISHED filter and the cleanup check.
-export const finished = (lane: BootLane): boolean =>
-  ["closed", "verified-done"].includes(statusOf(lane)) || lane.reportState === "done";
+export const finished = (lane: BootLane): boolean => {
+  const status = statusOf(lane);
+  // A watcher or lead objection is authoritative, including before the lane journals its setback.
+  const rejected = status === "not-done" || (status === "paused" && lane.pausedFrom === "not-done");
+  return (
+    status === "closed" ||
+    (!lane.threadClosePending && (status === "verified-done" || (!rejected && lane.reportState === "done")))
+  );
+};
 
 // Loose: any mention of a name, prose and paths included. Used only to keep a watch that might belong to an open lane.
 // A colon or a period next to the name is punctuation ("lane:api-release", "api-release.") unless the period joins
@@ -138,6 +146,14 @@ const entries = (dir: string) => {
   }
 };
 
+/** Legacy terminal metadata can live outside the configured session tree. */
+export const terminalMonitorDirs = (env: Readonly<Record<string, string | undefined>>): string[] => {
+  const sessionFile = env["PI_SESSION_FILE"];
+  return [env["PI_SESSION_DIR"], sessionFile && dirname(sessionFile)].flatMap((dir) =>
+    dir ? [join(dir, "extensions", "terminal")] : [],
+  );
+};
+
 // One unreadable file is named in errors and skipped; the other sessions' metadata is still read.
 export const readMonitorManifests = (
   sessionsDir: string,
@@ -169,8 +185,31 @@ export const readMonitorManifests = (
         const data = JSON.parse(readFileSync(path, "utf8")) as Manifest["data"];
         if (data.version !== 1 || !Array.isArray(data.monitors) || typeof data.sessionId !== "string")
           throw new Error("invalid monitor metadata");
-        // A null or non-object entry makes the whole file unreadable here, never a crash in the cleanup pass.
-        if (!data.monitors.every((m: unknown) => typeof m === "object" && m !== null && !Array.isArray(m)))
+        // Shared status/cleanup fields must be typed. Legacy argv retains command-based matching when unusable.
+        if (
+          !data.monitors.every((value: unknown) => {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+            const monitor = value as Monitor;
+            for (const field of [
+              "name",
+              "cwd",
+              "filter",
+              "monitorId",
+              "sessionId",
+              "description",
+              "command",
+              "path",
+              "target",
+            ] as const)
+              if (monitor[field] !== undefined && typeof monitor[field] !== "string") return false;
+            for (const field of ["persistent", "suspended", "deliveryPaused"] as const)
+              if (monitor[field] !== undefined && typeof monitor[field] !== "boolean") return false;
+            return (
+              monitor.expiresAt === undefined ||
+              (typeof monitor.expiresAt === "number" && Number.isFinite(monitor.expiresAt))
+            );
+          })
+        )
           throw new Error("invalid monitor entry");
         const omp = dir === ompDir;
         if (
@@ -183,7 +222,8 @@ export const readMonitorManifests = (
               monitor.argv.length > 0 &&
               monitor.argv.every((arg: unknown) => typeof arg === "string") &&
               typeof monitor.cwd === "string" &&
-              (monitor.filter === undefined || typeof monitor.filter === "string"),
+              (monitor.filter === undefined || typeof monitor.filter === "string") &&
+              (monitor.restart === undefined || monitor.restart === "on-failure"),
           )
         )
           throw new Error("invalid OMP monitor spec");

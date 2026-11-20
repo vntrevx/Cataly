@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 import { ownerMessage } from "./discord-inbound-fakes.ts";
 import { queuedWorld, settle } from "./discord-inbound-live-fakes.ts";
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const missing of [false, true])
-  test(`closed/reopened sync preserves queued 105 with REST 105 ${missing ? "absent" : "present"}`, async () => {
+  posix(`closed/reopened sync preserves queued 105 with REST 105 ${missing ? "absent" : "present"}`, async () => {
     const world = await queuedWorld({
       history: missing ? [ownerMessage("107")] : [ownerMessage("105"), ownerMessage("107")],
       messages: [ownerMessage("105"), ownerMessage("109")],
@@ -17,7 +20,7 @@ for (const missing of [false, true])
     expect(world.queue().first()).toBeNull();
   });
 
-test("a filtered trailing 107 cannot checkpoint past durable owner 105", async () => {
+posix("a filtered trailing 107 cannot checkpoint past durable owner 105", async () => {
   const world = await queuedWorld({
     history: ["103", "104", "106", "107"].map((id) => ownerMessage(id, { author: { id: "11" } })),
     messages: [ownerMessage("105"), ownerMessage("109")],
@@ -31,7 +34,7 @@ test("a filtered trailing 107 cannot checkpoint past durable owner 105", async (
 });
 
 for (const sync of [true, false])
-  test(`${sync ? "sync" : "message"} recovery prefix reads older REST gaps before queued owners`, async () => {
+  posix(`${sync ? "sync" : "message"} recovery prefix reads older REST gaps before queued owners`, async () => {
     const world = await queuedWorld({
       history: ["103", "104", "107"].map((id) => ownerMessage(id)),
       messages: [ownerMessage("105"), ownerMessage("109")],
@@ -54,7 +57,7 @@ for (const sync of [true, false])
     expect(world.rest.requests).toHaveLength(requests);
   });
 
-test("scope-all recovery reads a queued channel's saved cursor even when discovery omits it", async () => {
+posix("scope-all recovery reads a queued channel's saved cursor even when discovery omits it", async () => {
   const world = await queuedWorld({
     history: ["103", "104", "107"].map((id) => ownerMessage(id, { channel_id: "21" })),
     messages: ["105", "109"].map((id) => ownerMessage(id, { channel_id: "21" })),
@@ -68,7 +71,7 @@ test("scope-all recovery reads a queued channel's saved cursor even when discove
   expect(world.queue().first()).toBeNull();
 });
 
-test("a new queued channel seeds its lowest known ID, not its first arrival or older REST history", async () => {
+posix("a new queued channel seeds its lowest known ID, not its first arrival or older REST history", async () => {
   const world = await queuedWorld({
     history: ["103", "104", "107"].map((id) => ownerMessage(id, { channel_id: "50" })),
     messages: ["109", "105"].map((id) => ownerMessage(id, { channel_id: "50" })),
@@ -83,7 +86,7 @@ test("a new queued channel seeds its lowest known ID, not its first arrival or o
   expect(world.queue().first()).toBeNull();
 });
 
-test("queued reconciliation preserves watched-channel service order and independent cursors", async () => {
+posix("queued reconciliation preserves watched-channel service order and independent cursors", async () => {
   const world = await queuedWorld({
     history: [
       ownerMessage("103"),
@@ -106,7 +109,7 @@ test("queued reconciliation preserves watched-channel service order and independ
   expect(world.queue().first()).toBeNull();
 });
 
-test("SQL reconciliation orders decimal IDs beyond JavaScript precision and signed SQLite integers", async () => {
+posix("SQL reconciliation orders decimal IDs beyond JavaScript precision and signed SQLite integers", async () => {
   const ids = [
     "9007199254740992",
     "9007199254740993",
@@ -127,7 +130,7 @@ test("SQL reconciliation orders decimal IDs beyond JavaScript precision and sign
   expect(world.queue().first()).toBeNull();
 });
 
-test("stop drains the active merged backfill but retains later queued work for restart", async () => {
+posix("stop drains the active merged backfill but retains later queued work for restart", async () => {
   const world = await queuedWorld({
     history: [ownerMessage("107")],
     messages: [ownerMessage("105"), ownerMessage("109")],

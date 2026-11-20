@@ -7,6 +7,9 @@ import { nativeCacheFixture, overlayFixture, ownProcessCwds, ownProcessFiles } f
 
 // What the report cannot confirm unused it reports as a use: a reference of any size and a source lock it cannot read.
 
+// POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -25,17 +28,18 @@ function cache() {
     rmSync(f.source, { recursive: true });
     return receipt;
   };
+  // These filesystem-only cases leave no live writer or child; exclude unrelated host writers and descriptors.
   const reasons = (scanned: readonly string[] = [refs]) =>
     Object.fromEntries(
-      reportNativeCache(home, [], scanned, ownProcessCwds, { files: ownProcessFiles }).map((entry) => [
-        entry.directory,
-        entry.protectedBy,
-      ]),
+      reportNativeCache(home, [], scanned, ownProcessCwds, {
+        table: () => "",
+        files: () => ownProcessFiles([String(process.pid)]),
+      }).map((entry) => [entry.directory, entry.protectedBy]),
     );
   return { root, refs, native, reasons };
 }
 
-test.each(["node_modules", ".git"])(
+posix.each(["node_modules", ".git"])(
   "a %s symlink is inspected even though real directories of that name are skipped",
   (name) => {
     const c = cache();
@@ -45,7 +49,7 @@ test.each(["node_modules", ".git"])(
   },
 );
 
-test.each(["node_modules", ".git"])("a skipped %s subtree is unknown until explicitly scanned", (name) => {
+posix.each(["node_modules", ".git"])("a skipped %s subtree is unknown until explicitly scanned", (name) => {
   const c = cache();
   const wrapped = c.native("wrapped");
   const free = c.native("free");
@@ -73,7 +77,7 @@ test.each(["node_modules", ".git"])("a skipped %s subtree is unknown until expli
   expect(complete[wrapped.directory]).toEqual([`link ${join(skipped, ".bin/omp")}`]);
 });
 
-test("a reference file larger than any limit is read whole, directly or behind a link", () => {
+posix("a reference file larger than any limit is read whole, directly or behind a link", () => {
   const c = cache();
   const direct = c.native("direct");
   const linked = c.native("linked");
@@ -91,52 +95,58 @@ test("a reference file larger than any limit is read whole, directly or behind a
   expect(reasons[free.directory]).toEqual([]);
 });
 
-test("a linked directory the scan does not walk is reported against every identity, even when its lock binds another", () => {
-  const c = cache();
-  const wrapped = c.native("wrapped");
-  const wrapper = `#!/bin/sh\nexec ${wrapped.omp} "$@"\n`;
-  // A valid source of another identity outside the roots, holding a wrapper of this one.
-  const outside = join(c.root, "outside");
-  overlayFixture(outside, join(c.root, "upstream-other"), true, `other ${c.root}`);
-  writeFileSync(join(outside, "omp"), wrapper);
-  symlinkSync(outside, join(c.refs, "release"));
-  // A directory inside a root that the walk skips (node_modules), reached through a link.
-  const hidden = join(c.refs, "node_modules/wrappers");
-  mkdirSync(hidden, { recursive: true });
-  writeFileSync(join(hidden, "omp"), wrapper);
-  symlinkSync(hidden, join(c.refs, "active"));
-  expect([...(c.reasons()[wrapped.directory] ?? [])].sort()).toEqual(
-    [
-      `link to an unscanned directory ${join(c.refs, "release")}`,
-      `link to an unscanned directory ${join(c.refs, "active")}`,
-      `unscanned directory ${join(c.refs, "node_modules")}`,
-    ].sort(),
-  );
-});
-
-test("a link that cannot be resolved for another reason than a missing target is reported against every identity", () => {
-  const c = cache();
-  const wrapped = c.native("wrapped");
-  // A wrapper behind a directory the scan may not enter.
-  const closed = join(c.root, "closed");
-  mkdirSync(closed);
-  writeFileSync(join(closed, "omp"), `#!/bin/sh\nexec ${wrapped.omp} "$@"\n`);
-  symlinkSync(join(closed, "omp"), join(c.refs, "omp"));
-  // A loop of links, and a link whose target is simply gone (that one names nothing).
-  symlinkSync(join(c.root, "hop"), join(c.refs, "loop"));
-  symlinkSync(join(c.refs, "loop"), join(c.root, "hop"));
-  symlinkSync(join(c.root, "gone"), join(c.refs, "dangling"));
-  chmodSync(closed, 0);
-  try {
+posix(
+  "a linked directory the scan does not walk is reported against every identity, even when its lock binds another",
+  () => {
+    const c = cache();
+    const wrapped = c.native("wrapped");
+    const wrapper = `#!/bin/sh\nexec ${wrapped.omp} "$@"\n`;
+    // A valid source of another identity outside the roots, holding a wrapper of this one.
+    const outside = join(c.root, "outside");
+    overlayFixture(outside, join(c.root, "upstream-other"), true, `other ${c.root}`);
+    writeFileSync(join(outside, "omp"), wrapper);
+    symlinkSync(outside, join(c.refs, "release"));
+    // A directory inside a root that the walk skips (node_modules), reached through a link.
+    const hidden = join(c.refs, "node_modules/wrappers");
+    mkdirSync(hidden, { recursive: true });
+    writeFileSync(join(hidden, "omp"), wrapper);
+    symlinkSync(hidden, join(c.refs, "active"));
     expect([...(c.reasons()[wrapped.directory] ?? [])].sort()).toEqual(
-      [`unresolved link ${join(c.refs, "omp")}`, `unresolved link ${join(c.refs, "loop")}`].sort(),
+      [
+        `link to an unscanned directory ${join(c.refs, "release")}`,
+        `link to an unscanned directory ${join(c.refs, "active")}`,
+        `unscanned directory ${join(c.refs, "node_modules")}`,
+      ].sort(),
     );
-  } finally {
-    chmodSync(closed, 0o700);
-  }
-});
+  },
+);
 
-test("a linked directory whose source lock cannot be read is reported against every identity", () => {
+posix(
+  "a link that cannot be resolved for another reason than a missing target is reported against every identity",
+  () => {
+    const c = cache();
+    const wrapped = c.native("wrapped");
+    // A wrapper behind a directory the scan may not enter.
+    const closed = join(c.root, "closed");
+    mkdirSync(closed);
+    writeFileSync(join(closed, "omp"), `#!/bin/sh\nexec ${wrapped.omp} "$@"\n`);
+    symlinkSync(join(closed, "omp"), join(c.refs, "omp"));
+    // A loop of links, and a link whose target is simply gone (that one names nothing).
+    symlinkSync(join(c.root, "hop"), join(c.refs, "loop"));
+    symlinkSync(join(c.refs, "loop"), join(c.root, "hop"));
+    symlinkSync(join(c.root, "gone"), join(c.refs, "dangling"));
+    chmodSync(closed, 0);
+    try {
+      expect([...(c.reasons()[wrapped.directory] ?? [])].sort()).toEqual(
+        [`unresolved link ${join(c.refs, "omp")}`, `unresolved link ${join(c.refs, "loop")}`].sort(),
+      );
+    } finally {
+      chmodSync(closed, 0o700);
+    }
+  },
+);
+
+posix("a linked directory whose source lock cannot be read is reported against every identity", () => {
   const c = cache();
   const wrapped = c.native("wrapped");
   const outside = join(c.root, "outside");

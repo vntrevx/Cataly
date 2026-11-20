@@ -9,22 +9,38 @@ import {
   isOwnerMessage,
   type Message,
   messagePage,
+  newer,
   toInbound,
+  unavailable,
 } from "./discord-inbound-api.ts";
 import type { DiscordInboundQueue } from "./discord-inbound-queue.ts";
 import { discordInboundEnv, type DiscordInboundStore, isDiscordSnowflake } from "./discord-inbound-state.ts";
+import { discordThreadPoll } from "./discord-inbound-thread-poll.ts";
+import { discordThreads } from "./discord-inbound-threads.ts";
 import { MessengerError } from "./http.ts";
 
 export type { DiscordInbound } from "./discord-inbound-api.ts";
 export type DiscordInboundOptions = {
   ownerId: string;
-  /** Channels and threads that must be reachable; a failure on one of them is an error. */
+  /** Explicit IDs remain strict, including configured threads without a watched parent. */
   channelIds: readonly string[];
-  /** Also watch every text channel, active thread and the owner DM the bot can see; inaccessible ones are skipped. */
   all?: boolean;
+  /** Active children of configured parents are followed unless explicitly disabled. */
+  threads?: boolean;
 };
 
-/** Formats one unchanged text line followed by reply and attachment records for the existing single emit. */
+/** Failure to add a read receipt must not replay the owner's request. */
+export async function markDiscordInboundSeen(
+  discord: Pick<Discord, "react">,
+  message: Pick<DiscordInbound, "channel" | "message">,
+): Promise<void> {
+  try {
+    await discord.react(message.channel, message.message, "👀");
+  } catch {
+    console.error(`Discord read receipt failed for ${message.channel}/${message.message}`);
+  }
+}
+
 export const formatDiscordInbound = (message: DiscordInbound): string => {
   const id = `discord ${message.channel} ${message.message}`;
   return [
@@ -34,18 +50,12 @@ export const formatDiscordInbound = (message: DiscordInbound): string => {
   ].join("\n");
 };
 
-/** The `--context` record that ends a message's group: where it was posted and the purposes recorded there. */
 export const formatInboundContext = (message: DiscordInbound, context: InboundContext): string =>
   `INBOUND_CONTEXT discord ${message.channel} ${message.message} ${JSON.stringify(context)}`;
 
-const newer = (a: string, b: string): boolean => BigInt(a) > BigInt(b);
-const unavailable = (error: unknown): boolean =>
-  error instanceof MessengerError && (error.status === 403 || error.status === 404);
-
 /**
- * Bot-authenticated intake with per-channel cursors. Known REST and queued owners merge in ID order before each
- * delivery boundary; an older frame admitted during an awaited emit can arrive late without regressing the cursor.
- * Emit-before-checkpoint crashes and ambiguous legacy queue recovery can repeat a request. Presence is separate.
+ * Known REST and admitted owners merge before each delivery boundary. An older frame admitted during an
+ * awaited emit may arrive late, never checkpoint backwards. Emit/crash windows may repeat a request.
  */
 export const discordInbound = async (
   discord: Discord,
@@ -71,59 +81,90 @@ export const discordInbound = async (
     );
   }
   const watched = new Map<string, DiscordInboundStore>();
+  const parents = new Map<string, string>();
+  const threads = opts.threads !== false && !opts.all;
   const current = (store: DiscordInboundStore): string => {
     const cursor = store.load();
     if (cursor === undefined)
       throw new MessengerError("Discord inbound cursor disappeared; restore its state before retrying", 0);
     return cursor;
   };
-  /** Only history-read failures can make a discovered channel unavailable, never state or delivery failures. */
-  const readPage = async (channelId: string, limit: number, before?: string) => {
+  const readPage = async (channel: string, limit: number, before?: string) => {
     try {
-      return await messagePage(request, channelId, limit, before);
+      return await messagePage(request, channel, limit, before);
     } catch (error) {
-      if (explicit.includes(channelId) || !unavailable(error)) throw error;
-      watched.delete(channelId);
+      if (explicit.includes(channel) || !unavailable(error)) throw error;
+      watched.delete(channel);
       return undefined;
     }
   };
-  const attach = async (channelId: string): Promise<void> => {
-    const store = storeFor(channelId);
+  const attach = async (channel: string, seed?: string): Promise<string | undefined> => {
+    const store = storeFor(channel);
     const cursor = store.load();
-    const latest = await readPage(channelId, 1); // Also verifies channel access before readiness.
-    if (latest === undefined) return;
-    if (latest.some((message) => message.channel_id !== channelId)) {
+    const latest = await readPage(channel, 1);
+    if (latest === undefined) return undefined;
+    if (latest.some((message) => message.channel_id !== channel)) {
       throw inboundProtocolError("Discord inbound channel response does not match the configured channel");
     }
-    if (cursor === undefined) store.save(latest[0]?.id ?? "0"); // Cold start skips existing history.
-    watched.set(channelId, store);
+    if (cursor === undefined) store.save(seed ?? latest[0]?.id ?? "0");
+    watched.set(channel, store);
+    return latest[0]?.id ?? "0";
   };
-  const refresh = async (): Promise<void> => {
-    for (const id of explicit) if (!watched.has(id)) await attach(id);
-    if (!opts.all) return;
-    for (const id of await discoverChannels(request, ownerId)) {
+  const following = discordThreads({ request, explicit, watched, parents, attach });
+  const refresh = async (initial: boolean): Promise<void> => {
+    for (const id of explicit) {
       if (watched.has(id)) continue;
-      await attach(id);
+      const latest = await attach(id);
+      if (latest !== undefined && threads) {
+        const position = current(watched.get(id)!);
+        await following.register(id, newer(latest, position) ? latest : position);
+      }
     }
+    if (opts.all) {
+      for (const id of await discoverChannels(request, ownerId)) if (!watched.has(id)) await attach(id);
+    }
+    if (threads) await following.follow(initial);
   };
-  const accepts = (message: Message): boolean =>
-    !!message &&
-    isDiscordSnowflake(message.id) &&
-    isDiscordSnowflake(message.channel_id) &&
-    (opts.all === true || watched.has(message.channel_id));
+  const valid = (message: Message): boolean =>
+    !!message && isDiscordSnowflake(message.id) && isDiscordSnowflake(message.channel_id);
+  const parentFor = (channel: string): string | undefined =>
+    threads ? (following.cached(channel) ?? undefined) : undefined;
+  const accepts = (message: Message, parent?: string | null): boolean =>
+    valid(message) &&
+    (opts.all === true || watched.has(message.channel_id) || (threads && parent != null && parents.has(parent)));
+  const adoptThread = (channel: string, parent: string): string => {
+    if (!threads || !parents.has(parent)) throw inboundProtocolError("Discord inbound thread scope is invalid");
+    const floor = following.adopt(channel, parent);
+    const store = storeFor(channel, false);
+    if (store.load() === undefined) store.save(floor);
+    watched.set(channel, store);
+    return floor;
+  };
   const deliver = async (message: Message, store: DiscordInboundStore, emit: Emit, cursor = message.id) => {
     if (isOwnerMessage(message, ownerId, botId)) await emit(toInbound(message));
-    store.save(cursor); // Checkpoint only after successful delivery; a late frame never moves it backwards.
+    store.save(cursor);
   };
-  const accept = async (message: Message, emit: Emit, admittedAfter?: string | null): Promise<void> => {
-    if (!accepts(message)) return;
+  const accept = async (
+    message: Message,
+    emit: Emit,
+    admittedAfter?: string | null,
+    parent?: string | null,
+  ): Promise<void> => {
+    if (!valid(message)) return;
+    if (!accepts(message, parent)) {
+      if (admittedAfter !== undefined || !threads) return;
+      const found = await following.parentOf(message.channel_id);
+      if (found === undefined) return;
+      adoptThread(message.channel_id, found);
+    }
     if (admittedAfter !== undefined && admittedAfter !== null && admittedAfter !== "0")
       discordInboundEnv("Discord inbound queue admission cursor", admittedAfter);
     let store = watched.get(message.channel_id);
     if (!store) {
       store = storeFor(message.channel_id);
-      if (store.load() === undefined) store.save(String(BigInt(message.id) - 1n));
-      watched.set(message.channel_id, store);
+      if (store.load() === undefined) store.save(admittedAfter ?? String(BigInt(message.id) - 1n));
+      // An archived admitted record is delivery work, not a reason to resume polling that thread.
+      if (parent == null || explicit.includes(message.channel_id)) watched.set(message.channel_id, store);
     }
     const cursor = current(store);
     if (
@@ -136,94 +177,50 @@ export const discordInbound = async (
       return;
     await deliver(message, store, emit, newer(message.id, cursor) ? message.id : cursor);
   };
-  const pollChannel = async (
-    channelId: string,
-    store: DiscordInboundStore,
-    emit: Emit,
-    queue?: DiscordInboundQueue,
-  ): Promise<void> => {
-    const after = current(store);
-    const latest = await readPage(channelId, 1);
-    if (latest === undefined) return;
-    if (latest.some((message) => message.channel_id !== channelId)) {
-      throw inboundProtocolError("Discord inbound channel response does not match the configured channel");
-    }
-    const head = latest[0];
-    // No REST gap: leave retained queue records and their admission cursors for the FIFO drain.
-    if (!head || !newer(head.id, after)) return;
-    // Keep the probed message even if it disappears before the full history read.
-    const pending = new Map<string, Message>([[head.id, head]]);
-    let before: string | undefined;
-    for (;;) {
-      const messages = await readPage(channelId, 100, before);
-      if (messages === undefined) return;
-      let oldest: string | undefined;
-      for (const message of messages) {
-        if (oldest === undefined || newer(oldest, message.id)) oldest = message.id;
-        if (message.channel_id === channelId && newer(message.id, after) && !pending.has(message.id)) {
-          pending.set(message.id, message);
-        }
-      }
-      if (before !== undefined && oldest !== undefined && !newer(before, oldest)) {
-        throw inboundProtocolError("Discord inbound pagination did not advance");
-      }
-      if (messages.length < 100 || oldest === undefined || !newer(oldest, after)) break;
-      before = oldest;
-    }
-    const ordered = [...pending.values()].sort((a, b) => (newer(a.id, b.id) ? 1 : newer(b.id, a.id) ? -1 : 0));
-    for (const [index, message] of ordered.entries()) {
-      // An owner checkpoint covers the preceding filtered run; only a trailing run needs its own save.
-      if (!isOwnerMessage(message, ownerId, botId) && index !== ordered.length - 1) continue;
-      if (queue) {
-        let after = "0";
-        let row = 0;
-        for (
-          let job = queue.nextOwner(channelId, ownerId, message.id, after, row);
-          job;
-          job = queue.nextOwner(channelId, ownerId, message.id, after, row)
-        ) {
-          const retained = JSON.parse(job.payload) as Message;
-          if (!accepts(retained)) throw inboundProtocolError("Discord inbound queue message is invalid");
-          after = retained.id;
-          row = job.id;
-          if (!isOwnerMessage(retained, ownerId, botId)) continue;
-          await accept(retained, emit, job.admittedAfter);
-          queue.acknowledge(channelId, retained.id);
-          after = "0"; // Recheck arrivals admitted while the previous owner emit was awaited.
-          row = 0;
-        }
-      }
-      if (newer(message.id, current(store))) {
-        await deliver(message, store, emit);
-        queue?.acknowledge(channelId, message.id);
-      }
-    }
-  };
-  await refresh();
+  const pollChannel = discordThreadPoll({ ownerId, botId, current, readPage, valid, accepts, accept, deliver });
+  await refresh(true);
   let polls = 0;
   return {
     botId,
     accepts,
+    parentFor,
+    adoptThread,
+    needsThread(message: Message): boolean {
+      return (
+        valid(message) &&
+        threads &&
+        parents.size > 0 &&
+        !accepts(message) &&
+        following.cached(message.channel_id) !== null
+      );
+    },
+    resolveThread: (channel: string, signal: AbortSignal) => following.parentOf(channel, signal),
     cursorFor(channel: string): string | undefined {
       const store = watched.get(channel);
       return store ? current(store) : storeFor(channel, false).load();
     },
     channels: (): string[] => [...watched.keys()],
-    /** Reads every watched channel from its cursor; the REST path and the Gateway backfill. */
-    async poll(emit: Emit, queue?: DiscordInboundQueue): Promise<void> {
-      if (opts.all && ++polls % 100 === 0) await refresh(); // Pick up channels and threads created since start.
-      for (const [channelId, store] of [...watched]) await pollChannel(channelId, store, emit, queue);
+    async poll(emit: Emit, queue?: DiscordInboundQueue, scoped?: () => void): Promise<void> {
+      if (opts.all ? ++polls % 100 === 0 : threads && ++polls % 10 === 0) await refresh(false);
+      scoped?.();
+      for (const [channel, store] of [...watched]) await pollChannel(channel, store, emit, queue);
     },
-    /** Reconciles the watched set, then reads each channel from its cursor; used after a Gateway (re)connect. */
-    async sync(emit: Emit, queue?: DiscordInboundQueue): Promise<void> {
-      await refresh();
-      if (opts.all && queue) {
-        for (let channel = queue.nextChannel(""); channel !== undefined; channel = queue.nextChannel(channel))
-          if (!watched.has(channel)) await attach(channel);
+    async sync(emit: Emit, queue?: DiscordInboundQueue, scoped?: () => void): Promise<void> {
+      await refresh(false);
+      scoped?.();
+      if (queue) {
+        for (let channel = queue.nextChannel(""); channel !== undefined; channel = queue.nextChannel(channel)) {
+          if (watched.has(channel)) continue;
+          if (opts.all) await attach(channel);
+          else {
+            const parent = queue.parentFor(channel);
+            if (threads && parent !== undefined && parents.has(parent))
+              await pollChannel(channel, storeFor(channel), emit, queue);
+          }
+        }
       }
-      await this.poll(emit, queue);
+      await this.poll(emit, queue, scoped);
     },
-    /** Direct calls retain the cursor gate; queued calls supply their persisted admission position. */
     accept,
   };
 };

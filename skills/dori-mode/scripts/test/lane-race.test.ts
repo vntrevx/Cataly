@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "../src/done-flow.ts";
 import { freshnessTick } from "../src/freshness.ts";
-import { adoptLane, launchLane } from "../src/launch.ts";
+import { launchLane } from "../src/launch.ts";
 import { pauseLane } from "../src/pause.ts";
 import { type Lane, statusOf, withStatus } from "../src/registry.ts";
 import { Reports } from "../src/reports.ts";
@@ -131,13 +131,13 @@ test("a close of a not-done lane is refused when a new objection lands during th
   expect(paneCloses()).toEqual([]);
 });
 
-test("a launch whose key is adopted and objected to while its session is created is refused and keeps that record", async () => {
+test("a launch keeps an uncoordinated registry writer's adopted and objected record", async () => {
   const base = depsFor(world, fakeClock(T0), state.dir);
   const brief = join(state.dir, "brief.md");
   writeFileSync(brief, "brief");
   const run: Runner = async (argv, opts) => {
     if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") {
-      await adoptLane(base, { key: lane.key, title: "adopted", brief: "/b.md", done: lane.done, pane: "w:p1" });
+      await base.registry.create({ ...lane, title: "adopted", cwd: base.config.defaultCwd });
       await objectDone(base, await stored(base), ["adopted lane objected"]);
       return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" };
     }

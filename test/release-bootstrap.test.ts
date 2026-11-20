@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join } from "node:path";
 import { darwin, fixture, linux } from "./release-bootstrap-setup.ts";
 
-test.each([
+// POSIX-only: the fixture runs install.sh under bash with shebang tool stubs through a ':' PATH.
+const posix = test.skipIf(process.platform === "win32");
+
+posix.each([
   [linux, ".dori", "herdr"],
   [darwin, ".omp-dori", "hc"],
 ] as const)(
@@ -26,7 +29,7 @@ test.each([
   },
 );
 
-test("explicit home wins over side environment and leaves primary and global files untouched", () => {
+posix("explicit home wins over side environment and leaves primary and global files untouched", () => {
   const f = fixture(darwin);
   const primary = join(f.home, ".dori"),
     global = join(f.home, ".agents/skills/dori-mode");
@@ -46,7 +49,7 @@ test("explicit home wins over side environment and leaves primary and global fil
   expect(readFileSync(global, "utf8")).toBe("global");
 });
 
-test("side mode honors its home and explicit runtime environment", () => {
+posix("side mode honors its home and explicit runtime environment", () => {
   const f = fixture(linux),
     selected = join(f.root, "side");
   const result = f.run([], { DORI_INSTALL_MODE: "side", OMP_DORI_HOME: selected, DORI_RUNTIME: "herdr" });
@@ -54,7 +57,7 @@ test("side mode honors its home and explicit runtime environment", () => {
   expect(f.selected()).toEqual(f.expected(selected, "herdr"));
 });
 
-test("an explicit primary home overrides the Darwin side default", () => {
+posix("an explicit primary home overrides the Darwin side default", () => {
   const f = fixture(darwin),
     selected = join(f.home, ".dori");
   const result = f.run(["--home", selected]);
@@ -92,7 +95,7 @@ test("unsupported host runtime is rejected before assets are read", () => {
   expect(existsSync(join(f.home, ".omp-dori"))).toBe(false);
 });
 
-test.each([".omp-dori", ".git", "src/.git", "bin/dori", "bin/omp"])(
+posix.each([".omp-dori", ".git", "src/.git", "bin/dori", "bin/omp"])(
   "source-owned or custom wrapper %s is held before assets are read",
   (path) => {
     const f = fixture(linux),
@@ -107,7 +110,7 @@ test.each([".omp-dori", ".git", "src/.git", "bin/dori", "bin/omp"])(
   },
 );
 
-test.each([
+posix.each([
   { value: undefined, error: "Release does not support" },
   { value: { version: 1, profiles: [] }, error: "Invalid release capabilities" },
   { value: { version: 1, profiles: [darwin, darwin] }, error: "duplicate release capability" },
@@ -127,7 +130,7 @@ test.each([
   expect(existsSync(f.result)).toBe(false);
 });
 
-test("legacy Linux herdr installs in the primary home with its strict CLI", () => {
+posix("legacy Linux herdr installs in the primary home with its strict CLI", () => {
   const f = fixture(linux);
   f.assets();
   const result = f.run([], {
@@ -144,7 +147,7 @@ test("legacy Linux herdr installs in the primary home with its strict CLI", () =
   expect(existsSync(join(f.root, "foreign"))).toBe(false);
 });
 
-test("legacy releases reject a side home without mutating either installation", () => {
+posix("legacy releases reject a side home without mutating either installation", () => {
   const f = fixture(linux);
   const primary = join(f.home, ".dori"),
     side = join(f.root, "side");
@@ -160,7 +163,7 @@ test("legacy releases reject a side home without mutating either installation", 
   expect(readFileSync(join(primary, "sentinel"), "utf8")).toBe("primary");
 });
 
-test("archive checksum mismatch prevents executing the extracted consumer", () => {
+posix("archive checksum mismatch prevents executing the extracted consumer", () => {
   const f = fixture(linux);
   writeFileSync(join(f.dist, "omp-dori-v1.2.3.tar.gz"), "tampered");
   const result = f.run();
@@ -182,7 +185,7 @@ test.each(["flag", "environment"] as const)("bootstrap rejects a relative %s hom
   expect(existsSync(f.result)).toBe(false);
 });
 
-test.each([true, false])(
+posix.each([true, false])(
   "bootstrap preserves primary native ownership while checking its target (valid=%s)",
   (valid) => {
     const f = fixture(linux);

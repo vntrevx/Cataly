@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reportNativeCache } from "../src/release/native-cache.ts";
 
-test("exclusive bytes include directories and internal hardlinks once, but not externally shared files", () => {
+// POSIX-only: the release cache refuses any path carrying the group or world write bits, and Windows reports
+// 0666/0777 for every file and directory.
+const posix = test.skipIf(process.platform === "win32");
+
+posix("exclusive bytes include directories and internal hardlinks once, but not externally shared files", () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "dori-cache-bytes-")));
   try {
     const entry = join(home, ".cache/omp-dori", `native-${process.platform}-${process.arch}-${"a".repeat(64)}`);

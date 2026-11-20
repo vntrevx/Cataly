@@ -11,8 +11,11 @@ import { queuedWorld, settle } from "./discord-inbound-live-fakes.ts";
 import { FakeGateway, gatewayTimers } from "./discord-presence-fakes.ts";
 import { withState } from "./fakes.ts";
 
+// POSIX-only: the Discord inbound queue requires a private (0700) uid-owned directory.
+const posix = test.skipIf(process.platform === "win32");
+
 for (const during of [false, true])
-  test(`105 admitted ${during ? "during 107 emit arrives late" : "before 107 selection merges first"}`, async () => {
+  posix(`105 admitted ${during ? "during 107 emit arrives late" : "before 107 selection merges first"}`, async () => {
     const world = await queuedWorld({
       history: during ? [ownerMessage("107")] : [ownerMessage("103"), ownerMessage("107")],
       messages: [ownerMessage("109")],
@@ -57,37 +60,43 @@ for (const during of [false, true])
   });
 
 for (const admission of ["102", "107", "legacy"] as const)
-  test(`${admission} admission behind cursor 107 distinguishes an undelivered older owner from a stale replay`, async () => {
-    const world = await queuedWorld({
-      messages: [ownerMessage("105"), ownerMessage("109")],
-      cursors: { "20": "107" },
-      admissions: admission === "legacy" ? {} : { "105": admission },
-      legacy: admission === "legacy",
-    });
-    await world.start();
-    await settle();
-    expect(world.received).toEqual(admission === "107" ? ["20:109"] : ["20:105", "20:109"]);
-    expect(world.cursor()).toBe("109");
-    expect(world.queue().first()).toBeNull();
-  });
+  posix(
+    `${admission} admission behind cursor 107 distinguishes an undelivered older owner from a stale replay`,
+    async () => {
+      const world = await queuedWorld({
+        messages: [ownerMessage("105"), ownerMessage("109")],
+        cursors: { "20": "107" },
+        admissions: admission === "legacy" ? {} : { "105": admission },
+        legacy: admission === "legacy",
+      });
+      await world.start();
+      await settle();
+      expect(world.received).toEqual(admission === "107" ? ["20:109"] : ["20:105", "20:109"]);
+      expect(world.cursor()).toBe("109");
+      expect(world.queue().first()).toBeNull();
+    },
+  );
 
 for (const legacy of [false, true])
-  test(`cursor equality retains its existing gate despite ${legacy ? "unknown legacy" : "older"} admission`, async () => {
-    const world = await queuedWorld({
-      messages: [ownerMessage("105"), ownerMessage("109")],
-      cursors: { "20": "105" },
-      admissions: { "105": "102" },
-      legacy,
-    });
-    await world.start();
-    await settle();
-    expect(world.received).toEqual(["20:109"]);
-    expect(world.saves).toEqual(["20:109"]);
-    expect(world.cursor()).toBe("109");
-    expect(world.queue().first()).toBeNull();
-  });
+  posix(
+    `cursor equality retains its existing gate despite ${legacy ? "unknown legacy" : "older"} admission`,
+    async () => {
+      const world = await queuedWorld({
+        messages: [ownerMessage("105"), ownerMessage("109")],
+        cursors: { "20": "105" },
+        admissions: { "105": "102" },
+        legacy,
+      });
+      await world.start();
+      await settle();
+      expect(world.received).toEqual(["20:109"]);
+      expect(world.saves).toEqual(["20:109"]);
+      expect(world.cursor()).toBe("109");
+      expect(world.queue().first()).toBeNull();
+    },
+  );
 
-test("reading a new channel's admission cursor does not seed it ahead of a later older queued frame", async () => {
+posix("reading a new channel's admission cursor does not seed it ahead of a later older queued frame", async () => {
   const world = await queuedWorld({
     history: [ownerMessage("207"), ownerMessage("107", { channel_id: "50" })],
     messages: [],
@@ -123,7 +132,7 @@ test("reading a new channel's admission cursor does not seed it ahead of a later
   }
 });
 
-test("the original three-column database migrates additively and replays ambiguous pending owners", async () => {
+posix("the original three-column database migrates additively and replays ambiguous pending owners", async () => {
   const state = withState();
   let queue: DiscordInboundQueue | undefined;
   let live: DiscordInboundLive | undefined;
@@ -155,7 +164,7 @@ test("the original three-column database migrates additively and replays ambiguo
           .query<{ name: string }, []>("PRAGMA table_info(pending)")
           .all()
           .map((row) => row.name),
-      ).toEqual(["id", "kind", "payload", "admitted_after"]);
+      ).toEqual(["id", "kind", "payload", "admitted_after", "thread_parent"]);
       expect(
         migrated
           .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")

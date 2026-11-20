@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { adoptLane, launchLane, LaunchError } from "../src/launch.ts";
+import { adoptLane, LaunchError, launchLane } from "../src/launch.ts";
 import { Registry } from "../src/registry.ts";
 import { run } from "../src/run.ts";
 import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
