@@ -142,7 +142,12 @@ export class Reports {
   }
 
   report(
-    key: string, kind: ReportKind, text: string, now: number, generation?: string, owner?: string,
+    key: string,
+    kind: ReportKind,
+    text: string,
+    now: number,
+    generation?: string,
+    owner?: string,
     provenance?: ReportProvenance,
   ): Report {
     const report: Report = {

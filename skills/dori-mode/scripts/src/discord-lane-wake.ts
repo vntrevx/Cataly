@@ -159,6 +159,7 @@ async function startExactLane(deps: FlowDeps, seen: Lane): Promise<DiscordLaneWa
     if ((await wakeLeaseState(deps, check)) !== "free") return held("OMP session lease is held or unverified");
     const env = {
       ...laneLaunchEnv(deps.env ?? process.env, deps.env?.["DORI_CONFIG"] ?? configPath(), deps.config),
+      ...(lane.requestId === undefined ? {} : { DORI_LANE_RUN: "" }),
       DORI_DISCORD_WAKE_SESSION: session,
       DORI_DISCORD_WAKE_GOAL: goal,
       DORI_DISCORD_WAKE_MODEL: model ?? "",

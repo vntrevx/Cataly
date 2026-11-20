@@ -23,8 +23,7 @@ const launch: Command = async ({ key, opt, need, ceiling, strings, values, deps 
     cwd = opt("cwd");
   const template = opt("template");
   // A bare or empty --request is refused, never read as an unsourced launch.
-  const requestId =
-    values["request"] === undefined ? undefined : opt("request") || die("--request needs the input ID");
+  const requestId = values["request"] === undefined ? undefined : opt("request") || die("--request needs the input ID");
   if (template && opt("brief")) die("choose --brief or --template, not both");
   if (!template && strings("set").length) die("--set requires --template");
   const variables = Object.fromEntries(

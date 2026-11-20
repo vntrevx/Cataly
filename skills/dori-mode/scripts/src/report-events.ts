@@ -34,10 +34,14 @@ export const parseEvent = (line: string, key: string): LaneEvent => {
   };
   if (value.type === "execution") {
     if (
-      !("requestId" in value) || !isRequestId(value.requestId) ||
-      !("runId" in value) || !isRunId(value.runId) ||
-      !("phase" in value) || "provenance" in value
-    ) throw new ReportError(`invalid execution record for ${key}`);
+      !("requestId" in value) ||
+      !isRequestId(value.requestId) ||
+      !("runId" in value) ||
+      !isRunId(value.runId) ||
+      !("phase" in value) ||
+      "provenance" in value
+    )
+      throw new ReportError(`invalid execution record for ${key}`);
     const execution = { ...common, type: "execution" as const, requestId: value.requestId, runId: value.runId };
     if (value.phase === "started" && !("nativeRef" in value)) return { ...execution, phase: "started" };
     if (value.phase === "bound" && "nativeRef" in value && isNativeReference(value.nativeRef))

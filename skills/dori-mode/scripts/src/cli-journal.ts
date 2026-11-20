@@ -6,6 +6,7 @@ import { isLessonOutcome, LessonError, Lessons } from "./lessons.ts";
 import { isReportKind, ReportError } from "./report-events.ts";
 import { Reports, reportLine, reportId, reportScope } from "./reports.ts";
 import { runContext } from "./lane-run.ts";
+import type { ReportProvenance } from "./request-identity.ts";
 import { reportDelivery } from "./report-delivery.ts";
 import { realClock, runtimesOf } from "./run.ts";
 import { Worklog, WorklogError } from "./worklog.ts";
@@ -22,12 +23,14 @@ const report: Command = async ({ key, need, opt, values, lane, config, deps }) =
     const reports = new Reports(config.stateDir);
     const entry = await deps.registry.withCurrent(target.key, (current) => {
       if (!current) throw new ReportError(`no registered lane "${target.key}"`);
-      const context = runContext(reports, current, process.env.DORI_LANE_RUN);
-      if (!context) throw new ReportError("report: unknown or missing run (DORI_LANE_RUN); no matching execution recorded");
+      const context = runContext(reports, current, process.env["DORI_LANE_RUN"]);
+      if (!context)
+        throw new ReportError("report: unknown or missing run (DORI_LANE_RUN); no matching execution recorded");
       return reports.report(target.key, kind, text, realClock.now(), context.generation, owner, context.provenance);
     });
     const receipt = {
-      ...entry, id: reportId(entry),
+      ...entry,
+      id: reportId(entry),
       ...(entry.provenance ? { delivery: reportDelivery(config.stateDir, entry) } : {}),
     };
     console.log(values["json"] ? JSON.stringify(receipt) : reportLine(entry));
@@ -49,15 +52,21 @@ const relayed: Command = async ({ key, need, opt, values, lane, deps, config }) 
       lastPostedReport: reportLine(entry),
       lastPostedReportId: id,
       lastPostedReportOwner: entry.owner,
-      ...(entry.provenance || deliveryId !== undefined ? { lastPostedReportDelivery: reportDelivery(config.stateDir, entry, deliveryId) } : {}),
+      ...(entry.provenance || deliveryId !== undefined
+        ? { lastPostedReportDelivery: reportDelivery(config.stateDir, entry, deliveryId) }
+        : {}),
       lastRelayedAt: realClock.now(),
     };
   });
-  if (!updated) die("relayed: report is not the current journal report; read it again before acknowledging");
+  if (!updated) return die("relayed: report is not the current journal report; read it again before acknowledging");
   const delivery = updated.lastPostedReportDelivery;
-  console.log(delivery
-    ? values["json"] ? JSON.stringify({ key: target.key, reportId: id, delivery }) : `RELAYED ${target.key} ${id} delivery=${delivery.state}`
-    : `RELAYED ${target.key} ${id}`);
+  console.log(
+    delivery
+      ? values["json"]
+        ? JSON.stringify({ key: target.key, reportId: id, delivery })
+        : `RELAYED ${target.key} ${id} delivery=${delivery.state}`
+      : `RELAYED ${target.key} ${id}`,
+  );
 };
 
 const lessonAdd = async (
@@ -181,7 +190,14 @@ const checkpoint: Command = async (cli) => {
   // parseArgs takes one value per flag; a second bare receipt would otherwise be dropped and its effect repeated later.
   const stray = positionals.slice(1);
   if (stray.length) die(`checkpoint: unexpected argument ${stray[0]}; give each receipt its own --remote-effect`);
-  const context = runContext(new Reports(config.stateDir), target, process.env.DORI_LANE_RUN);
+  let provenance: ReportProvenance | undefined;
+  let attributionReason = "No recorded launch invocation; remote effects retained without source attribution";
+  try {
+    provenance = runContext(new Reports(config.stateDir), target, process.env["DORI_LANE_RUN"])?.provenance;
+  } catch (error) {
+    if (!(error instanceof ReportError)) throw error;
+    attributionReason = `Execution journal invalid: ${error.message}; remote effects retained without source attribution`;
+  }
   const result = new Checkpoints(config.stateDir).write(
     target.key,
     {
@@ -191,11 +207,18 @@ const checkpoint: Command = async (cli) => {
       remoteEffects: strings("remote-effect"),
     },
     realClock.now(),
-    context?.provenance,
+    provenance,
   );
-  const receipt = target.requestId !== undefined && !result.checkpoint.provenance
-    ? { ...result, attribution: { state: "unverified", reason: "No recorded launch invocation; remote effects retained without source attribution" } }
-    : result;
+  const receipt =
+    target.requestId !== undefined && !result.checkpoint.provenance
+      ? {
+          ...result,
+          attribution: {
+            state: "unverified",
+            reason: attributionReason,
+          },
+        }
+      : result;
   console.log(JSON.stringify(receipt));
   autoTrackLinks(cli, target, result.checkpoint.remoteEffects.join(" "), `checkpoint ${target.key}`);
 };

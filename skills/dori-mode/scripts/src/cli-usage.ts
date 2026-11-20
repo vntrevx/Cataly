@@ -22,7 +22,7 @@ export const USAGE = `dori <command> [options]
   monitor-presets [name] [--json]      recommended argv and filters; starts nothing
   report <key> --kind milestone|blocker|question|halted|done --text TEXT [--owner SUMMARY] [--json]
                                        append a durable progress report and print its [REPORT] line
-  relayed <key> --report ID [--delivery <Discord deliveryId>]
+  relayed <key> --report ID [--delivery <Discord deliveryId>] [--json]
                                        acknowledge the exact journal report already sent by the lead (--json supplies ID)
   checkpoint <key> --step ID --result TEXT --evidence PATH [--remote-effect RECEIPT]...
                                        record a completed step once; a conflicting rewrite is refused

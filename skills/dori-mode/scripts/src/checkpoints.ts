@@ -12,7 +12,9 @@ export type CheckpointInput = {
   readonly remoteEffects: readonly string[];
 };
 export type Checkpoint = CheckpointInput & {
-  readonly key: string; readonly at: string; readonly provenance?: ReportProvenance;
+  readonly key: string;
+  readonly at: string;
+  readonly provenance?: ReportProvenance;
 };
 export class CheckpointError extends Error {}
 
@@ -77,9 +79,16 @@ export class Checkpoints {
 
   latest(lane: Pick<Lane, "key" | "requestId" | "runId">): Checkpoint | null {
     const entries = this.read(lane.key);
-    return (lane.requestId === undefined ? entries.at(-1) : entries.findLast((entry) =>
-      lane.runId !== undefined && entry.provenance?.requestId === lane.requestId && entry.provenance.runId === lane.runId
-    )) ?? null;
+    return (
+      (lane.requestId === undefined
+        ? entries.at(-1)
+        : entries.findLast(
+            (entry) =>
+              lane.runId !== undefined &&
+              entry.provenance?.requestId === lane.requestId &&
+              entry.provenance?.runId === lane.runId,
+          )) ?? null
+    );
   }
 
   /** Take the journal's writer lock (see takeLock) and return its release; a live writer's lock is refused. */
@@ -91,9 +100,15 @@ export class Checkpoints {
     return held;
   }
 
-  write(key: string, input: CheckpointInput, now: number, provenance?: ReportProvenance): { checkpoint: Checkpoint; unchanged: boolean } {
+  write(
+    key: string,
+    input: CheckpointInput,
+    now: number,
+    provenance?: ReportProvenance,
+  ): { checkpoint: Checkpoint; unchanged: boolean } {
     validate(input);
-    if (provenance !== undefined && !isProvenance(provenance)) throw new CheckpointError("invalid checkpoint provenance");
+    if (provenance !== undefined && !isProvenance(provenance))
+      throw new CheckpointError("invalid checkpoint provenance");
     const path = this.path(key);
     const at = new Date(now).toISOString();
     // Never replay a remote effect just because the process restarted: the step check runs under the lock.

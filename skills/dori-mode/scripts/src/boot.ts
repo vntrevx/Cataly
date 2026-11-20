@@ -1,5 +1,4 @@
 import { join } from "node:path";
-
 import { configPath } from "./config.ts";
 import type { Decisions } from "./decisions.ts";
 import { decisionBootLines } from "./decisions-render.ts";

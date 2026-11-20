@@ -121,8 +121,12 @@ export class Supervision {
     };
     const path = join(dirname(this.reports.path(lane.key)), "supervision.json");
     const saved = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Observation) : null;
-    const previous = saved?.openedAt === lane.openedAt && saved.generation === scope.generation &&
-      saved.provenance?.runId === context.provenance?.runId ? saved : null;
+    const previous =
+      saved?.openedAt === lane.openedAt &&
+      saved.generation === scope.generation &&
+      saved.provenance?.runId === context.provenance?.runId
+        ? saved
+        : null;
     const progress = this.reports.read(lane.key, scope);
     // Without a usage hook each sweep would append the same unknown reading; close still records its final one.
     if (this.options.usageArgv?.length) this.record(usage);

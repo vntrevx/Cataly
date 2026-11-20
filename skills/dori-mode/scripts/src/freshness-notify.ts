@@ -181,6 +181,10 @@ export const notifyFreshness = async (
           }
         : null,
     );
-    acts.push({ kind: "posted", lane: lane.key, detail: entry?.provenance ? `${text} (delivery=unverified; hook returned no exact receipt)` : text });
+    acts.push({
+      kind: "posted",
+      lane: lane.key,
+      detail: entry?.provenance ? `${text} (delivery=unverified; hook returned no exact receipt)` : text,
+    });
   }
 };

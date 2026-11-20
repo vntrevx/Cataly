@@ -30,6 +30,7 @@ export const reopenLane = async (deps: FlowDeps, seen: Lane, note?: string): Pro
     const preparedPark = status === "paused" && lane.hold?.outcome === "parked";
     if (status !== "closed" && !preparedPark)
       return fail(`REFUSED ${lane.key}: not closed; use resume for a paused lane`);
+    runContext(new Reports(deps.config.stateDir), lane, lane.runId);
     const oldRef = sessionOf(lane);
     if (preparedPark && !oldRef) return fail(`REOPEN_UNVERIFIED ${lane.key}: previous pane identity missing`);
     if (!mayRunOmpArgv(deps.config.agentCommand)) throw new LaunchError("reopen requires an OMP agentCommand");
@@ -68,6 +69,7 @@ export const reopenLane = async (deps: FlowDeps, seen: Lane, note?: string): Pro
       if (!stillCurrent || stillCurrent.thread !== lane.thread || !sameLaneGeneration(lane, stillCurrent))
         return fail(await movedOn(deps, lane, "reopen"));
       const env = laneLaunchEnv(deps.env ?? process.env, deps.env?.["DORI_CONFIG"] ?? configPath(), deps.config);
+      if (lane.requestId !== undefined) env["DORI_LANE_RUN"] = "";
       const ref = await rts.default.create({
         name: lane.key,
         role: "lane",

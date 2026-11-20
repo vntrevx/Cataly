@@ -74,16 +74,19 @@ test("a sourced reopen keeps the request, starts a new run before its process an
     expect(command).toContain(`--resume=${f.file}`);
     const create = f.world.calls.filter((argv) => argv[1] === "tab" && argv[2] === "create");
     expect(create).toHaveLength(1);
-    expect(create.flat().some((arg) => arg.includes("DORI_LANE_RUN"))).toBe(false);
+    expect(create.flat()).toContain("DORI_LANE_RUN=");
+    expect(create.flat().some((arg) => arg.includes(runId))).toBe(false);
     const started = atStart.filter(isExecution).filter((event) => event.runId === runId);
     expect(started).toEqual([expect.objectContaining({ phase: "started", requestId, generation })]);
     expect(atStart.at(-1)).toMatchObject({ type: "reopen", generation, provenance: { requestId, runId } });
-    const nativeRef = { sessionId: f.session, ref: { runtime: "herdr", id: "w1:p8" } };
+    const nativeRef = { sessionId: f.session, ref: { runtime: "herdr", id: "w1:p8" } } as const;
     const reports = new Reports(f.state.dir);
-    expect(reports.events(lane.key).filter(isExecution).filter((event) => event.runId === runId)).toEqual([
-      started[0],
-      expect.objectContaining({ phase: "bound", requestId, generation, nativeRef }),
-    ]);
+    expect(
+      reports
+        .events(lane.key)
+        .filter(isExecution)
+        .filter((event) => event.runId === runId),
+    ).toEqual([started[0], expect.objectContaining({ phase: "bound", requestId, generation, nativeRef })]);
     expect(runContext(reports, current, runId)).toEqual({ generation, provenance: { requestId, runId, nativeRef } });
     // The launch run keeps its own attribution; nothing is re-derived from the reopened lane.
     expect(runContext(reports, current, launchRun)).toEqual({
@@ -139,10 +142,11 @@ const delayedWake = async () => {
   const fixture = await wakeFixture();
   const lane = await sourced(fixture.deps, fixture.lane);
   fixture.control.delayStartup = true;
-  const seen = { command: "", atStart: [] as LaneEvent[] };
+  const seen = { command: "", atStart: [] as LaneEvent[], create: [] as string[] };
   const deps: FlowDeps = {
     ...fixture.deps,
     run: async (full, options) => {
+      if (full[0] === "herdr" && full[4] === "create") seen.create = [...full];
       if (full[0] === "herdr" && full[3] === "pane" && full[4] === "run") {
         seen.command = full[6] ?? "";
         seen.atStart = new Reports(fixture.state.dir).events(lane.key);
@@ -160,12 +164,14 @@ const delayedWake = async () => {
 };
 
 linux("a sourced wake starts a new run in its final generation and binds it only at attestation", async () => {
-  const { fixture, lane, deps, binding, runId, command, atStart } = await delayedWake();
+  const { fixture, lane, deps, binding, runId, command, atStart, create } = await delayedWake();
   try {
     expect(isDiscordWakePending(binding.lifecycleEpoch)).toBe(true);
     expect(binding.requestId).toBe(requestId);
     expect([isRunId(runId), runId === launchRun]).toEqual([true, false]);
     expect(command).toStartWith(`DORI_LANE_RUN=${runId} ${executable} `);
+    expect(create).toContain("DORI_LANE_RUN=");
+    expect(create.some((arg) => arg.includes(runId))).toBe(false);
     const started = atStart.filter(isExecution).filter((event) => event.runId === runId);
     expect(started).toEqual([expect.objectContaining({ phase: "started", requestId })]);
     const generation = started[0]?.generation ?? "";
@@ -176,12 +182,14 @@ linux("a sourced wake starts a new run in its final generation and binds it only
     expect(await wakeDiscordLane(deps, binding)).toEqual({ kind: "started", ref: next });
     const current = await fixture.deps.registry.read(lane.key);
     expect([current?.lifecycleEpoch, current?.runId, current?.requestId]).toEqual([generation, runId, requestId]);
-    const nativeRef = { sessionId: fixture.session, ref: { runtime: "herdr", id: next.id } };
+    const nativeRef = { sessionId: fixture.session, ref: { runtime: "herdr", id: next.id } } as const;
     const reports = new Reports(fixture.state.dir);
-    expect(reports.events(lane.key).filter(isExecution).filter((event) => event.runId === runId)).toEqual([
-      started[0],
-      expect.objectContaining({ phase: "bound", requestId, generation, nativeRef }),
-    ]);
+    expect(
+      reports
+        .events(lane.key)
+        .filter(isExecution)
+        .filter((event) => event.runId === runId),
+    ).toEqual([started[0], expect.objectContaining({ phase: "bound", requestId, generation, nativeRef })]);
     if (current) expect(runContext(reports, current, runId)?.provenance).toEqual({ requestId, runId, nativeRef });
   } finally {
     fixture.state.done();

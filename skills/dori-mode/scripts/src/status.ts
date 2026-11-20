@@ -149,7 +149,8 @@ export const laneStatus = async (deps: FlowDeps, key?: string): Promise<StatusSn
       checkpoint,
       ...(execution ? { execution } : {}),
       ...(lane.lastPostedReportId && lane.lastPostedReportDelivery
-        ? { lastDelivery: { reportId: lane.lastPostedReportId, receipt: lane.lastPostedReportDelivery } } : {}),
+        ? { lastDelivery: { reportId: lane.lastPostedReportId, receipt: lane.lastPostedReportDelivery } }
+        : {}),
       lastSweepNote: lane.lastFreshnessNote ?? null,
       lastNudgeAt: lane.lastNudgeAt ?? null,
       lastPostedAt: lane.lastAutoReplyAt ?? null,

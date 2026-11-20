@@ -1,17 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { runContext } from "../src/lane-run.ts";
-import { QueueError } from "../src/launch-errors.ts";
 import { quoteForPane } from "../src/launch-footer.ts";
-import { LaunchQueue } from "../src/launch-queue-store.ts";
 import { laneStartCommand, startLaunchRun } from "../src/launch-session.ts";
-import { adoptLane, LaunchError, launchLane } from "../src/launch.ts";
+import { launchLane } from "../src/launch.ts";
 import { type Lane, Registry, statusOf, withStatus } from "../src/registry.ts";
 import { type Execution, type LaneEvent, Reports } from "../src/reports.ts";
 import { isRequestId, isRunId } from "../src/request-identity.ts";
 import { sessionDirFor } from "../src/session-id.ts";
-import { withDiscordCli } from "./discord-fakes.ts";
 import { agentIn, depsFor, fakeClock, laneState, newWorld, withState, type TestState, type World } from "./fakes.ts";
 
 const T0 = Date.parse("2026-01-01T12:00:00.000Z");
@@ -128,11 +125,12 @@ test("a sourced launch records its run before the agent starts and binds the ver
   const runId = r.lane.runId ?? "";
   expect(r.lane.requestId).toBe(requestId);
   expect([isRunId(runId), isRequestId(runId), runId === requestId]).toEqual([true, false, false]);
-  // Only the OMP process gets the run; the pane shell created for it never does.
+  // Clear a stale terminal-server run in the shell; only the OMP process gets the new run.
   expect(r.command).toStartWith(`DORI_LANE_RUN=${runId} omp --dori-role lane `);
   const create = world.calls.find((argv) => argv[1] === "tab" && argv[2] === "create") ?? [];
   expect(create.length).toBeGreaterThan(0);
-  expect(create.some((arg) => arg.includes("DORI_LANE_RUN"))).toBe(false);
+  expect(create).toContain("DORI_LANE_RUN=");
+  expect(create.some((arg) => arg.includes(runId))).toBe(false);
   const started = expect.objectContaining({ type: "execution", phase: "started", requestId, runId });
   const activity = expect.objectContaining({
     type: "activity",
@@ -141,7 +139,7 @@ test("a sourced launch records its run before the agent starts and binds the ver
   });
   expect(r.atStart).toEqual([started, activity]);
   expect(r.atStart.filter(isExecution).some((event) => "generation" in event)).toBe(false);
-  const nativeRef = { sessionId: r.sessionId, ref: { runtime: "herdr", id: "w:p9" } };
+  const nativeRef = { sessionId: r.sessionId, ref: { runtime: "herdr", id: "w:p9" } } as const;
   expect(new Reports(state.dir).events("sourced-lane")).toEqual([
     started,
     activity,
@@ -159,12 +157,9 @@ test("one thread serves different real requests through separate lanes and runs"
   expect([first.lane.thread, second.lane.thread]).toEqual([thread, thread]);
   expect([first.lane.requestId, second.lane.requestId]).toEqual([requestId, otherRequest]);
   expect(first.lane.runId).not.toBe(second.lane.runId);
-  expect(first.command).toStartWith(
-    `CATALY_ASK_LAUNCHED_LANE=first-request DORI_LANE_RUN=${first.lane.runId} omp `,
-  );
-  expect(second.command).toStartWith(
-    `CATALY_ASK_LAUNCHED_LANE=second-request DORI_LANE_RUN=${second.lane.runId} omp `,
-  );
+  if (!first.lane.runId || !second.lane.runId) throw new Error("missing launch run");
+  expect(first.command).toStartWith(`CATALY_ASK_LAUNCHED_LANE=first-request DORI_LANE_RUN=${first.lane.runId} omp `);
+  expect(second.command).toStartWith(`CATALY_ASK_LAUNCHED_LANE=second-request DORI_LANE_RUN=${second.lane.runId} omp `);
   for (const [key, request, run] of [
     ["first-request", requestId, first.lane.runId],
     ["second-request", otherRequest, second.lane.runId],
@@ -211,92 +206,30 @@ test("a run start is refused for a lane whose run or generation moved on", async
   expect(await startLaunchRun(deps, lane)).toEqual({ requestId, runId: runA });
 });
 
-test.each([
-  "",
-  "discord:0:222222222222222222",
-  thread,
-  "telegram:1:",
-  "slack:c1:1.2",
-  `unread:${requestId}`,
-  runA,
-])("a launch refuses a request that is not an original input ID: %p", async (bad) => {
-  const deps = depsFor(world, fakeClock(T0), state.dir);
-  const brief = join(state.dir, "bad.md");
-  writeFileSync(brief, "# brief\n");
-  const input = { key: "bad-request", title: "t", brief, done: "closed acme/app#3", requestId: bad };
-  await expect(launchLane(deps, input)).rejects.toThrow(LaunchError);
-  expect(await deps.registry.read("bad-request")).toBeNull();
-  expect(world.calls).toEqual([]);
-});
-
-test("adopt refuses to attach a request to an already running process", async () => {
-  const deps = depsFor(world, fakeClock(T0), state.dir);
-  const input = { key: "adopted", title: "t", brief: "/brief", done: "closed acme/app#3", pane: "w:p3", requestId };
-  await expect(adoptLane(deps, input)).rejects.toThrow("adopt cannot attach a request");
-  expect(await deps.registry.read("adopted")).toBeNull();
-});
-
-test("a queued sourced launch keeps its request and a damaged request is refused on read", () => {
-  const queue = new LaunchQueue(state.dir);
-  const entry = {
-    id: "00000000-0000-4000-8000-0000000000aa",
-    input: { key: "queued-request", title: "t", brief: "/brief", done: "closed acme/app#3", requestId },
-    briefText: "# brief",
-    after: ["first-lane"],
-    queuedAt: new Date(T0).toISOString(),
-    expiresAt: new Date(T0 + 3_600_000).toISOString(),
-    status: "pending",
-  } as const;
-  queue.write(entry);
-  expect(queue.read("queued-request")?.input.requestId).toBe(requestId);
-  queue.write({ ...entry, input: { ...entry.input, requestId: "discord:latest-unread" } });
-  expect(() => queue.read("queued-request")).toThrow(QueueError);
-});
-
-test("the CLI refuses a bare, empty or malformed --request and adopt --request, and names a real one", async () => {
-  await withDiscordCli(async (f) => {
-    const dir = dirname(f.tmp);
-    const brief = join(dir, "cli-brief.md");
-    writeFileSync(brief, "# cli brief\n");
-    const base = ["launch", "cli-lane", "--title", "t", "--brief", brief, "--done", "closed acme/app#3", "--dry-run"];
-    for (const args of [
-      [...base, "--request"],
-      [...base, "--request", ""],
-      [...base, "--request", "  "],
-    ]) {
-      const result = await f.invoke(args);
-      expect([result.code, result.out, result.err]).toEqual([1, "", "--request needs the input ID"]);
+// POSIX-only: the real shell applies the terminal server's inherited environment plus create overrides.
+test.skipIf(process.platform === "win32")(
+  "a stale terminal-server run is cleared before process-only launch",
+  async () => {
+    const r = await launch("server-env", { requestId });
+    const create = world.calls.find((argv) => argv[1] === "tab" && argv[2] === "create") ?? [];
+    const env: Record<string, string> = { PATH: "/usr/bin:/bin", DORI_LANE_RUN: runA };
+    for (let i = 0; i < create.length - 1; i++) {
+      if (create[i] !== "--env") continue;
+      const field = create[++i] ?? "";
+      const at = field.indexOf("=");
+      env[field.slice(0, at)] = field.slice(at + 1);
     }
-    const malformed = await f.invoke([...base, "--request", "discord:0:2"]);
-    expect([malformed.code, malformed.out]).toEqual([1, ""]);
-    expect(malformed.err).toStartWith("request must be the original input ID");
-    const adopt = await f.invoke([
-      "adopt",
-      "cli-adopt",
-      "--pane",
-      "w:p3",
-      "--title",
-      "t",
-      "--brief",
-      brief,
-      "--done",
-      "closed acme/app#3",
-      "--request",
-      requestId,
-    ]);
-    expect([adopt.code, adopt.out, adopt.err]).toEqual([
-      1,
-      "",
-      "adopt cannot attach --request to an already running process",
-    ]);
-    expect(await new Registry(dir).read("cli-adopt")).toBeNull();
-    const sourced = await f.invoke([...base, "--request", requestId]);
-    expect(sourced.code).toBe(0);
-    expect(sourced.out).toContain(`- Original request (metadata only): ${requestId}.`);
-    expect(sourced.out).not.toContain("DORI_LANE_RUN=");
-    const legacy = await f.invoke(base);
-    expect(legacy.code).toBe(0);
-    expect(legacy.out).not.toContain("Original request");
-    expect(await new Registry(dir).read("cli-lane")).toBeNull();
-  });
-});
+    const probe = [process.execPath, "-e", "console.log(JSON.stringify(process.env.DORI_LANE_RUN))"];
+    const start = laneStartCommand(r.lane, probe);
+    const restart = probe.map(quoteForPane).join(" ");
+    const child = Bun.spawnSync(["sh", "-c", `${start}; ${restart}`], { cwd: state.dir, env });
+    expect(child.exitCode).toBe(0);
+    expect(
+      child.stdout
+        .toString()
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([r.lane.runId, ""]);
+  },
+);

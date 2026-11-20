@@ -5,6 +5,7 @@ import { type LaunchInput, validateLaunch } from "./launch-input.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { withLaunchLock } from "./delivery-lock.ts";
 import { laneGoalActive } from "./goal-record.ts";
+import { runContext } from "./lane-run.ts";
 import { BRIEF_START, footer, originalBrief } from "./launch-footer.ts";
 import { mayRunOmpArgv } from "../../../../src/runtime/omp-argv.ts";
 import { parseRef } from "../../../../src/runtime/types.ts";
@@ -128,11 +129,13 @@ export const launchLane = async (
 /** Caller holds the per-key launch lock; capacity admission only needs to span this phase. */
 export const openLaunch = async (deps: FlowDeps, input: LaunchInput, queuedBrief?: string) => {
   const { lane: draft, preamble, warnings } = await prepareLaunch(deps, input, queuedBrief);
+  runContext(new Reports(deps.config.stateDir), draft, draft.runId);
   const rts = runtimesOf(deps);
   const group = deps.config.laneWorkspace || undefined;
   let env: Record<string, string>;
   try {
     env = laneLaunchEnv(process.env, configPath(), deps.config);
+    if (draft.requestId !== undefined) env["DORI_LANE_RUN"] = "";
   } catch (e) {
     throw e instanceof TokenFileError ? new LaunchError(`token file refused: ${e.message}`) : e;
   }

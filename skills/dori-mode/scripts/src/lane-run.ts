@@ -25,7 +25,8 @@ export const runContext = (reports: Reports, lane: Lane, runId: string | undefin
     if (
       context.provenance?.nativeRef &&
       JSON.stringify(provenanceIdentity(context.provenance)) !== JSON.stringify(provenanceIdentity(provenance))
-    ) throw new ReportError(`execution native reference changed for ${lane.key}`);
+    )
+      throw new ReportError(`execution native reference changed for ${lane.key}`);
     context = { generation: event.generation, provenance };
   }
   return context;
@@ -59,6 +60,7 @@ export const recordExecution = (stateDir: string, lane: Lane, now: number, nativ
     previous.provenance?.nativeRef &&
     JSON.stringify(provenanceIdentity(previous.provenance)) !==
       JSON.stringify(provenanceIdentity({ requestId, runId, nativeRef }))
-  ) throw new ReportError(`execution native reference changed for ${lane.key}`);
+  )
+    throw new ReportError(`execution native reference changed for ${lane.key}`);
   reports.append({ ...common, phase: "bound", nativeRef, text: "Lane execution native session verified" });
 };
