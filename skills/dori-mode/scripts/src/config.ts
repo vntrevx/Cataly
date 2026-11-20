@@ -56,6 +56,7 @@ export type DoriConfig = LaunchConfig & {
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
+  readonly transcribeMaxBytes: number;
   readonly threadDonePolicy?: "every-lane" | "last-lane";
   /** Disabled unless explicitly enabled; models, channels and prices belong to the operator. */
   readonly voice?: Partial<VoiceSettings>;
@@ -88,6 +89,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   deadPanePatterns: ["has stopped", "no suitable jobs"],
   guard: { loadAlert: 150, loadOk: 80, memFreeMinPct: 20, diskFreeMinGb: 50, panesMax: 20 },
   hooks: {},
+  transcribeMaxBytes: 25 * 1024 * 1024,
   repoIdentities: {},
   supervision: {
     hungAfterMinutes: 20,

@@ -13,7 +13,9 @@ test("a Slack post retains its confirmed receipt when the local ledger stays loc
   if (typeof release !== "function") throw new Error(release);
   try {
     let posts = 0;
-    const http: Http = async () => {
+    const http: Http = async ({ url }) => {
+      if (url.endsWith("/auth.test"))
+        return { status: 200, headers: {}, body: JSON.stringify({ ok: true, team_id: "T1", user_id: "U1" }) };
       posts++;
       return { status: 200, headers: {}, body: JSON.stringify({ ok: true, channel: "C1", ts: "71.1" }) };
     };
@@ -48,7 +50,13 @@ test.each([{ channel: "C1", ts: "" }, { ts: "71.1" }, { channel: "", ts: "71.1" 
       const ledger = new ThreadLedger(file, async () => {
         waits++;
       });
-      const http: Http = async () => ({ status: 200, headers: {}, body: JSON.stringify({ ok: true, ...receipt }) });
+      const http: Http = async ({ url }) => ({
+        status: 200,
+        headers: {},
+        body: JSON.stringify(
+          url.endsWith("/auth.test") ? { ok: true, team_id: "T1", user_id: "U1" } : { ok: true, ...receipt },
+        ),
+      });
       const error = await new Slack(http, fakeClock(0), { token: "t" }, undefined, ledger)
         .post("C1", "possibly posted")
         .catch((e: unknown) => e);

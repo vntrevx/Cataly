@@ -100,6 +100,7 @@ export const DORI_VALUE_OPTIONS: Record<string, true> = {
   lane: true,
   worklog: true,
   "ignore-author": true,
+  "adopt-legacy-threads": true,
   self: true,
 };
 const MESSENGER_COMMANDS: Record<string, true> = {

@@ -2,37 +2,80 @@
   <img src="docs/cataly-portrait.webp" width="320" alt="Cataly character portrait: silver hair and a crimson halo">
 </p>
 
-# Cataly
+<h1 align="center">Cataly</h1>
 
-**Understand the intent. Read the context. See the work through.**
+<p align="center">
+  <strong>Understand the intent. Read the context. See the work through.</strong>
+</p>
 
-Cataly is an AI teammate for software work. Give it a goal and the constraints
-that matter, not a command for every step. It can take a request from Discord,
-work in a tracked coding session, and bring back a result you can verify.
+<p align="center">
+  Cataly is an AI teammate for software work. Give it a goal and the constraints
+  that matter, not a command for every step. It can take a request from Discord,
+  work in a tracked coding session, and bring back a result you can verify.
+</p>
 
-[Get started](#get-started) · [How it works](#how-it-works) · [Documentation](#documentation)
+<p align="center">
+  <a href="https://github.com/vntrevx/Cataly/releases/tag/v0.1.2"><img alt="Published preview" src="https://img.shields.io/github/v/release/vntrevx/Cataly?include_prereleases&label=preview&labelColor=2b2d33&color=c8102e"></a>
+  <a href="https://github.com/vntrevx/Cataly/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI on main" src="https://img.shields.io/github/actions/workflow/status/vntrevx/Cataly/ci.yml?branch=main&label=ci&labelColor=2b2d33"></a>
+  <a href="LICENSING.md"><img alt="License: SUL 1.0 with a scoped MIT notice" src="https://img.shields.io/badge/license-SUL%201.0%20%2B%20scoped%20MIT-8b9099?labelColor=2b2d33"></a>
+  <a href="https://bun.sh"><img alt="Bun 1.4.4 or later" src="https://img.shields.io/badge/bun-%E2%89%A51.4.4-8b9099?labelColor=2b2d33&logo=bun&logoColor=white"></a>
+</p>
 
-[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md)<br>
-[Deutsch](README.de.md) · [Italiano](README.it.md) · [中文](README.zh.md)
+<p align="center">
+  <a href="#get-started"><strong>Get started</strong></a> ·
+  <a href="#how-it-works"><strong>How it works</strong></a> ·
+  <a href="#documentation"><strong>Documentation</strong></a> ·
+  <a href="#contributing"><strong>Contributing</strong></a>
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.ko.md">한국어</a> · <a href="README.ja.md">日本語</a><br>
+  <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <a href="README.zh.md">中文</a>
+</p>
 
 ## Give it an outcome, not a script
 
-> Investigate the flaky login test. Keep the public API unchanged, run the
-> relevant tests, and open a PR with the cause and the verification results.
+<table width="100%"><tr><td>
 
-- **Understand the intent.** The flaky test is the symptom. The goal is a fix you
-  can review, with the public API intact. Cataly uses that distinction to choose
-  what to investigate and what to leave alone.
-- **Read the context.** The conversation, repository conventions, constraints,
-  and your stated preferences inform the next step. Routine decisions belong to
-  Cataly; real tradeoffs and permission decisions belong to you.
-- **See the work through.** A patch is not the finish line. Check the agreed
-  outcome, report the evidence, and say what remains unverified.
+**Example request**
+
+*Investigate the flaky login test. Keep the public API unchanged, run the
+relevant tests, and open a PR with the cause and the verification results.*
+
+</td></tr></table>
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>Understand the intent</h4>
+      The flaky test is the symptom. The goal is a fix you can review, with the
+      public API intact. Cataly uses that distinction to choose what to
+      investigate and what to leave alone.
+    </td>
+    <td width="33%" valign="top">
+      <h4>Read the context</h4>
+      The conversation, repository conventions, constraints, and your stated
+      preferences inform the next step. Routine decisions belong to Cataly; real
+      tradeoffs and permission decisions belong to you.
+    </td>
+    <td width="33%" valign="top">
+      <h4>See the work through</h4>
+      A patch is not the finish line. Check the agreed outcome, report the
+      evidence, and say what remains unverified.
+    </td>
+  </tr>
+</table>
 
 The difference is not another chat interface. It is the link between the request,
 its working session, and the evidence that it is done.
 
 ## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/how-it-works-light.svg">
+  <img src="docs/how-it-works-light.svg" width="100%" alt="Workflow: a request arrives, the lead assigns it, a lane works and reports, and completion is checked before a result you can verify, with its evidence, comes back to you.">
+</picture>
 
 Here is the workflow on current `main`:
 
@@ -51,16 +94,32 @@ Here is the workflow on current `main`:
    can read back a command result, file state, merged PR, or published package
    version. A passing check proves that signal, not every possible outcome.
 
-**You stay in control.** Cataly uses your accounts and permissions. Taking
-initiative does not grant permission for external actions. Installation starts no
-agent, messenger receiver, or service. Enable only the monitors and integrations
-you want, and keep credentials and private transcripts out of public reports.
-Optional telemetry can be disabled with `DORI_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+## You stay in control
+
+- Cataly uses your accounts and permissions. Taking initiative does not grant
+  permission for external actions.
+- Installation starts no agent, messenger receiver, or service. Enable only the
+  monitors and integrations you want.
+- Keep credentials and private transcripts out of public reports.
+- Optional telemetry can be disabled with `DORI_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ## Get started
 
+<table width="100%"><tr><td>
+
+**Note**
+
 Cataly is the project name. The CLI and launchers still use `dori`, `omp-dori`,
 and `omp`; existing install paths and release asset names are unchanged.
+
+</td></tr></table>
+
+|                | [Published preview](#try-the-published-preview) | [Current source](#work-from-current-source)          |
+| -------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| **Build**      | v0.1.2 prerelease                               | current `main`                                       |
+| **Scope**      | Linux x64 / herdr / Discord                     | herdr or hc, your chosen messenger                   |
+| **OMP**        | independently installed native OMP 18.18.8      | pinned, patched OMP 18.20.0 with the omp-ulw overlay |
+| **Home**       | primary `~/.dori`                               | side mode `~/.omp-dori`                              |
 
 ### Try the published preview
 
@@ -100,24 +159,27 @@ start OMP through the generated wrapper. Follow the
 for your runtime and messenger. Use `omp-dori doctor` for a read-only setup
 check and `omp-dori status` to see your lanes.
 
+<table width="100%"><tr><td>
+
+**Important**
+
 **Support boundary:** Slack and Telegram are retained source integrations, not
 part of the published preview. The installer can support isolated macOS arm64 / hc
 consumer profiles declared by a compatible release manifest; no such release is
 claimed here. A merge to `main` does not update the published preview.
 
+</td></tr></table>
+
 ## Documentation
 
-**Set up and operate**
-
-- [Installation, support, updates, and rollback](docs/releases.md)
-- [Messenger setup](skills/dori-mode/references/setup.md) · [Dori operating rules](skills/dori-mode/SKILL.md)
-- [Lane commands and configuration](skills/dori-mode/references/scripts.md) · [Done protocol](skills/dori-mode/references/done-protocol.md)
-
-**Go deeper**
-
-- [Runtime adapters and session contracts](docs/runtime.md) · [Container setup for source development](docs/container.md)
-- [Scheduling and backlog](docs/hourly-loop.md) · [Shared locks and lane priority](docs/locks.md)
-- [Opt-in paid Discord voice assistant (current source)](docs/discord-voice.md) · [Changelog](CHANGELOG.md)
+| Set up and operate                                                          | Go deeper                                                                       |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| [Installation, support, updates, and rollback](docs/releases.md)            | [Runtime adapters and session contracts](docs/runtime.md)                       |
+| [Messenger setup](skills/dori-mode/references/setup.md)                     | [Container setup for source development](docs/container.md)                     |
+| [Dori operating rules](skills/dori-mode/SKILL.md)                           | [Scheduling and backlog](docs/hourly-loop.md)                                   |
+| [Lane commands and configuration](skills/dori-mode/references/scripts.md)   | [Shared locks and lane priority](docs/locks.md)                                 |
+| [Done protocol](skills/dori-mode/references/done-protocol.md)               | [Opt-in paid Discord voice assistant (current source)](docs/discord-voice.md)   |
+| [Changelog](CHANGELOG.md)                                                   |                                                                                 |
 
 ## Contributing
 

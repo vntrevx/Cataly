@@ -1,30 +1,74 @@
-# Cataly
+<p align="center">
+  <img src="docs/cataly-portrait.webp" width="320" alt="Cataly character portrait: silver hair and a crimson halo">
+</p>
 
-**意図を理解し、文脈を読み取り、最後までやり遂げる。**
+<h1 align="center">Cataly</h1>
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [中文](README.zh.md)
+<p align="center">
+  <strong>意図を理解し、文脈を読み取り、最後までやり遂げる。</strong>
+</p>
 
-Cataly は、目標を成果へとつなげ、仕事を最後までやり遂げる AI のチームメイトです。
-達成したいことを伝えると、次の段取りを引き受け、周囲の文脈を踏まえながら、
-ユーザーが確かめられる成果に至るまで取り組みます。
+<p align="center">
+  Cataly は、目標を成果へとつなげ、仕事を最後までやり遂げる AI のチームメイトです。達成したいことを伝えると、次の段取りを引き受け、周囲の文脈を踏まえながら、ユーザーが確かめられる成果に至るまで取り組みます。
+</p>
+
+<p align="center">
+  <a href="https://github.com/vntrevx/Cataly/releases/tag/v0.1.2"><img alt="Published preview" src="https://img.shields.io/github/v/release/vntrevx/Cataly?include_prereleases&label=preview&labelColor=2b2d33&color=c8102e"></a>
+  <a href="https://github.com/vntrevx/Cataly/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI on main" src="https://img.shields.io/github/actions/workflow/status/vntrevx/Cataly/ci.yml?branch=main&label=ci&labelColor=2b2d33"></a>
+  <a href="LICENSING.md"><img alt="License: SUL 1.0 with a scoped MIT notice" src="https://img.shields.io/badge/license-SUL%201.0%20%2B%20scoped%20MIT-8b9099?labelColor=2b2d33"></a>
+  <a href="https://bun.sh"><img alt="Bun 1.4.4 or later" src="https://img.shields.io/badge/bun-%E2%89%A51.4.4-8b9099?labelColor=2b2d33&logo=bun&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="#はじめに"><strong>はじめに</strong></a> ·
+  <a href="#仕組み"><strong>仕組み</strong></a> ·
+  <a href="#ドキュメント"><strong>ドキュメント</strong></a> ·
+  <a href="#貢献するには"><strong>貢献するには</strong></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <strong>日本語</strong><br>
+  <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <a href="README.zh.md">中文</a>
+</p>
+
+## 基本となる考え方
 
 目指すのは、単に指示に従うことではありません。重要な点に気づき、細部を結びつけ、
 一つひとつ管理してもらわなくても仕事を進める、適切な判断力を発揮することです。
 
-## 基本となる考え方
-
-- **結果に責任を持つ。** 作業項目を消化するのではなく、目標の達成に向けて動きます。
-- **文脈を理解する。** 会話、プロジェクトの慣習、制約、ユーザーの好みを
-  念頭に置きます。
-- **よく考えて主体的に動く。** 日常的な判断は自ら行います。実質的な
-  トレードオフや許可の不足によりユーザーの判断が必要なときは質問します。
-- **最後までやり遂げる。** 調査、実装、検証を行い、実際に何が起きたかを
-  報告します。説得力のある説明は、動く成果の代わりにはなりません。
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>結果に責任を持つ</h4>
+      作業項目を消化するのではなく、目標の達成に向けて動きます。
+    </td>
+    <td width="50%" valign="top">
+      <h4>文脈を理解する</h4>
+      会話、プロジェクトの慣習、制約、ユーザーの好みを念頭に置きます。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>よく考えて主体的に動く</h4>
+      日常的な判断は自ら行います。実質的なトレードオフや許可の不足によりユーザーの判断が必要なときは質問します。
+    </td>
+    <td width="50%" valign="top">
+      <h4>最後までやり遂げる</h4>
+      調査、実装、検証を行い、実際に何が起きたかを報告します。説得力のある説明は、動く成果の代わりにはなりません。
+    </td>
+  </tr>
+</table>
 
 Cataly はこの基準を軸に作られています。行動できる力、文脈を理解する注意深さ、
 そして結果への責任を備えることです。
 
 ## 仕組み
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/how-it-works-light.svg">
+  <img src="docs/how-it-works-light.svg" width="100%" alt="Workflow: a request arrives, the lead assigns it, a lane works and reports, and completion is checked before a result you can verify, with its evidence, comes back to you.">
+</picture>
 
 Cataly は、メッセンジャーでの会話をネイティブのコーディングエージェント
 ランタイムと、進捗を追跡できる作業レーンにつなぎます。
@@ -45,10 +89,41 @@ Cataly は、メッセンジャーでの会話をネイティブのコーディ�
 [omp-ulw](https://github.com/dbc-hbin/omp-ulw)を組み合わせています。各プロジェクトの
 著作者、ライセンス、ソースの由来は、引き続きこのプロジェクトの一部として保持されます。
 
+## 運用原則
+
+Cataly は、ユーザーが提供するアカウントと権限で動作します。外部に影響する操作には
+該当する許可が必要です。役に立つと判断しただけで権限を得ることはありません。
+実行するつもりのセッション、モニター、サービスだけを有効にしてください。
+
+検証には限界があります。完了シグナルの条件を満たしたことは、そのシグナルの証拠であり、
+あらゆる結果の保証ではありません。報告では、観測した結果、残る不確実性、
+実施しなかった作業を区別する必要があります。
+
+認証情報、非公開の会話、アカウントデータを、公開パッチや報告に含めないでください。
+任意のテレメトリーは `DORI_TELEMETRY=0` または `DO_NOT_TRACK=1` で
+無効にできます。
+
 ## はじめに
+
+<table width="100%"><tr><td>
+
+**注記**
 
 Cataly はプロジェクト名です。既存の `dori`、`omp-dori`、`omp` コマンド、
 インストール先のホーム、公開済みアセットの名前は変更していません。
+
+</td></tr></table>
+
+### 公開済みリリースを使う
+
+既存の **v0.1.2 プレリリース**では、Linux x64 / herdr / Discord を対象とする
+契約が固定されています。リポジトリ名を変えても、それらのアセットが更新されたり、
+新しいプラットフォームがサポート対象になったりするわけではありません。
+
+[検証済みの特定リリース導入手順](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#prerequisites-and-trust)に従ってください。
+前提条件、チェックサム、インストール、自分の認証、明示的な起動、任意で有効にする
+Discord モニターを説明しています。特定のリリースを、任意の `main`
+インストーラーで代用しないでください。
 
 ### ソースから作業する
 
@@ -73,34 +148,15 @@ DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-sourc
 [ソースインストールガイド](docs/releases.md#source-checkouts-for-maintainers)を
 参照してください。ネイティブセッションは、自分のプロバイダー認証と利用枠を使います。
 
-### 公開済みリリースを使う
+<table width="100%"><tr><td>
 
-既存の **v0.1.2 プレリリース**では、Linux x64 / herdr / Discord を対象とする
-契約が固定されています。リポジトリ名を変えても、それらのアセットが更新されたり、
-新しいプラットフォームがサポート対象になったりするわけではありません。
-
-[検証済みの特定リリース導入手順](docs/releases.md#prerequisites-and-trust)に従ってください。
-前提条件、チェックサム、インストール、自分の認証、明示的な起動、任意で有効にする
-Discord モニターを説明しています。特定のリリースを、任意の `main`
-インストーラーで代用しないでください。
+**重要**
 
 利用者向けの実装は、検証済みリリースマニフェストに明記されている場合、
 分離された macOS arm64 / hc プロファイルにも対応します。これは macOS リリースが
 公開済みだという意味ではありません。Slack と Telegram は引き続きソース版の機能です。
 
-## 運用原則
-
-Cataly は、ユーザーが提供するアカウントと権限で動作します。外部に影響する操作には
-該当する許可が必要です。役に立つと判断しただけで権限を得ることはありません。
-実行するつもりのセッション、モニター、サービスだけを有効にしてください。
-
-検証には限界があります。完了シグナルの条件を満たしたことは、そのシグナルの証拠であり、
-あらゆる結果の保証ではありません。報告では、観測した結果、残る不確実性、
-実施しなかった作業を区別する必要があります。
-
-認証情報、非公開の会話、アカウントデータを、公開パッチや報告に含めないでください。
-任意のテレメトリーは `DORI_TELEMETRY=0` または `DO_NOT_TRACK=1` で
-無効にできます。
+</td></tr></table>
 
 ## ドキュメント
 

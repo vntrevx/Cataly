@@ -1,27 +1,73 @@
-# Cataly
+<p align="center">
+  <img src="docs/cataly-portrait.webp" width="320" alt="Cataly character portrait: silver hair and a crimson halo">
+</p>
 
-**理解意图。读懂上下文。把工作做到底。**
+<h1 align="center">Cataly</h1>
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [中文](README.zh.md)
+<p align="center">
+  <strong>理解意图。读懂上下文。把工作做到底。</strong>
+</p>
 
-Cataly 是将目标落地、把工作做完的 AI 队友。告诉它你想达成什么，它会负责
-接下来的步骤，结合相关背景，持续推进，交付你可以核验的结果。
+<p align="center">
+  Cataly 是将目标落地、把工作做完的 AI 队友。告诉它你想达成什么，它会负责接下来的步骤，结合相关背景，持续推进，交付你可以核验的结果。
+</p>
+
+<p align="center">
+  <a href="https://github.com/vntrevx/Cataly/releases/tag/v0.1.2"><img alt="Published preview" src="https://img.shields.io/github/v/release/vntrevx/Cataly?include_prereleases&label=preview&labelColor=2b2d33&color=c8102e"></a>
+  <a href="https://github.com/vntrevx/Cataly/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI on main" src="https://img.shields.io/github/actions/workflow/status/vntrevx/Cataly/ci.yml?branch=main&label=ci&labelColor=2b2d33"></a>
+  <a href="LICENSING.md"><img alt="License: SUL 1.0 with a scoped MIT notice" src="https://img.shields.io/badge/license-SUL%201.0%20%2B%20scoped%20MIT-8b9099?labelColor=2b2d33"></a>
+  <a href="https://bun.sh"><img alt="Bun 1.4.4 or later" src="https://img.shields.io/badge/bun-%E2%89%A51.4.4-8b9099?labelColor=2b2d33&logo=bun&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="#从这里开始"><strong>从这里开始</strong></a> ·
+  <a href="#工作方式"><strong>工作方式</strong></a> ·
+  <a href="#文档"><strong>文档</strong></a> ·
+  <a href="#参与贡献"><strong>参与贡献</strong></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.ja.md">日本語</a><br>
+  <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <strong>中文</strong>
+</p>
+
+## 理念
 
 追求的不只是遵循指令，更是作出合理判断：注意真正重要的事，串联细节，
 处理工作，而不需要有人一步步管理。
 
-## 理念
-
-- **对结果负责。** 朝着目标推进，而不是逐项完成一份活动清单。
-- **理解上下文。** 兼顾对话、项目惯例、约束和用户的偏好。
-- **主动行动，审慎判断。** 自行处理日常决策。遇到实质性的取舍，或缺少权限、
-  需要用户判断时，再提出问题。
-- **把工作做到底。** 调查、实现、验证，并汇报实际发生的情况。
-  有说服力的解释不能代替真正可用的结果。
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>对结果负责</h4>
+      朝着目标推进，而不是逐项完成一份活动清单。
+    </td>
+    <td width="50%" valign="top">
+      <h4>理解上下文</h4>
+      兼顾对话、项目惯例、约束和用户的偏好。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>主动行动，审慎判断</h4>
+      自行处理日常决策。遇到实质性的取舍，或缺少权限、需要用户判断时，再提出问题。
+    </td>
+    <td width="50%" valign="top">
+      <h4>把工作做到底</h4>
+      调查、实现、验证，并汇报实际发生的情况。有说服力的解释不能代替真正可用的结果。
+    </td>
+  </tr>
+</table>
 
 这就是 Cataly 构建时遵循的标准：有能力行动，有足够的细心去理解，并对结果负责。
 
 ## 工作方式
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/how-it-works-light.svg">
+  <img src="docs/how-it-works-light.svg" width="100%" alt="Workflow: a request arrives, the lead assigns it, a lane works and reports, and completion is checked before a result you can verify, with its evidence, comes back to you.">
+</picture>
 
 Cataly 将聊天工具中的对话连接到原生编程代理运行时和可跟踪的工作通道（lane）：
 
@@ -39,10 +85,37 @@ Cataly 将聊天工具中的对话连接到原生编程代理运行时和可跟�
 [omp-ulw](https://github.com/dbc-hbin/omp-ulw)。它们的作者、许可证和源码来源
 仍是本项目的一部分。
 
+## 运行原则
+
+Cataly 使用你提供的账号和权限工作。对外部系统产生影响的操作需要相应授权；
+认为某项操作有帮助，并不意味着获得了权限。只启用你打算运行的会话、
+监控器和服务。
+
+验证有其边界。完成信号通过，只能证明该信号已满足，并不能保证每个结果。
+报告应区分观察到的结果、尚存的不确定性和未执行的工作。
+
+不要在公开补丁和报告中包含凭据、私人对话或账号数据。
+可选遥测可以通过 `DORI_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 关闭。
+
 ## 从这里开始
+
+<table width="100%"><tr><td>
+
+**注意**
 
 Cataly 是项目名称。现有的 `dori`、`omp-dori` 和 `omp` 命令、
 安装主目录以及已发布资源文件的名称均未更改。
+
+</td></tr></table>
+
+### 使用已发布的发行版
+
+现有的 **v0.1.2 预发行版**具有不可变的 Linux x64 / herdr / Discord 契约。
+仓库改名不会升级这些资源文件，也不意味着开始支持新的平台。
+
+请遵循[已验证的精确版本安装步骤](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#prerequisites-and-trust)。
+其中涵盖前提条件、校验和、安装、你自己的认证、显式启动，
+以及选择启用的 Discord 监控器。不要用任意 `main` 安装器替代精确的发行版。
 
 ### 从源码开展工作
 
@@ -66,29 +139,14 @@ DORI_INSTALL_MODE=side DORI_NO_PULL=1 DORI_SRC="$PWD" bash scripts/install-sourc
 了解隔离、配置和显式启动方式。原生会话使用你自己的
 提供商认证和使用额度。
 
-### 使用已发布的发行版
+<table width="100%"><tr><td>
 
-现有的 **v0.1.2 预发行版**具有不可变的 Linux x64 / herdr / Discord 契约。
-仓库改名不会升级这些资源文件，也不意味着开始支持新的平台。
-
-请遵循[已验证的精确版本安装步骤](docs/releases.md#prerequisites-and-trust)。
-其中涵盖前提条件、校验和、安装、你自己的认证、显式启动，
-以及选择启用的 Discord 监控器。不要用任意 `main` 安装器替代精确的发行版。
+**重要**
 
 用户发行版的实现也支持隔离的 macOS arm64 / hc 配置，但须由经过验证的发行清单
 明确声明。这并不表示 macOS 发行版已经发布。Slack 和 Telegram 仍是源码版功能。
 
-## 运行原则
-
-Cataly 使用你提供的账号和权限工作。对外部系统产生影响的操作需要相应授权；
-认为某项操作有帮助，并不意味着获得了权限。只启用你打算运行的会话、
-监控器和服务。
-
-验证有其边界。完成信号通过，只能证明该信号已满足，并不能保证每个结果。
-报告应区分观察到的结果、尚存的不确定性和未执行的工作。
-
-不要在公开补丁和报告中包含凭据、私人对话或账号数据。
-可选遥测可以通过 `DORI_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 关闭。
+</td></tr></table>
 
 ## 文档
 

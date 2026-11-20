@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { audioSamples } from "./audio-samples.ts";
 import { withState } from "./fakes.ts";
 
 export const ids = {
@@ -17,6 +18,10 @@ export const ids = {
 export type DiscordRoute = {
   readonly body?: unknown;
   readonly raw?: string;
+  readonly base64?: string;
+  readonly headers?: Record<string, string>;
+  readonly chunks?: readonly string[];
+  readonly streamFailureAfter?: number;
   readonly status?: number;
   readonly failure?: "fetch" | "body";
   readonly sequence?: readonly DiscordRoute[];
@@ -25,6 +30,7 @@ type RecordedRequest = { readonly key: string; readonly body: Record<string, unk
 type AudioReceipt = {
   readonly file: string;
   readonly content: string;
+  readonly base64: string;
   readonly fileMode: number;
   readonly dirMode: number;
 };
@@ -38,6 +44,7 @@ type DiscordCli = {
       readonly routes?: Record<string, DiscordRoute>;
       readonly environment?: Record<string, string | undefined>;
       readonly hook?: readonly string[] | null;
+      readonly transcribeMaxBytes?: unknown;
       readonly stdin?: string;
     },
   ) => Promise<{
@@ -75,14 +82,15 @@ const routes: Record<string, DiscordRoute> = {
   [`DELETE /channels/${ids.thread}/messages/${ids.message}/reactions/%F0%9F%91%80/@me`]: { status: 204 },
   [`PUT /channels/${ids.text}/messages/${ids.message}/reactions/party%3A123/@me`]: { status: 204 },
   [`DELETE /channels/${ids.text}/messages/${ids.message}/reactions/party%3A123/@me`]: { status: 204 },
-  "GET /audio/voice.ogg?token=private": { raw: "audio bytes" },
+  "GET /audio/voice.ogg?token=private": { base64: audioSamples.ogg, headers: { "content-type": "audio/ogg" } },
 };
 
 const audioHook = `const fs = require("node:fs");
 const path = require("node:path");
 const file = process.argv.at(-1);
-const content = fs.readFileSync(file, "utf8");
-fs.appendFileSync(process.env.DORI_TEST_AUDIO_LOG, JSON.stringify({file, content,
+const bytes = fs.readFileSync(file);
+const content = bytes.toString("utf8");
+fs.appendFileSync(process.env.DORI_TEST_AUDIO_LOG, JSON.stringify({file, content, base64: bytes.toString("base64"),
   fileMode: fs.statSync(file).mode & 0o777, dirMode: fs.statSync(path.dirname(file)).mode & 0o777}) + "\\n");
 if (process.env.DORI_TEST_TRANSCRIBE === "fail") { console.error("synthetic hook failure"); process.exit(7); }
 if (process.env.DORI_TEST_TRANSCRIBE !== "empty") process.stdout.write(content);`;
@@ -111,6 +119,7 @@ const discordCli = (): DiscordCli => {
         JSON.stringify({
           stateDir: state.dir,
           defaultCwd: state.dir,
+          transcribeMaxBytes: options.transcribeMaxBytes,
           hooks: {
             transcribe:
               options.hook === null ? undefined : (options.hook ?? [process.execPath, "-e", audioHook, "{file}"]),

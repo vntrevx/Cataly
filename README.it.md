@@ -1,32 +1,80 @@
-# Cataly
+<p align="center">
+  <img src="docs/cataly-portrait.webp" width="320" alt="Cataly character portrait: silver hair and a crimson halo">
+</p>
 
-**Capire l'intento. Leggere il contesto. Portare il lavoro fino in fondo.**
+<h1 align="center">Cataly</h1>
 
-[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [中文](README.zh.md)
+<p align="center">
+  <strong>Capire l'intento. Leggere il contesto. Portare il lavoro fino in fondo.</strong>
+</p>
 
-Cataly è un compagno di squadra AI che porta il lavoro dall'obiettivo al completamento.
-Digli cosa vuoi realizzare: si fa carico dei passi successivi, tiene conto del
-contesto e prosegue fino a un risultato che puoi verificare.
+<p align="center">
+  Cataly è un compagno di squadra AI che porta il lavoro dall'obiettivo al completamento.
+  Digli cosa vuoi realizzare: si fa carico dei passi successivi, tiene conto del
+  contesto e prosegue fino a un risultato che puoi verificare.
+</p>
+
+<p align="center">
+  <a href="https://github.com/vntrevx/Cataly/releases/tag/v0.1.2"><img alt="Published preview" src="https://img.shields.io/github/v/release/vntrevx/Cataly?include_prereleases&label=preview&labelColor=2b2d33&color=c8102e"></a>
+  <a href="https://github.com/vntrevx/Cataly/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI on main" src="https://img.shields.io/github/actions/workflow/status/vntrevx/Cataly/ci.yml?branch=main&label=ci&labelColor=2b2d33"></a>
+  <a href="LICENSING.md"><img alt="License: SUL 1.0 with a scoped MIT notice" src="https://img.shields.io/badge/license-SUL%201.0%20%2B%20scoped%20MIT-8b9099?labelColor=2b2d33"></a>
+  <a href="https://bun.sh"><img alt="Bun 1.4.4 or later" src="https://img.shields.io/badge/bun-%E2%89%A51.4.4-8b9099?labelColor=2b2d33&logo=bun&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="#per-iniziare"><strong>Per iniziare</strong></a> ·
+  <a href="#come-funziona"><strong>Come funziona</strong></a> ·
+  <a href="#documentazione"><strong>Documentazione</strong></a> ·
+  <a href="#contribuire"><strong>Contribuire</strong></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.ja.md">日本語</a><br>
+  <a href="README.de.md">Deutsch</a> · <strong>Italiano</strong> · <a href="README.zh.md">中文</a>
+</p>
+
+## La filosofia
 
 L'ambizione non è soltanto seguire le istruzioni, ma esercitare buon giudizio:
 riconoscere ciò che conta, collegare i dettagli e gestire il lavoro senza
 dover essere guidato un passo alla volta.
 
-## La filosofia
-
-- **Farsi carico del risultato.** Lavorare per raggiungere l'obiettivo, non per
-  spuntare un elenco di attività.
-- **Capire il contesto.** Tenere presenti la conversazione, le convenzioni del
-  progetto, i vincoli e le preferenze dell'utente.
-- **Prendere iniziative ponderate.** Gestire autonomamente le decisioni ordinarie.
-  Chiedere quando un vero compromesso o un permesso mancante richiedono il giudizio dell'utente.
-- **Portare il lavoro fino in fondo.** Indagare, implementare, verificare e riferire
-  ciò che è realmente accaduto. Una spiegazione convincente non sostituisce un risultato funzionante.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>Farsi carico del risultato</h4>
+      Lavorare per raggiungere l'obiettivo, non per spuntare un elenco di attività.
+    </td>
+    <td width="50%" valign="top">
+      <h4>Capire il contesto</h4>
+      Tenere presenti la conversazione, le convenzioni del progetto, i vincoli e
+      le preferenze dell'utente.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>Prendere iniziative ponderate</h4>
+      Gestire autonomamente le decisioni ordinarie. Chiedere quando un vero
+      compromesso o un permesso mancante richiedono il giudizio dell'utente.
+    </td>
+    <td width="50%" valign="top">
+      <h4>Portare il lavoro fino in fondo</h4>
+      Indagare, implementare, verificare e riferire ciò che è realmente accaduto.
+      Una spiegazione convincente non sostituisce un risultato funzionante.
+    </td>
+  </tr>
+</table>
 
 Questo è il criterio su cui si fonda Cataly: la capacità di agire, l'attenzione
 necessaria per capire e la responsabilità del risultato.
 
 ## Come funziona
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/how-it-works-light.svg">
+  <img src="docs/how-it-works-light.svg" width="100%" alt="Workflow: a request arrives, the lead assigns it, a lane works and reports, and completion is checked before a result you can verify, with its evidence, comes back to you.">
+</picture>
 
 Cataly collega le conversazioni nelle app di messaggistica a un runtime nativo
 per coding agent e a lane di lavoro tracciate:
@@ -47,10 +95,42 @@ L'implementazione riunisce
 [omp-ulw](https://github.com/dbc-hbin/omp-ulw). Autori, licenze e provenienza
 dei sorgenti restano parte del progetto.
 
+## Principi operativi
+
+Cataly lavora con gli account e i permessi che fornisci. Le azioni con effetti
+esterni richiedono l'autorizzazione pertinente: ritenere utile un'azione
+non conferisce il permesso di eseguirla. Abilita soltanto le sessioni, i monitor
+e i servizi che intendi usare.
+
+La verifica ha dei limiti. Un segnale di completamento soddisfatto è una prova
+di quel segnale, non una garanzia su ogni risultato. I rapporti dovrebbero
+distinguere i risultati osservati, l'incertezza residua e il lavoro non svolto.
+
+Tieni credenziali, conversazioni private e dati degli account fuori da patch
+e rapporti pubblici. La telemetria facoltativa può essere disabilitata con
+`DORI_TELEMETRY=0` o `DO_NOT_TRACK=1`.
+
 ## Per iniziare
+
+<table width="100%"><tr><td>
+
+**Nota**
 
 Cataly è il nome del progetto. I comandi esistenti `dori`, `omp-dori` e `omp`,
 le directory di installazione e i nomi degli asset pubblicati non sono stati rinominati.
+
+</td></tr></table>
+
+### Usare una release pubblicata
+
+La **prerelease v0.1.2** esistente ha un contratto immutabile per
+Linux x64 / herdr / Discord. Rinominare il repository non aggiorna quegli asset
+né introduce il supporto per nuove piattaforme.
+
+Segui la [guida verificata alla release esatta](https://github.com/vntrevx/Cataly/blob/v0.1.2/docs/releases.md#prerequisites-and-trust).
+Include prerequisiti, checksum, installazione, la tua autenticazione,
+avvio esplicito e monitor Discord da abilitare su scelta dell'utente.
+Non sostituire una release esatta con un installer arbitrario di `main`.
 
 ### Lavorare dai sorgenti
 
@@ -75,35 +155,15 @@ Leggi la [guida all'installazione da sorgente](docs/releases.md#source-checkouts
 per isolamento, configurazione e avvio esplicito. Le sessioni native
 usano la tua autenticazione presso il provider e la tua quota di utilizzo.
 
-### Usare una release pubblicata
+<table width="100%"><tr><td>
 
-La **prerelease v0.1.2** esistente ha un contratto immutabile per
-Linux x64 / herdr / Discord. Rinominare il repository non aggiorna quegli asset
-né introduce il supporto per nuove piattaforme.
-
-Segui la [guida verificata alla release esatta](docs/releases.md#prerequisites-and-trust).
-Include prerequisiti, checksum, installazione, la tua autenticazione,
-avvio esplicito e monitor Discord da abilitare su scelta dell'utente.
-Non sostituire una release esatta con un installer arbitrario di `main`.
+**Importante**
 
 L'implementazione per gli utenti supporta anche profili isolati macOS arm64 / hc
 quando un manifest di release verificato li dichiara. Questo non significa che sia
 stata pubblicata una release macOS. Slack e Telegram restano funzionalità della versione sorgente.
 
-## Principi operativi
-
-Cataly lavora con gli account e i permessi che fornisci. Le azioni con effetti
-esterni richiedono l'autorizzazione pertinente: ritenere utile un'azione
-non conferisce il permesso di eseguirla. Abilita soltanto le sessioni, i monitor
-e i servizi che intendi usare.
-
-La verifica ha dei limiti. Un segnale di completamento soddisfatto è una prova
-di quel segnale, non una garanzia su ogni risultato. I rapporti dovrebbero
-distinguere i risultati osservati, l'incertezza residua e il lavoro non svolto.
-
-Tieni credenziali, conversazioni private e dati degli account fuori da patch
-e rapporti pubblici. La telemetria facoltativa può essere disabilitata con
-`DORI_TELEMETRY=0` o `DO_NOT_TRACK=1`.
+</td></tr></table>
 
 ## Documentazione
 

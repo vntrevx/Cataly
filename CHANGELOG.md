@@ -4,6 +4,8 @@
 
 - Native lane close refuses a confirmed working or blocked main (including approval waits) and, once close preparation binds its PID/startTicks/bootId, waits for that kernel incarnation to exit before thread or worktree cleanup on herdr/hc. A missing pane or wall-clock shift is not an exit receipt; failed reads after preparation stay held. Unknown first-run legacy closes retain their existing behavior. This protects observed living work, not full quiescence: unknown initial lanes, owned async jobs, queued input and services still need native read-only/unknown/quiescence APIs.
 
+- Slack thread positions are bound to the authenticated workspace/account rather than shared channel/root IDs. `dori inbound slack` keeps its existing readiness line and physical channel IDs; `--qualified-routes` opts into account-qualified readiness and destinations. Replies reject mismatched parents, qualified destinations reject another account before mutation, and nonempty legacy ledgers require explicit matching operator adoption with a durable receipt; existing non-self/non-bot intake and post-emit cursor semantics remain unchanged.
+
 - `dori park` and `dori reopen` accept saved OMP sessions whose first line is OMP's fixed-width title slot (v1) before the session header; any other leading record, a second title, a missing header, or a different session id or cwd is still refused.
 
 - Discord replies retain their original message ID and copied snapshot, distinguish unresolved, unavailable and observed-empty context, and reject reference or snapshot channel mismatches before owner delivery or checkpoint. Outgoing replies bind to the exact physical channel or thread and require the original target to exist; a deleted or other-channel target no longer silently becomes an unlinked post. Normal `INBOUND` grammar, split-message ordering and non-pinging mentions remain unchanged.
@@ -275,3 +277,9 @@ The Sustainable Use License, OMP attribution in `LICENSE.omp-dori`, `NOTICE`, pu
 - Unreleased: Extend the Telegram transport regression matrix for cross-field route spoofing and message/edit identity ordering alongside existing delivery and recovery coverage.
 
 - Unreleased: Isolate automated worktree discovery, completion checks and non-forced cleanup from inherited `GIT_*` overrides. Ordinary commands retain their environment; a foreign Git context can no longer hide local work or redirect worktree cleanup. Other Git probe failures hold completion instead of being treated as a missing checkout.
+
+- Unreleased: Stream URL transcription within configurable `transcribeMaxBytes` (default 25 MiB), abort overflow immediately, and check audio format against MIME before invoking the hook. Ogg requires Opus or Vorbis, M4A/MP4 requires an audio track, and MP3 accepts free-format frames with a confirmed cadence. Raw PCM, unsupported URL formats, and MIME mismatches get a one-line remedy; local file paths remain unchanged.
+
+## Unreleased addendum
+
+- Unreleased (source only): `dori send discord --render-tables` optionally aligns pipe tables in bounded code fences using Unicode display width. The default body, existing escapes/code, split-send replies and receipts remain intact; rendering over 80 columns or a 64 KiB message budget keeps the original text, and oversized edits still fail before any request. The adapted renderer retains its full upstream MIT notice in `NOTICE`.

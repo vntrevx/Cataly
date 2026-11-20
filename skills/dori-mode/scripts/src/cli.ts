@@ -7,9 +7,44 @@ import type { FlowDeps } from "./done-flow.ts";
 import { QueueError, TemplateError } from "./launch-errors.ts";
 
 const [command = "", ...rest] = process.argv.slice(2);
+const renderTablesUsage = "--render-tables requires dori send discord (with or without --edit)";
+// The harness grammar distinguishes a flag from message text and lock argv.
+// The sentinel lets it identify the unsupported flag even as the last token.
+if (
+  rest.includes("--render-tables") &&
+  (command === "--version" ||
+    (command === "harness" &&
+      (await import("../../../../src/cli-args.ts")).parse([...rest, "--"]).flags.has("render-tables")))
+) {
+  console.error(renderTablesUsage);
+  process.exit(1);
+}
+const qualifiedRoutesUsage = "--qualified-routes is supported for inbound slack only";
+const adoptThreadsUsage = "--adopt-legacy-threads is supported for inbound slack only";
+const slackInboundOption = /^(qualified-routes|adopt-legacy-threads)(?:=|$)/;
 // Command-selected imports keep unrelated graphs out of short-lived CLI processes.
-if (command === "harness") process.exit(await (await import("./cli-harness.ts")).runHarness(rest));
+if (command === "harness") {
+  if (rest.some((arg) => arg.startsWith("--") && slackInboundOption.test(arg.slice(2)))) {
+    // Use the harness parser before it initializes state, preserving flag-like values and `--` forwarding.
+    const { parse } = await import("../../../../src/cli-args.ts");
+    const { flags } = parse([...rest, ""]); // Let the parser classify a trailing unknown option.
+    const rejected = [...flags.keys()].find((name) => slackInboundOption.test(name));
+    if (rejected) {
+      console.error(rejected.startsWith("adopt-legacy-threads") ? adoptThreadsUsage : qualifiedRoutesUsage);
+      process.exit(1);
+    }
+  }
+  process.exit(await (await import("./cli-harness.ts")).runHarness(rest));
+}
 if (command === "--version") {
+  const end = rest.indexOf("--");
+  const rejected = rest
+    .slice(0, end === -1 ? rest.length : end)
+    .find((arg) => arg.startsWith("--") && slackInboundOption.test(arg.slice(2)));
+  if (rejected) {
+    console.error(rejected.startsWith("--adopt-legacy-threads") ? adoptThreadsUsage : qualifiedRoutesUsage);
+    process.exit(1);
+  }
   console.log(releaseVersion);
   process.exit(0);
 }
@@ -24,11 +59,11 @@ const { realClock, run } = await import("./run.ts");
 const config = await loadConfig().catch((e: unknown) =>
   e instanceof ConfigError ? die(e.message) : Promise.reject(e),
 );
-const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
 const flags = parseArgs({
   args: rest,
   allowPositionals: true,
   strict: false,
+  tokens: true,
   options: {
     title: { type: "string" },
     brief: { type: "string" },
@@ -51,14 +86,17 @@ const flags = parseArgs({
     repo: { type: "string" },
     loop: { type: "string" },
     gateway: { type: "boolean" },
+    "qualified-routes": { type: "boolean" },
     context: { type: "boolean" },
     "wake-lanes": { type: "boolean" },
+    "adopt-legacy-threads": { type: "string", multiple: true },
     purpose: { type: "string" },
     to: { type: "string" },
     text: { type: "string" },
     edit: { type: "string" },
     "text-file": { type: "string" },
     reply: { type: "string" },
+    "render-tables": { type: "boolean" },
     tag: { type: "string", multiple: true },
     archive: { type: "boolean" },
     unarchive: { type: "boolean" },
@@ -91,6 +129,19 @@ const flags = parseArgs({
     self: { type: "string" },
   },
 });
+if (flags.values["render-tables"] !== undefined && (command !== "send" || flags.positionals[0] !== "discord")) {
+  if (command === "send" && ["slack", "telegram"].includes(flags.positionals[0] ?? ""))
+    die("--render-tables is supported for discord only");
+  die(renderTablesUsage);
+}
+if (flags.values["adopt-legacy-threads"] !== undefined && (command !== "inbound" || flags.positionals[0] !== "slack"))
+  die(adoptThreadsUsage);
+if (flags.values["qualified-routes"] !== undefined) {
+  if (command !== "inbound" || flags.positionals[0] !== "slack") die(qualifiedRoutesUsage);
+  if (flags.tokens.some((token) => token.kind === "option" && token.name === "qualified-routes" && token.inlineValue))
+    die("--qualified-routes is a boolean flag; pass it without a value");
+}
+const deps: FlowDeps = { run, clock: realClock, registry: new Registry(config.stateDir), config };
 let commands: Readonly<Record<string, Command>> = {};
 switch (command) {
   case "report":

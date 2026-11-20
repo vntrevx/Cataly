@@ -2,36 +2,79 @@
   <img src="docs/cataly-portrait.webp" width="320" alt="은빛 머리와 붉은 광륜이 있는 Cataly 캐릭터 초상">
 </p>
 
-# Cataly
+<h1 align="center">Cataly</h1>
 
-**의도를 이해하고 맥락을 읽어 끝까지 해냅니다.**
+<p align="center">
+  <strong>의도를 이해하고 맥락을 읽어 끝까지 해냅니다.</strong>
+</p>
 
-Cataly는 개발 업무를 함께하는 AI 동료입니다.
-단계별 지시 대신 목표와 지켜야 할 조건을 알려주세요.
-Discord에서 요청을 받아 전용 코딩 세션에서 작업하고,
-직접 확인할 수 있는 결과를 돌려줍니다.
+<p align="center">
+  Cataly는 개발 업무를 함께하는 AI 동료입니다.
+  단계별 지시 대신 목표와 지켜야 할 조건을 알려주세요.
+  Discord에서 요청을 받아 전용 코딩 세션에서 작업하고,
+  직접 확인할 수 있는 결과를 돌려줍니다.
+</p>
 
-[시작하기](#시작하기) · [작동 방식](#작동-방식) · [문서](#문서)
+<p align="center">
+  <a href="https://github.com/vntrevx/Cataly/releases/tag/v0.1.2"><img alt="게시된 프리릴리스" src="https://img.shields.io/github/v/release/vntrevx/Cataly?include_prereleases&label=preview&labelColor=2b2d33&color=c8102e"></a>
+  <a href="https://github.com/vntrevx/Cataly/actions/workflows/ci.yml?query=branch%3Amain"><img alt="main 브랜치 CI" src="https://img.shields.io/github/actions/workflow/status/vntrevx/Cataly/ci.yml?branch=main&label=ci&labelColor=2b2d33"></a>
+  <a href="LICENSING.md"><img alt="라이선스: SUL 1.0과 범위가 정해진 MIT 고지" src="https://img.shields.io/badge/license-SUL%201.0%20%2B%20scoped%20MIT-8b9099?labelColor=2b2d33"></a>
+  <a href="https://bun.sh"><img alt="Bun 1.4.4 이상" src="https://img.shields.io/badge/bun-%E2%89%A51.4.4-8b9099?labelColor=2b2d33&logo=bun&logoColor=white"></a>
+</p>
 
-[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md)<br>
-[Deutsch](README.de.md) · [Italiano](README.it.md) · [中文](README.zh.md)
+<p align="center">
+  <a href="#시작하기"><strong>시작하기</strong></a> ·
+  <a href="#작동-방식"><strong>작동 방식</strong></a> ·
+  <a href="#문서"><strong>문서</strong></a> ·
+  <a href="#기여하기"><strong>기여하기</strong></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <strong>한국어</strong> · <a href="README.ja.md">日本語</a><br>
+  <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <a href="README.zh.md">中文</a>
+</p>
 
 ## 목표부터 알려주세요
 
-> 로그인 테스트가 간헐적으로 실패하는 이유를 찾아줘. 공개 API는 그대로 두고,
-> 관련 테스트를 돌린 다음 원인과 검증 결과를 담아 PR을 열어줘.
+<table width="100%"><tr><td>
 
-- **의도를 이해합니다.** 간헐적 실패는 증상입니다. 공개 API를 유지하면서
-  검토할 수 있는 수정안을 만드는 것이 목표입니다. 목표가 조사 범위를 결정합니다.
-- **맥락을 읽습니다.** 대화, 저장소 관례, 제약, 사용자가 밝힌 선호를 함께 고려합니다.
-  일상적인 판단은 Cataly가 맡고, 실질적인 절충이나 권한 판단이 필요할 때는 묻습니다.
-- **끝까지 완수합니다.** 패치를 만드는 것으로 끝내지 않습니다. 합의한 결과를 확인하고,
-  근거와 아직 확인하지 못한 부분을 함께 보고합니다.
+**요청 예시**
+
+*로그인 테스트가 간헐적으로 실패하는 이유를 찾아줘. 공개 API는 그대로 두고,
+관련 테스트를 돌린 다음 원인과 검증 결과를 담아 PR을 열어줘.*
+
+</td></tr></table>
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>의도를 이해합니다</h4>
+      간헐적 실패는 증상입니다. 공개 API를 유지하면서 검토할 수 있는 수정안을
+      만드는 것이 목표입니다. 목표가 조사 범위를 결정합니다.
+    </td>
+    <td width="33%" valign="top">
+      <h4>맥락을 읽습니다</h4>
+      대화, 저장소 관례, 제약, 사용자가 밝힌 선호를 함께 고려합니다. 일상적인
+      판단은 Cataly가 맡고, 실질적인 절충이나 권한 판단이 필요할 때는 묻습니다.
+    </td>
+    <td width="33%" valign="top">
+      <h4>끝까지 완수합니다</h4>
+      패치를 만드는 것으로 끝내지 않습니다. 합의한 결과를 확인하고, 근거와 아직
+      확인하지 못한 부분을 함께 보고합니다.
+    </td>
+  </tr>
+</table>
 
 차이는 채팅 화면이 아니라, 요청과 실제 작업 세션, 그리고 완료를 뒷받침하는 근거가
 서로 연결된다는 데 있습니다.
 
 ## 작동 방식
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works.ko-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/how-it-works.ko-light.svg">
+  <img src="docs/how-it-works.ko-light.svg" width="100%" alt="작업 흐름: 요청을 받고, 리드가 작업을 맡기고, 레인이 작업하고 보고하며, 완료를 검증한 뒤 확인할 수 있는 결과와 근거를 돌려줍니다.">
+</picture>
 
 아래는 현재 `main`의 작업 흐름입니다.
 
@@ -49,16 +92,32 @@ Discord에서 요청을 받아 전용 코딩 세션에서 작업하고,
    명령 실행 결과, 파일 상태, PR 병합, 패키지 버전 게시 등을 확인할 수 있습니다.
    검증을 통과했다는 것은 확인한 항목의 증거이지 모든 결과를 보장한다는 뜻은 아닙니다.
 
-**통제권은 사용자에게 있습니다.** Cataly는 사용자가 제공한 계정과 권한으로
-작동합니다. 도움이 될 것이라는 판단만으로 외부 작업 권한이 생기지는 않습니다.
-설치만으로 에이전트·메신저 수신기·서비스가 시작되지는 않습니다. 원하는 기능만
-활성화하고, 인증 정보와 비공개 대화는 공개 보고에서 제외하세요. 선택적 텔레메트리는
-`DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로 끌 수 있습니다.
+## 통제권은 사용자에게 있습니다
+
+- Cataly는 사용자가 제공한 계정과 권한으로 작동합니다. 도움이 될 것이라는 판단만으로
+  외부 작업 권한이 생기지는 않습니다.
+- 설치만으로 에이전트·메신저 수신기·서비스가 시작되지는 않습니다. 원하는 기능만
+  활성화하세요.
+- 인증 정보와 비공개 대화는 공개 보고에서 제외하세요.
+- 선택적 텔레메트리는 `DORI_TELEMETRY=0` 또는 `DO_NOT_TRACK=1`로 끌 수 있습니다.
 
 ## 시작하기
 
+<table width="100%"><tr><td>
+
+**참고**
+
 Cataly는 프로젝트 이름입니다. `dori`, `omp-dori`, `omp` 명령과 기존 설치 경로,
 게시된 배포 파일 이름은 그대로입니다.
+
+</td></tr></table>
+
+|            | [게시된 프리릴리스](#게시된-프리릴리스-써보기) | [현재 소스](#현재-소스에서-시작하기)           |
+| ---------- | ---------------------------------------------- | ---------------------------------------------- |
+| **빌드**   | v0.1.2 프리릴리스                              | 현재 `main`                                    |
+| **범위**   | Linux x64 / herdr / Discord                    | herdr 또는 hc, 선택한 메신저                   |
+| **OMP**    | 별도로 설치한 네이티브 OMP 18.18.8             | 고정된 패치 버전 OMP 18.20.0과 omp-ulw 오버레이 |
+| **설치 홈** | 기본 설치 홈 `~/.dori`                          | Side 모드 `~/.omp-dori`                        |
 
 ### 게시된 프리릴리스 써보기
 
@@ -96,24 +155,27 @@ Side 모드는 기본적으로 `~/.omp-dori`를 사용하며 기존 `~/.dori` �
 참고하세요. `omp-dori doctor`는 설정을 읽기 전용으로 점검하고, `omp-dori status`는
 레인 상태를 보여줍니다.
 
+<table width="100%"><tr><td>
+
+**중요**
+
 **지원 범위:** Slack과 Telegram은 소스에 남아 있는 연동 기능이며 게시된 프리릴리스의
 지원 범위에 포함되지 않습니다. 호환 릴리스 매니페스트에 명시된 경우 격리된
 macOS arm64 / hc 설치가 가능하지만, 해당 배포본이 게시됐다는 뜻은 아닙니다.
 `main` 병합만으로 기존 프리릴리스가 업데이트되지는 않습니다.
 
+</td></tr></table>
+
 ## 문서
 
-**설치와 운영**
-
-- [설치, 지원, 업데이트와 롤백](docs/releases.md)
-- [메신저 설정](skills/dori-mode/references/setup.md) · [Dori 운영 규칙](skills/dori-mode/SKILL.md)
-- [레인 명령과 설정](skills/dori-mode/references/scripts.md) · [완료 검증 절차](skills/dori-mode/references/done-protocol.md)
-
-**더 알아보기**
-
-- [런타임 어댑터와 세션 계약](docs/runtime.md) · [소스 개발용 컨테이너](docs/container.md)
-- [스케줄링과 백로그](docs/hourly-loop.md) · [공유 잠금과 레인 우선순위](docs/locks.md)
-- [선택형 유료 Discord 음성 도우미(현재 소스)](docs/discord-voice.md) · [변경 기록](CHANGELOG.md)
+| 설치와 운영                                                         | 더 알아보기                                                         |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [설치, 지원, 업데이트와 롤백](docs/releases.md)                     | [런타임 어댑터와 세션 계약](docs/runtime.md)                        |
+| [메신저 설정](skills/dori-mode/references/setup.md)                 | [소스 개발용 컨테이너](docs/container.md)                           |
+| [Dori 운영 규칙](skills/dori-mode/SKILL.md)                         | [스케줄링과 백로그](docs/hourly-loop.md)                            |
+| [레인 명령과 설정](skills/dori-mode/references/scripts.md)          | [공유 잠금과 레인 우선순위](docs/locks.md)                          |
+| [완료 검증 절차](skills/dori-mode/references/done-protocol.md)      | [선택형 유료 Discord 음성 도우미(현재 소스)](docs/discord-voice.md) |
+| [변경 기록](CHANGELOG.md)                                           |                                                                     |
 
 ## 기여하기
 

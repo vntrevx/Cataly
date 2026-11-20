@@ -1,11 +1,13 @@
 import type { Clock } from "../run.ts";
 import { DeliveryUncertainError, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
-import type { ThreadLedger } from "./thread-ledger.ts";
+import { slackScope, type SlackScope, type ThreadLedger } from "./thread-ledger.ts";
 
 export type SlackAuth = { readonly token: string; readonly cookie?: string };
 export type Posted = { readonly channel: string; readonly ts: string };
 
 export class Slack {
+  private identified: SlackScope | undefined;
+
   constructor(
     private readonly http: Http,
     private readonly clock: Clock,
@@ -13,6 +15,26 @@ export class Slack {
     private readonly base = "https://slack.com/api",
     private readonly ledger?: ThreadLedger,
   ) {}
+
+  async identity(): Promise<SlackScope> {
+    if (this.identified) return this.identified;
+    const me = await this.call("auth.test", {});
+    this.identified = slackScope(me["team_id"], me["user_id"]);
+    return this.identified;
+  }
+
+  private async channelTarget(target: string): Promise<string> {
+    if (!target.includes(":")) return target;
+    const parts = target.split(":");
+    const channel = parts[3];
+    if (parts.length !== 4 || parts[0] !== "slack" || !channel || !/^[CGD][A-Za-z0-9_-]+$/.test(channel))
+      throw new MessengerError("Slack route must be slack:WORKSPACE:ACCOUNT:CHANNEL", 0);
+    const expected = slackScope(parts[1], parts[2]);
+    const actual = await this.identity();
+    if (expected.teamId !== actual.teamId || expected.userId !== actual.userId)
+      throw new MessengerError("Slack route belongs to a different authenticated workspace or account", 0);
+    return channel;
+  }
 
   private headers(json: boolean): Record<string, string> {
     return {
@@ -23,6 +45,16 @@ export class Slack {
   }
 
   async call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    for (const key of ["channel", "channel_id"]) {
+      const target = params[key];
+      if (typeof target === "string" && target.includes(":"))
+        params = { ...params, [key]: await this.channelTarget(target) };
+    }
+    let scope: SlackScope | undefined;
+    if (this.ledger && method === "chat.postMessage") {
+      scope = await this.identity();
+      this.ledger.assertScoped();
+    }
     const readOnly = [
       "auth.test",
       "conversations.replies",
@@ -66,7 +98,13 @@ export class Slack {
       if (typeof channel !== "string" || !channel || typeof ts !== "string" || !ts)
         throw new DeliveryUncertainError("slack chat.postMessage: missing channel/message ID", 200);
       try {
-        await this.ledger?.record(channel, typeof params["thread_ts"] === "string" ? params["thread_ts"] : ts, ts);
+        if (this.ledger && scope)
+          await this.ledger.record(
+            scope,
+            channel,
+            typeof params["thread_ts"] === "string" ? params["thread_ts"] : ts,
+            ts,
+          );
       } catch (error) {
         const reason =
           error instanceof MessengerError
@@ -106,6 +144,7 @@ export class Slack {
     threadTs?: string,
     title?: string,
   ): Promise<string> {
+    channel = await this.channelTarget(channel);
     const slot = await this.call("files.getUploadURLExternal", { filename, length: bytes.byteLength });
     const put = await withBackoff(this.http, this.clock, {
       method: "POST",

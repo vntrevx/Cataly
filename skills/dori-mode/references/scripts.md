@@ -65,6 +65,7 @@ Before a send/edit, a durable pending record is written. An ambiguous create or 
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text) |
+| `transcribeMaxBytes` | 26214400 (25 MiB) | `transcribe` HTTP(S) URLs: positive safe integer cap on actual streamed bytes; local files are unchanged |
 | `supervision` | no ceilings by default (set wallMinutes, tokens or costUsd to enable); hung after 20 min | `freshness`, `launch`, `close` (see Supervision below) |
 | `repoIdentities` | none | `verify-pr`, `launch` footer: expected Git name and email per `owner/repo` (keys match without case) |
 | `prAutoTrack` | `false` | `claim-done`, `checkpoint`: when `true`, pull-request links in a recorded claim's evidence or a checkpoint's `--remote-effect` receipts are tracked for `dori pr watch` with the lane and its thread. Any value other than `true` or `false` stops every command with `invalid prAutoTrack` |
@@ -143,7 +144,7 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 `discordInboundLive` adapters expose `cursorFor(channel)` from their injected store. `storeFor(channel, false)` reads admission state without seeding an unseen channel; wrappers must forward that optional argument. An admission position is not a delivery receipt.
 
-Slack commits a successful poll's own-thread cursors in one ledger transaction, only after all reads and emits finish. `ThreadLedger.markSeen` takes an array of `{ channel, rootTs, ts }` updates and merges them under the existing writer lock; concurrent thread records survive and seen positions never decrease. Empty batches do not take a lock, and batches with no newer known cursor do not rewrite the ledger. This does not reduce Slack requests or stop watching older threads.
+Slack commits a successful poll's own-thread cursors in one ledger transaction, only after all reads and emits finish. `ThreadLedger.markSeen` takes the authenticated `SlackScope` and an array of `{ channel, rootTs, ts }` updates and merges them under the existing writer lock; concurrent thread records survive and seen positions never decrease. Empty batches do not take a lock, and batches with no newer known cursor do not rewrite the ledger. This does not reduce Slack requests or stop watching older threads.
 
 ## Commands
 
@@ -370,6 +371,10 @@ On Discord, `--to` accepts an exact channel ID. With `DORI_DISCORD_GUILD_ID` set
 
 The Discord owed-answer gate requires `--reply` to name the original owner message in the exact destination channel or thread. After every part succeeds, `owes/sent.jsonl` records that request ID, a delivery ID and the complete ordered remote-message ID list. A partial or uncertain send, an edit, typing, a reaction alone, or a successful unlinked post never settles the request. Older channel/time-only receipts are ignored rather than guessed onto a request. The existing exact-message read mark, stale-owe limit and bounded continuations still apply. API acceptance is not proof that the owner read the answer; do not automatically resend an uncertain delivery.
 
+`send discord --render-tables` opts into aligned, monospaced pipe tables before the existing delivery path. The default remains the original text. Padding uses Unicode display width for CJK and emoji, preserves source escapes and inline code, and leaves existing fenced code and non-table text unchanged. Formatting is limited to 80 display columns (including indentation) and a 64 KiB UTF-8 budget for the complete transformed message, checked before padding is allocated. An oversized table/message or ambiguous row/code syntax keeps the original message; nothing is truncated. Indented code blocks and unsupported nested fence syntax are not reinterpreted.
+
+The flag applies to Discord sends and edits only; Slack and Telegram sends reject it. Rendered sends use the same 2000-code-unit splitting, first-part reply, disabled mentions and partial-send receipts described above. Rendering can add split parts. For `--edit`, the rendered text must fit one message: overflow is refused before any request, never converted into a new post. The formatter does not turn on automatically for SDK calls, thread starters or other commands.
+
 ### `dori thread discord create --to CHANNEL --title T [--text T] [--tag NAME]... [--message ID]`
 Creates a public thread in a text channel, or a post in a forum/media channel. `--to` uses the same ID/name lookup as Discord sends. A forum post uses `--text`, or the complete title when text is omitted, as its starter message. In a text channel, optional `--text` is sent inside the newly created thread. Authored whitespace is retained in titles and starter text; titles are limited to 100 characters. Starter messages disable mentions. Text over 2000 code units is split as `send discord` splits it: a forum post's starter holds the first part and the rest follow in the post, and ` mid=` names the first message.
 
@@ -449,13 +454,21 @@ The private `<stateDir>/owes` directory stores inbound previews (up to 500 chara
 
 Writers reuse per-file owner locks, wait asynchronously and publish capped snapshots atomically. A live holder has no automatic wait timeout; a stale lock whose PID has been reused may look live and require operator repair. Session changes abort waiting monitor admissions rather than waking an old session. Aborting the ledger wait for an already durably queued Gateway message retains its payload and cursor for restart; unresolved candidates have the loss boundary above. Unrelated failures remain errors.
 
-### `dori inbound slack [--loop MIN]`
-Prints `INBOUND <source> <channel> <thread> <ts> <user> <text>`. It reads from three places, each message once:
+### `dori inbound slack [--loop MIN] [--qualified-routes] [--adopt-legacy-threads WORKSPACE:ACCOUNT]`
+Authenticates with `auth.test` and by default prints exactly `INBOUND_READY slack`. Each message is `INBOUND <source> <channel> <thread> <ts> <user> <text>`: `<channel>` is the physical Slack channel ID and the final field is full JSON-encoded text. Existing monitors keep this format.
+
+To migrate a consumer to qualified output, first teach it to accept `INBOUND_READY slack workspace=<team_id> account=<user_id>` and to treat `slack:<team_id>:<user_id>:<channel>` in the channel slot as a Dori destination, not a Slack API channel ID. Then start that receiver with `dori inbound slack --qualified-routes` (and its usual `--loop` setting). All other message fields are unchanged.
+
+Copy the qualified destination into `dori send slack --to` (and retain `--thread` for a reply); a different authenticated workspace or account fails before posting, editing or allocating an upload. Bare physical channel IDs still explicitly select the currently configured account. Qualified destinations also work for library calls with `channel` or `channel_id`. Both receiver formats read from three places, each message once:
 - `threads-view`: unread replies in threads the account follows (Slack's own Threads view);
 - `own-thread`: new replies in any thread the Dori posted in, tagged or not;
 - `unread`: DMs, group DMs and channels with unread mentions.
 
-The Dori's own messages and bot messages are skipped. Every message the Dori posts records its thread in `<stateDir>/slack-threads.json`, whichever helper sends it, so a guest's untagged reply under a root posted with a raw API call is still found.
+The Dori's own messages and bot messages are skipped; Slack keeps its existing all-non-self/non-bot policy, not an owner allowlist. Every message the Dori posts records its thread in `<stateDir>/slack-threads.json`, whichever helper sends it, so a guest's untagged reply under a root posted with a raw API call is still found. Version 2 keys each position by authenticated workspace, account, channel and root timestamp, never display name or credential text. Credential rotation for the same identity preserves the position; another account gets separate positions. Reply metadata that disagrees with its enclosing channel or thread stops the poll before any emit or cursor commit. This route identity is not a multi-tenant security boundary.
+
+A nonempty legacy array has no account identity. New posts and inbound polling refuse it without changing it: there is no automatic attribution, reset or resend. Stop old Slack sender/receiver processes first, confirm which workspace/account owns every legacy row, then run `dori inbound slack --loop 0 --adopt-legacy-threads WORKSPACE:ACCOUNT` with that account's credentials. A mismatch is refused. The locked, atomic conversion preserves every position and saves a `SLACK_THREADS_ADOPTED` receipt (scope, time, count); repeating the same decision returns that receipt, and another account cannot reassign it. If ownership is unknown or mixed, preserve the file and resolve ownership before proceeding rather than guessing. Empty legacy arrays need no decision. After conversion, old array-only writers fail closed; do not run an old receiver beside the upgraded one.
+
+Adoption prints only its receipt and exits without polling or advancing positions. Start the normal receiver separately to deliver pending replies; choose `--qualified-routes` only if its consumer has been updated. Output format does not affect account scoping or replace ledger adoption.
 
 ### `dori inbound telegram [--loop MIN]`
 Startup authenticates the configured bot with `getMe` and requires an empty `getWebhookInfo.url` before printing `INBOUND_READY` or calling `getUpdates`. An invalid identity, unavailable or malformed check, or active webhook is a sanitized nonzero startup error: no cursor acknowledgement is sent, and webhook settings are never changed. Pending checks are awaited; stopping the process while they are pending does not start polling. These online checks run only for an explicit Telegram inbound command, not for offline commands such as `inbound-lag`.
@@ -501,7 +514,19 @@ Prints `LAG n=<count> p50=<ms>ms p90=<ms>ms p99=<ms>ms max=<ms>ms[ skipped=<n>]`
 - `skipped=<n>` counts records without a finite numeric lag in the window, including missing dates, malformed JSON and the partial last line a kill mid-write leaves behind.
 
 ### `dori transcribe <audio-file|url>`
-Runs the existing `hooks.transcribe` argv with `{file}` and prints the transcript. Local paths pass through unchanged. An HTTP(S) URL is downloaded to a unique private temporary directory, with an owner-only audio file, before the same hook runs. The download and its directory are removed after success, failed downloads, and failed or empty transcription; local source files are retained. Failed downloads and failed or empty transcription exit with an error.
+Runs the existing `hooks.transcribe` argv with `{file}` and prints the transcript. Local paths pass through unchanged: no URL size or format policy is applied to them, and local source files are retained.
+
+HTTP(S) downloads stream into a unique private temporary directory and owner-only file. `transcribeMaxBytes` defaults to **26214400 bytes (25 MiB)** and accepts a positive safe integer in the Dori config. The limit counts actual streamed, decompressed bytes across all chunks, not a missing, zero or claimed `Content-Length`; exceeding it aborts the download before the hook. A declared over-limit size is rejected before reading the body.
+
+Before calling the hook, Dori identifies downloaded WAV, Layer III MP3, Ogg, M4A/MP4 or FLAC and checks any declared MIME type against that identification. Missing or generic octet-stream MIME is accepted only for a recognized format. These are bounded metadata checks, not full codec decoding.
+
+- Ogg: a complete Opus or Vorbis identification packet must be present in the first 32 beginning-of-stream pages. `video/ogg` is accepted when supported audio is present; `audio/opus` requires Opus. Mapped Opus channels require the declared stream counts and channel mapping.
+- M4A/MP4: a supported major brand and a `soun` track handler are required. `video/mp4` is accepted when the container has an audio track. The box walk checks at most 4096 boxes and can find `moov` after `mdat`; fragmented files are supported.
+- MP3: ID3 alone is not audio. Indexed Layer III uses the frame header; free-format Layer III needs three complete frames with compatible headers and matching, padding-adjusted spacing, with the next header within 8192 bytes.
+
+Use a local path for unsupported Ogg codecs, very short free-format clips, or other files outside these inspection bounds.
+
+**Compatibility change:** raw PCM, unknown/truncated signatures and MIME/signature contradictions in URLs now fail before transcription. Convert unsupported input to one of the listed containers, fix an incorrect server MIME, or supply a local file path for a custom hook format. Size errors name `transcribeMaxBytes` and how to adjust it; other download refusals give their reason, the setting and a corrective action on one line. The downloaded file and directory are removed on success, overflow, failed downloads, rejected formats, and failed or empty transcription. Errors exit nonzero.
 
 ### `dori heavy <label> -- <command ...>`
 Waits until load is under `heavyMaxLoad` and one of `heavySlots` is free, then runs the command and frees the slot when it exits. A slot held by a process that no longer exists (or a zombie) is taken over. Use it for full builds and test suites. Installs, focused tests and git do not need it.

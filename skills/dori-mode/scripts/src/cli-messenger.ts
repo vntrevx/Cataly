@@ -2,20 +2,20 @@
 import { existsSync } from "node:fs";
 
 import { type Command, die, envSlackToken, every, messageText, slackAuth } from "./cli-context.ts";
-import { channelDiscord, reactDiscord, sendDiscord, threadDiscord, withLocalAudio } from "./cli-discord-ops.ts";
+import { channelDiscord, reactDiscord, sendDiscord, threadDiscord } from "./cli-discord-ops.ts";
 import { discordClock, discordInboundCommand, openDiscordSocket, untilStopped } from "./cli-discord.ts";
 import { ChannelPurposeError } from "./messenger/discord-channels.ts";
 import { discordPresence } from "./messenger/discord-presence.ts";
 import { fetchHttp, inboundPollRetryDelay, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
-import { pollSlackInbound } from "./messenger/slack-inbound.ts";
+import { formatSlackInbound, pollSlackInbound } from "./messenger/slack-inbound.ts";
 import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { envInt, fileTgInboundStore, telegramInboundLoop } from "./messenger/telegram-inbound.ts";
 import { formatTelegramInbound } from "./messenger/telegram-line.ts";
 import { inboundLagLog, lagOfLine, readLagTail, summarizeLag } from "./messenger/telegram-lag.ts";
-import { ThreadLedger } from "./messenger/thread-ledger.ts";
-import { transcribe, TranscriptionError } from "./messenger/voice.ts";
+import { slackScope, type SlackScope, ThreadLedger } from "./messenger/thread-ledger.ts";
+import { transcribe, TranscriptionError, withLocalAudio } from "./messenger/voice.ts";
 import { realClock, run } from "./run.ts";
 
 /** Messenger errors are one line, never a stack. */
@@ -163,7 +163,7 @@ const telegramInbound = async (stateDir: string, minutes: number): Promise<void>
   );
 };
 
-const inbound: Command = async ({ key, loopMinutes, config, deps, values }) => {
+const inbound: Command = async ({ key, loopMinutes, config, deps, values, strings }) => {
   const minutes = loopMinutes();
   const context = values["context"] === true;
   if (context && key !== "discord") die("--context is supported for discord only");
@@ -178,21 +178,30 @@ const inbound: Command = async ({ key, loopMinutes, config, deps, values }) => {
       wake,
     });
   if (key !== "slack") die("inbound supports slack, telegram or discord");
+  let adoptScope: SlackScope | undefined;
+  if (values["adopt-legacy-threads"] !== undefined) {
+    const requested = strings("adopt-legacy-threads");
+    const parts = requested[0]?.split(":");
+    if (requested.length !== 1 || parts?.length !== 2)
+      return die("--adopt-legacy-threads needs exactly one WORKSPACE:ACCOUNT");
+    adoptScope = slackScope(parts[0], parts[1]);
+  }
   const auth = slackAuth(envSlackToken() ?? die(NO_SLACK_TOKEN));
   const ledger = new ThreadLedger(`${config.stateDir}/slack-threads.json`);
   const slack = new Slack(fetchHttp, realClock, auth, undefined, ledger);
-  const me = String((await slack.call("auth.test", {}))["user_id"] ?? die("auth.test returned no user_id"));
-  console.log("INBOUND_READY slack");
+  const scope = await slack.identity();
+  if (adoptScope) {
+    if (adoptScope.teamId !== scope.teamId || adoptScope.userId !== scope.userId)
+      return die("legacy adoption does not match the authenticated Slack workspace/account");
+    console.log(`SLACK_THREADS_ADOPTED ${JSON.stringify(await ledger.adoptLegacy(scope))}`);
+    return;
+  }
+  ledger.assertScoped();
+  const qualifiedRoutes = values["qualified-routes"] === true;
+  console.log(`INBOUND_READY slack${qualifiedRoutes ? ` workspace=${scope.teamId} account=${scope.userId}` : ""}`);
   await every(
     minutes,
-    async () => {
-      // Full text, JSON-escaped on one line, as Telegram's: a monitor reads nothing but this line.
-      await pollSlackInbound(slack, ledger, { selfUserId: me }, (i) =>
-        console.log(
-          `INBOUND ${i.source} ${i.channel} ${i.threadTs ?? "-"} ${i.ts || "-"} ${i.user ?? "-"} ${JSON.stringify(i.text ?? "")}`,
-        ),
-      );
-    },
+    () => pollSlackInbound(slack, ledger, {}, (i) => console.log(formatSlackInbound(i, qualifiedRoutes))),
     inboundPollRetryDelay,
   );
 };
@@ -234,6 +243,8 @@ export const messengerCommands: Readonly<Record<string, Command>> = {
   },
   transcribe: async ({ key, config }) => {
     const source = key ?? die("transcribe needs an audio file path");
-    console.log(await withLocalAudio(source, (file) => transcribe(run, config.hooks.transcribe, file)));
+    console.log(
+      await withLocalAudio(source, config.transcribeMaxBytes, (file) => transcribe(run, config.hooks.transcribe, file)),
+    );
   },
 };

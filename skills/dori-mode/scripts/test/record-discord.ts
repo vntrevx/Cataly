@@ -1,4 +1,5 @@
 import { appendFileSync, readFileSync } from "node:fs";
+import type { BodyInit } from "bun";
 import type { DiscordRoute } from "./discord-fakes.ts";
 
 // Preloaded only into accepted-operation CLI scenarios. No fetch reaches the network.
@@ -9,6 +10,12 @@ const routes = JSON.parse(readFileSync(process.env["DORI_TEST_DISCORD_ROUTES"] ?
 >;
 
 const calls = new Map<string, number>();
+
+class StreamOnlyResponse extends Response {
+  override readonly arrayBuffer = async (): Promise<ArrayBuffer> => {
+    throw new Error("whole-body buffering is forbidden");
+  };
+}
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(String(input));
@@ -34,5 +41,33 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     );
   }
   const status = route.status ?? 200;
-  return new Response(status === 204 ? null : (route.raw ?? JSON.stringify(route.body)), { status });
+  let body: BodyInit | null | undefined = status === 204 ? null : (route.raw ?? JSON.stringify(route.body));
+  if (route.base64 !== undefined) body = Buffer.from(route.base64, "base64");
+  if (route.chunks) {
+    const chunks = route.chunks;
+    let index = 0;
+    body = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              appendFileSync(log, `${JSON.stringify({ key: "BODY_ABORT", body: { index } })}\n`);
+              controller.error(new Error("download aborted"));
+            },
+            { once: true },
+          );
+        },
+        pull(controller) {
+          appendFileSync(log, `${JSON.stringify({ key: "BODY_READ", body: { index } })}\n`);
+          if (route.streamFailureAfter === index) controller.error(new Error("synthetic midstream failure"));
+          else if (index === chunks.length) controller.close();
+          else controller.enqueue(Buffer.from(chunks[index++]!, "base64"));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+  }
+  const ResponseType = route.base64 !== undefined || route.chunks ? StreamOnlyResponse : Response;
+  return new ResponseType(body, { status, ...(route.headers ? { headers: route.headers } : {}) });
 }) as typeof fetch;

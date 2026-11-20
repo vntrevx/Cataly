@@ -1,42 +1,17 @@
-/** Discord send/thread/react operations and URL audio staging for the existing transcription hook. */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+/** Discord send/thread/react operations. */
 import { type Command, die, messageText } from "./cli-context.ts";
 import { type DcChannel, Discord, isForumType } from "./messenger/discord.ts";
 import { DiscordChannels, purposeText } from "./messenger/discord-channels.ts";
 import { discordInboundEnv, isDiscordSnowflake } from "./messenger/discord-inbound-state.ts";
+import { renderDiscordTables } from "./messenger/discord-markdown.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { DISCORD_LIMIT } from "./messenger/split.ts";
-import { TranscriptionError } from "./messenger/voice.ts";
 import { recordMark, recordSent } from "./owes.ts";
 import { realClock, runtimesOf } from "./run.ts";
 import { setThreadStatus } from "./thread-status.ts";
 
 const client = () =>
   new Discord(fetchHttp, realClock, process.env["DORI_DISCORD_TOKEN"] || die("DORI_DISCORD_TOKEN is not set"));
-
-/** Local paths pass through; downloaded audio belongs only to this invocation and is always removed. */
-export const withLocalAudio = async (source: string, use: (file: string) => Promise<string>): Promise<string> => {
-  if (!/^https?:\/\//i.test(source)) return await use(source);
-  const dir = mkdtempSync(join(tmpdir(), "dori-audio-"));
-  try {
-    let file: string;
-    try {
-      const url = new URL(source);
-      const response = await fetch(url);
-      if (!response.ok) throw new TranscriptionError(`transcribe: GET ${url.pathname} answered ${response.status}`);
-      file = join(dir, basename(url.pathname) || "audio");
-      writeFileSync(file, new Uint8Array(await response.arrayBuffer()), { mode: 0o600, flag: "wx" });
-    } catch (error) {
-      if (error instanceof TranscriptionError) throw error;
-      throw new TranscriptionError("transcribe: could not download audio");
-    }
-    return await use(file);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-};
 
 /** An exact channel ID, or a unique channel name in the explicitly selected guild. */
 const channelOf = async (dc: Discord, raw: string): Promise<DcChannel> => {
@@ -67,7 +42,8 @@ export const sendDiscord: Command = async (cli) => {
   const { need, opt, values, config } = cli;
   const thread = opt("thread");
   const to = thread === undefined ? need("to") : undefined;
-  const text = await messageText(cli);
+  const rawText = await messageText(cli);
+  const text = values["render-tables"] === true ? renderDiscordTables(rawText, 64 * 1024) : rawText;
   // An --edit given empty ("$UNSET") or not a message id is refused before any request: it must never post anew.
   const edit = values["edit"] === undefined ? undefined : discordInboundEnv("--edit", opt("edit"));
   // Likewise a --reply that is not a message id never becomes a plain post.
