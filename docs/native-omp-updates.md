@@ -43,7 +43,7 @@ To capture a manually reviewed, already staged port:
 bun scripts/update-native-omp.ts \
   --checkout /absolute/reviewed-native-checkout \
   --commit EXACT_40_CHARACTER_UPSTREAM_COMMIT \
-  --version 19.0.0 \
+  --version 19.0.1 \
   --source /absolute/cataly-checkout
 ```
 

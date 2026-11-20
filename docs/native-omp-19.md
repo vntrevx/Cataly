@@ -1,14 +1,14 @@
 # Native OMP 19 port
 
-The bound source moves from 18.20.0 (`c308970263ae13744ea15ab67302e3dac840e266`) to the exact `v19.0.0` tag commit [`57771ae562b9345e0579bceb2d68d585e3e6927e`](https://github.com/can1357/oh-my-pi/tree/57771ae562b9345e0579bceb2d68d585e3e6927e). The 18.22.2 work from Cataly #103 supplies the intermediate port audit, not a new dependency. The original 119 hunks across 34 files become 55 hunks across 18 files. Original-hunk dispositions are **20 kept, 23 ported, 76 dropped**. These count original hunks, not the differently partitioned regenerated diff.
+The bound source moves from 18.20.0 (`c308970263ae13744ea15ab67302e3dac840e266`) to the exact `v19.0.1` tag commit [`f40f335845f0b136453d12fec8d6057011082766`](https://github.com/can1357/oh-my-pi/tree/f40f335845f0b136453d12fec8d6057011082766). The 18.22.2 work from Cataly #103 supplies the intermediate port audit, not a new dependency. The initial 19.0.0 port reduced the original 119 hunks across 34 files to 55 hunks across 18 files. Rebasing onto Cataly `f1cf224c43b89e1f5a4ab02e49212a5bc1d51c75` and carrying its custom-message ownership fix onto 19.0.1 produces **85 hunks across 19 files**. The ownership fix `2f47812` is an ancestor of that rebase base and adds 30 regenerated hunks beyond the initial 55; it was not part of the historical `e6b60c9` audit. Original-hunk dispositions are **20 kept, 23 ported, 76 dropped**. These count original hunks, not the differently partitioned regenerated diff.
 
-[`native-omp.lock`](../native-omp.lock) is authoritative for version, exact upstream commit, patch digest, result tree, postimage hashes/modes and launcher. The separately frozen official addon and genuine SDK fixture are 19.0.0. No version-only receipt, stock executable, hash copied from the previous release, or Cargo build substitutes for these identities.
+[`native-omp.lock`](../native-omp.lock) is authoritative for version, exact upstream commit, patch digest, result tree, postimage hashes/modes and launcher. The separately frozen official addon and genuine SDK fixture are 19.0.1. No version-only receipt, stock executable, hash copied from the previous release, or Cargo build substitutes for these identities.
 
 This is a maintainer review record, not an end-user installation guide. Cataly is the Dori agent-harness integration; OMP is its upstream agent host. The native overlay is Cataly's source patch. Bound source means the exact upstream commit plus patch, tree, launcher and addon are authenticated together; a postimage is a patched file's resulting bytes. The genuine SDK fixture is the published host package, not a test double. hc lanes are terminal-backed worker sessions; ULW is the bound agent workflow extension; ASK and voice are the existing form/message and audio adapters. Role receipts are session identity/state files. Retained installations and frozen controllers mean old releases kept for authenticated rollback, not upgraded in place.
 
 ## OMP 19 compatibility
 
-The [pinned release notes](https://github.com/can1357/oh-my-pi/blob/57771ae562b9345e0579bceb2d68d585e3e6927e/packages/coding-agent/CHANGELOG.md#1900---2026-11-18) and checked source define the following migration.
+The [original 19.0.0 migration release notes](https://github.com/can1357/oh-my-pi/blob/57771ae562b9345e0579bceb2d68d585e3e6927e/packages/coding-agent/CHANGELOG.md#1900---2026-11-18) and checked source define the following migration.
 
 | Change | Cataly handling |
 | --- | --- |
@@ -16,18 +16,26 @@ The [pinned release notes](https://github.com/can1357/oh-my-pi/blob/57771ae562b9
 | `artifact://N` becomes `local://N.log` | No caller in Cataly runtime/extension/fixture sources. Preserve historical session text; upstream does not migrate old links. Do not rewrite saved transcripts. |
 | `session.handoff(focus)` becomes `session.compact(focus, { mode: "handoff" })` | No Cataly SDK caller. Harness handoff checkpoint files are a different interface and remain unchanged. |
 | One per-user daemon; `omp ps --json` becomes `{daemon, reports}`, `--global` removed | Cataly uses OS process identity and role receipts, not OMP process-report JSON. Older daemons are not adopted. Isolated homes/runtimes must not reuse the live installation's daemon state. |
-| `deferSkillDescriptionCompression` / `startSkillDescriptionCompression` become `deferHintCompression` / `startHintCompression` | No Cataly caller. Published 19.0.0 declarations supply contributor typechecking. |
+| `deferSkillDescriptionCompression` / `startSkillDescriptionCompression` become `deferHintCompression` / `startHintCompression` | No Cataly caller. Published 19.0.1 declarations supply contributor typechecking. |
 | Every back-to-back native wait uses 5s then 4m; reply waits can follow cache lifetime | Keep the upstream implementation and its new tests. Remove obsolete sole-call/eval ladder assumptions from local regressions. Preserve interruption and TUI/ACP behavior. |
 | Todo requires a named task, `items`, or phase for done/drop/rm | Preserve upstream refusal of omitted targets and its `items` fallback. Retain empty-task-array protection when no items are supplied. Prompt and tests match this contract, not the historical whole-list fallback. |
 | JS kernel recreation reports lost state | Assert the complete new notice on the first post-disposal call and its absence on the second; still require the old variable to be `undefined`. |
 | ASK form and speech daemon changes | Keep Cataly's extension hooks, Discord ASK route and separate voice adapter; they are not native patch hunks. Local suites and isolated native smoke are distinct from a live Discord/voice round trip. |
 | External OMP 19 / Ultrafast (#144) | Preserve explicit executable/model/config selection. The bound runtime is now also 19, but this change neither installs the Codex 500k extension nor selects a paid tier. Native `--goal` guidance applies to fresh 19 sessions; retained 18 installations keep their contract. |
 
-The consumer protocol remains authenticated bound source, not a new manifest schema. The current controller reads retained 18.20.0 and stable 19.x bound releases plus the legacy 18.18.8 independent-native protocol. Unknown majors and prereleases are rejected. A stable 19.x stamp is eligibility for candidate review, not proof that upstream is compatible. Frozen old controllers retain their old version allowlists. On 19.x-to-18.20.0/18.18.8 rollback, omit the unreadable newer `previous` pointer while retaining authenticated sources, manifests and caches. This makes the restored controller launchable but removes that transition's immediate redo pointer; a current controller is needed for an explicit reinstall of 19. Same-generation rollback still toggles normally. No frozen controller bytes are rewritten.
+The consumer protocol remains authenticated bound source, not a new manifest schema. The current controller reads retained 18.20.0 and stable 19.x bound releases plus the legacy 18.18.8 independent-native protocol. Unknown majors and prereleases are rejected. A stable 19.x stamp is eligibility for candidate review, not proof that upstream is compatible. Frozen old controllers retain their old version allowlists and reject a manifest declaring OMP 19 even when that manifest is only the `previous` release. On 19.x-to-18.20.0/18.18.8 rollback, omit the unreadable newer `previous` pointer while retaining authenticated sources, manifests and caches. This makes the restored controller launchable but removes that transition's immediate redo pointer; a current controller is needed for an explicit reinstall of 19. Same-generation rollback still toggles normally. No frozen controller bytes are rewritten.
+
+## 19.0.1 and current-main reconciliation
+
+The [19.0.1 changelog](https://github.com/can1357/oh-my-pi/blob/f40f335845f0b136453d12fec8d6057011082766/packages/coding-agent/CHANGELOG.md#1901---2026-11-19) adds local-session path reporting and snapcompact frame selection. Its fixes include queued `^model` expansion and notice deduplication, background-aware goal/loop continuation, RPC/ACP resume, terminal/Windows handling and provider discovery. Retain those upstream implementations; the old overlay applies to this exact tag before the main ownership delta is reconciled.
+
+Cataly `2f47812` keeps external custom messages with their original transcript through reload, new/clear, switch and rollback. The port preserves 19's excluded display rows, early failed-turn reset and queued model mentions while incorporating that ownership protocol. Two additional public `sendCustomMessage` cases cover excluded rows across unchanged reload and new-session replacement without model calls. The native ownership suite remains in Linux CI beside the bound ULW host checks. The generated result tree and file hashes live only in `native-omp.lock`.
+
+The rebase also retains main's consumer setup preview/snapshot/journal transaction, while recognizing all supported bound 19.x manifests rather than only 18.20.0. Main's Windows admission, role-fixture and native-close changes remain in their existing code and tests.
 
 ## Structural reduction and upstream candidates
 
-Every remaining hunk is general-purpose upstream material: **55 upstreamable, 0 safely replaceable by a public extension hook/config, 0 Dori-specific**. Documentation-only changes and equivalent comments were removed from the native overlay. The only Dori-specific native documentation, the extension-monitor versus native-job distinction, now lives in [runtime.md](runtime.md#omp-identity-goal-and-approval-records). Role selection, lane state, ASK, voice, monitors and ULW already live outside the native patch.
+Every remaining hunk is general-purpose upstream material: **85 upstreamable, 0 safely replaceable by a public extension hook/config, 0 Dori-specific**. Documentation-only hunks and comments already made redundant by upstream were removed from the native overlay. The distinct operation-atomicity comment stays with the todo change. The only Dori-specific native documentation, the extension-monitor versus native-job distinction, now lives in [runtime.md](runtime.md#omp-identity-goal-and-approval-records). Role selection, lane state, ASK, voice, monitors and ULW already live outside the native patch.
 
 OMP 19 exposes `session_switch`, `session_clear`, `before_agent_start`, `tool_call`, `tool_result` and `registerTool` extension seams. They do not expose the SDK's retained per-conversation scan map, EvalRunner's in-flight transition/disposal ownership, grep's pre-filter native counts, or the built-in browser renderer. Replacing those with prompt rewriting, result guessing, duplicated native tools or a role-only guard would change non-Dori SDK and slash-command behavior. Those are not equivalent replacements. No new extension shim is introduced.
 
@@ -38,9 +46,10 @@ The patch text for the following upstream submissions is the corresponding full-
 - **fix(grep): report completeness for bounded line ranges.** Distinguish an exhausted native fetch cap from an exactly completed requested range using pre-filter per-file counts and every requested range end. Keep upstream multiline, total-cap and explicit-context semantics. Include pagination and path-list regressions.
 - **fix(todo): reject empty target arrays without losing named items.** Resolve selected task objects once for done/drop/remove, keep upstream `items` targeting and omitted-target rejection, and prevent an empty task array from clearing a named phase. Include atomicity, exact-name precedence, duplicates, slash-command parity and parser/render tests. Align the model-facing prompt.
 - **fix(collab): render todo target arrays in summaries and rows.** Keep valid partial-stream labels and scalar compatibility in both views. Include browser render tests and regenerate the HTML export viewer from the same source.
+- **fix(session): preserve custom-message transcript ownership across reload and transitions.** Retain eligible passive notices on an unchanged reload, retire them on transcript replacement, and settle rollback before publication. Preserve excluded display rows and transition-hook ownership. Carry main's complete regression suite and the excluded-row port cases.
 - **test(wait): cover top-window cancellation and message interruption.** Preserve delivery and reset behavior on OMP 19's uniform 5s/4m policy, including ACP versus actual interactive TUI semantics. No wait runtime override is proposed.
 
-A conflict-free upgrade cannot be guaranteed while these source deltas remain. Stock external OMP is already an explicit override, not the authenticated default. Making it the default requires upstream adoption or equivalent public seams for the five correctness/rendering fixes (the sixth candidate adds wait tests only), stock-host regression parity, an explicit source-receipt/no-overlay migration, addon/export compatibility, and the same lane/monitor/ASK/voice/ULW checks. Preserve old authenticated caches and rollback; never silently treat a stock version stamp as the patched identity. The [native update plan](native-omp-updates.md) covers candidate automation rather than claiming these upstream decisions are finished.
+A conflict-free upgrade cannot be guaranteed while these source deltas remain. Stock external OMP is already an explicit override, not the authenticated default. Making it the default requires upstream adoption or equivalent public seams for the six correctness/rendering fixes (the seventh candidate adds wait tests only), stock-host regression parity, an explicit source-receipt/no-overlay migration, addon/export compatibility, and the same lane/monitor/ASK/voice/ULW checks. Preserve old authenticated caches and rollback; never silently treat a stock version stamp as the patched identity. The [native update plan](native-omp-updates.md) covers candidate automation rather than claiming these upstream decisions are finished.
 
 ## Original-hunk disposition
 
@@ -180,75 +189,107 @@ All rows are upstream candidates (U); none is an extension replacement (E) or Do
 | 4 | `packages/coding-agent/src/sdk.ts` / 2 | `-2161,10 +2160,10` | U | Workspace snapshot invalidation |
 | 5 | `packages/coding-agent/src/sdk.ts` / 3 | `-4449,6 +4448,15` | U | Workspace snapshot invalidation |
 | 6 | `packages/coding-agent/src/sdk.ts` / 4 | `-4592,27 +4600,19` | U | Workspace snapshot invalidation |
-| 7 | `packages/coding-agent/src/session/agent-session.ts` / 1 | `-2280,6 +2280,8` | U | Eval transition ownership |
-| 8 | `packages/coding-agent/src/session/eval-runner.ts` / 1 | `-26,6 +26,8` | U | Eval transition ownership |
-| 9 | `packages/coding-agent/src/session/eval-runner.ts` / 2 | `-183,14 +185,8` | U | Eval transition ownership |
-| 10 | `packages/coding-agent/src/session/eval-runner.ts` / 3 | `-198,10 +194,15` | U | Eval transition ownership |
-| 11 | `packages/coding-agent/src/session/eval-runner.ts` / 4 | `-237,14 +238,6` | U | Eval transition ownership |
-| 12 | `packages/coding-agent/src/tools/grep.ts` / 1 | `-1024,10 +1024,24` | U | Bounded grep completeness |
-| 13 | `packages/coding-agent/src/tools/grep.ts` / 2 | `-1051,7 +1065,7` | U | Bounded grep completeness |
-| 14 | `packages/coding-agent/src/tools/todo.ts` / 1 | `-60,7 +60,7` | U | Todo target atomicity |
-| 15 | `packages/coding-agent/src/tools/todo.ts` / 2 | `-286,17 +286,13` | U | Todo target atomicity |
-| 16 | `packages/coding-agent/src/tools/todo.ts` / 3 | `-316,8 +312,12` | U | Todo target atomicity |
-| 17 | `packages/coding-agent/src/tools/todo.ts` / 4 | `-407,20 +407,10` | U | Todo target atomicity |
-| 18 | `packages/coding-agent/src/tools/todo.ts` / 5 | `-724,9 +714,9` | U | Todo target atomicity |
-| 19 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 1 | `-10,6 +10,7` | U | Workspace snapshot invalidation |
-| 20 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 2 | `-189,13 +190,13` | U | Workspace snapshot invalidation |
-| 21 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 3 | `-249,7 +250,7` | U | Workspace snapshot invalidation |
-| 22 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 4 | `-257,7 +258,85` | U | Workspace snapshot invalidation |
-| 23 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 5 | `-267,7 +346,6` | U | Workspace snapshot invalidation |
-| 24 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 6 | `-306,6 +384,7` | U | Workspace snapshot invalidation |
-| 25 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 7 | `-317,4 +396,58` | U | Workspace snapshot invalidation |
-| 26 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 1 | `-3,6 +3,12` | U | Eval transition ownership |
-| 27 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 2 | `-11,6 +17,8` | U | Eval transition ownership |
-| 28 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 3 | `-168,6 +176,34` | U | Eval transition ownership |
-| 29 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 4 | `-936,4 +972,406` | U | Eval transition ownership |
-| 30 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 1 | `-2,6 +2,7` | U | Eval transition ownership |
-| 31 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 2 | `-91,6 +92,88` | U | Eval transition ownership |
-| 32 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 3 | `-149,4 +232,57` | U | Eval transition ownership |
-| 33 | `packages/coding-agent/test/eval/kernel-session-registry.test.ts` / 1 | `-586,3 +586,189` | U | Eval transition ownership |
-| 34 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 1 | `-43,38 +43,95` | U | Bounded grep completeness |
-| 35 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 2 | `-82,21 +139,57` | U | Bounded grep completeness |
-| 36 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 3 | `-104,16 +197,13` | U | Bounded grep completeness |
-| 37 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 4 | `-121,10 +211,7` | U | Bounded grep completeness |
-| 38 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 5 | `-134,13 +221,11` | U | Bounded grep completeness |
-| 39 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 6 | `-148,13 +233,19` | U | Bounded grep completeness |
-| 40 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 7 | `-165,8 +256,41` | U | Bounded grep completeness |
-| 41 | `packages/coding-agent/test/tools/grep-path-lists.test.ts` / 1 | `-127,11 +127,11` | U | Bounded grep completeness |
-| 42 | `packages/coding-agent/test/tools/todo.test.ts` / 1 | `-5,6 +5,8` | U | Todo target atomicity |
-| 43 | `packages/coding-agent/test/tools/todo.test.ts` / 2 | `-474,6 +476,364` | U | Todo target atomicity |
-| 44 | `packages/coding-agent/test/tools/todo.test.ts` / 3 | `-746,6 +1106,60` | U | Todo target atomicity |
-| 45 | `packages/coding-agent/test/tools/todo.test.ts` / 4 | `-797,6 +1211,42` | U | Todo target atomicity |
-| 46 | `packages/coding-agent/test/tools/wait.test.ts` / 1 | `-198,17 +198,20` | U | Wait interruption coverage |
-| 47 | `packages/coding-agent/test/tools/wait.test.ts` / 2 | `-322,18 +325,23` | U | Wait interruption coverage |
-| 48 | `packages/coding-agent/test/tools/wait.test.ts` / 3 | `-435,15 +443,25` | U | Wait interruption coverage |
-| 49 | `packages/coding-agent/test/tools/wait.test.ts` / 4 | `-454,6 +472,7` | U | Wait interruption coverage |
-| 50 | `packages/coding-agent/test/tools/wait.test.ts` / 5 | `-998,7 +1017,7` | U | Wait interruption coverage |
-| 51 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 1 | `-53,6 +53,15` | U | Browser todo rendering |
-| 52 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 2 | `-67,7 +76,7` | U | Browser todo rendering |
-| 53 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 3 | `-87,7 +96,7` | U | Browser todo rendering |
-| 54 | `packages/collab-web/test/tool-view.test.tsx` / 1 | `-227,6 +227,62` | U | Browser todo rendering |
-| 55 | `packages/tui/test/todo-targets.test.ts` / 1 | `-0,0 +1,58` | U | Todo target atomicity |
+| 7 | `packages/coding-agent/src/session/agent-session.ts` / 1 | `-652,6 +652,27` | U | Custom-message transcript ownership |
+| 8 | `packages/coding-agent/src/session/agent-session.ts` / 2 | `-1463,24 +1484,26` | U | Custom-message transcript ownership |
+| 9 | `packages/coding-agent/src/session/agent-session.ts` / 3 | `-1493,12 +1516,14` | U | Custom-message transcript ownership |
+| 10 | `packages/coding-agent/src/session/agent-session.ts` / 4 | `-1824,17 +1849,17` | U | Custom-message transcript ownership |
+| 11 | `packages/coding-agent/src/session/agent-session.ts` / 5 | `-2285,6 +2310,8` | U | Eval transition ownership |
+| 12 | `packages/coding-agent/src/session/agent-session.ts` / 6 | `-6740,6 +6767,10` | U | Custom-message transcript ownership |
+| 13 | `packages/coding-agent/src/session/agent-session.ts` / 7 | `-6747,6 +6778,34` | U | Custom-message transcript ownership |
+| 14 | `packages/coding-agent/src/session/agent-session.ts` / 8 | `-6766,10 +6825,11` | U | Custom-message transcript ownership |
+| 15 | `packages/coding-agent/src/session/agent-session.ts` / 9 | `-6797,6 +6857,7` | U | Custom-message transcript ownership |
+| 16 | `packages/coding-agent/src/session/agent-session.ts` / 10 | `-6818,6 +6879,7` | U | Custom-message transcript ownership |
+| 17 | `packages/coding-agent/src/session/agent-session.ts` / 11 | `-7469,7 +7531,8` | U | Custom-message transcript ownership |
+| 18 | `packages/coding-agent/src/session/agent-session.ts` / 12 | `-11218,22 +11281,52` | U | Custom-message transcript ownership |
+| 19 | `packages/coding-agent/src/session/agent-session.ts` / 13 | `-11242,51 +11335,54` | U | Custom-message transcript ownership |
+| 20 | `packages/coding-agent/src/session/agent-session.ts` / 14 | `-11383,32 +11479,33` | U | Custom-message transcript ownership |
+| 21 | `packages/coding-agent/src/session/agent-session.ts` / 15 | `-11418,9 +11515,9` | U | Custom-message transcript ownership |
+| 22 | `packages/coding-agent/src/session/agent-session.ts` / 16 | `-11428,41 +11525,26` | U | Custom-message transcript ownership |
+| 23 | `packages/coding-agent/src/session/agent-session.ts` / 17 | `-11486,6 +11568,16` | U | Custom-message transcript ownership |
+| 24 | `packages/coding-agent/src/session/agent-session.ts` / 18 | `-11500,6 +11592,16` | U | Custom-message transcript ownership |
+| 25 | `packages/coding-agent/src/session/agent-session.ts` / 19 | `-11510,7 +11612,6` | U | Custom-message transcript ownership |
+| 26 | `packages/coding-agent/src/session/agent-session.ts` / 20 | `-11535,7 +11636,7` | U | Custom-message transcript ownership |
+| 27 | `packages/coding-agent/src/session/agent-session.ts` / 21 | `-11554,7 +11655,6` | U | Custom-message transcript ownership |
+| 28 | `packages/coding-agent/src/session/agent-session.ts` / 22 | `-11577,16 +11677,7` | U | Custom-message transcript ownership |
+| 29 | `packages/coding-agent/src/session/agent-session.ts` / 23 | `-11597,7 +11688,7` | U | Custom-message transcript ownership |
+| 30 | `packages/coding-agent/src/session/agent-session.ts` / 24 | `-12883,6 +12974,14` | U | Custom-message transcript ownership |
+| 31 | `packages/coding-agent/src/session/agent-session.ts` / 25 | `-12925,17 +13024,6` | U | Custom-message transcript ownership |
+| 32 | `packages/coding-agent/src/session/agent-session.ts` / 26 | `-14644,6 +14732,7` | U | Custom-message transcript ownership |
+| 33 | `packages/coding-agent/src/session/agent-session.ts` / 27 | `-14687,10 +14776,16` | U | Custom-message transcript ownership |
+| 34 | `packages/coding-agent/src/session/agent-session.ts` / 28 | `-14774,6 +14869,34` | U | Custom-message transcript ownership |
+| 35 | `packages/coding-agent/src/session/agent-session.ts` / 29 | `-14918,12 +15041,15` | U | Custom-message transcript ownership |
+| 36 | `packages/coding-agent/src/session/agent-session.ts` / 30 | `-14941,8 +15067,9` | U | Custom-message transcript ownership |
+| 37 | `packages/coding-agent/src/session/eval-runner.ts` / 1 | `-26,6 +26,8` | U | Eval transition ownership |
+| 38 | `packages/coding-agent/src/session/eval-runner.ts` / 2 | `-183,14 +185,8` | U | Eval transition ownership |
+| 39 | `packages/coding-agent/src/session/eval-runner.ts` / 3 | `-198,10 +194,15` | U | Eval transition ownership |
+| 40 | `packages/coding-agent/src/session/eval-runner.ts` / 4 | `-237,14 +238,6` | U | Eval transition ownership |
+| 41 | `packages/coding-agent/src/tools/grep.ts` / 1 | `-1024,10 +1024,24` | U | Bounded grep completeness |
+| 42 | `packages/coding-agent/src/tools/grep.ts` / 2 | `-1051,7 +1065,7` | U | Bounded grep completeness |
+| 43 | `packages/coding-agent/src/tools/todo.ts` / 1 | `-60,7 +60,7` | U | Todo target atomicity |
+| 44 | `packages/coding-agent/src/tools/todo.ts` / 2 | `-286,17 +286,13` | U | Todo target atomicity |
+| 45 | `packages/coding-agent/src/tools/todo.ts` / 3 | `-316,8 +312,12` | U | Todo target atomicity |
+| 46 | `packages/coding-agent/src/tools/todo.ts` / 4 | `-407,20 +407,10` | U | Todo target atomicity |
+| 47 | `packages/coding-agent/src/tools/todo.ts` / 5 | `-724,9 +714,9` | U | Todo target atomicity |
+| 48 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 1 | `-10,6 +10,7` | U | Workspace snapshot invalidation |
+| 49 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 2 | `-189,13 +190,13` | U | Workspace snapshot invalidation |
+| 50 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 3 | `-249,7 +250,7` | U | Workspace snapshot invalidation |
+| 51 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 4 | `-257,7 +258,85` | U | Workspace snapshot invalidation |
+| 52 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 5 | `-267,7 +346,6` | U | Workspace snapshot invalidation |
+| 53 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 6 | `-306,6 +384,7` | U | Workspace snapshot invalidation |
+| 54 | `packages/coding-agent/test/agent-session-context-file-reload.test.ts` / 7 | `-317,4 +396,58` | U | Workspace snapshot invalidation |
+| 55 | `packages/coding-agent/test/agent-session-next-turn-ownership.test.ts` / 1 | `-0,0 +1,1143` | U | Custom-message transcript ownership |
+| 56 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 1 | `-3,6 +3,12` | U | Eval transition ownership |
+| 57 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 2 | `-11,6 +17,8` | U | Eval transition ownership |
+| 58 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 3 | `-168,6 +176,34` | U | Eval transition ownership |
+| 59 | `packages/coding-agent/test/agent-session-python-cleanup.test.ts` / 4 | `-936,4 +972,406` | U | Eval transition ownership |
+| 60 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 1 | `-2,6 +2,7` | U | Eval transition ownership |
+| 61 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 2 | `-91,6 +92,88` | U | Eval transition ownership |
+| 62 | `packages/coding-agent/test/eval/context-manager-startup.test.ts` / 3 | `-149,4 +232,57` | U | Eval transition ownership |
+| 63 | `packages/coding-agent/test/eval/kernel-session-registry.test.ts` / 1 | `-586,3 +586,189` | U | Eval transition ownership |
+| 64 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 1 | `-43,38 +43,95` | U | Bounded grep completeness |
+| 65 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 2 | `-82,21 +139,57` | U | Bounded grep completeness |
+| 66 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 3 | `-104,16 +197,13` | U | Bounded grep completeness |
+| 67 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 4 | `-121,10 +211,7` | U | Bounded grep completeness |
+| 68 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 5 | `-134,13 +221,11` | U | Bounded grep completeness |
+| 69 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 6 | `-148,13 +233,19` | U | Bounded grep completeness |
+| 70 | `packages/coding-agent/test/tools/grep-pagination.test.ts` / 7 | `-165,8 +256,41` | U | Bounded grep completeness |
+| 71 | `packages/coding-agent/test/tools/grep-path-lists.test.ts` / 1 | `-127,11 +127,11` | U | Bounded grep completeness |
+| 72 | `packages/coding-agent/test/tools/todo.test.ts` / 1 | `-5,6 +5,8` | U | Todo target atomicity |
+| 73 | `packages/coding-agent/test/tools/todo.test.ts` / 2 | `-474,6 +476,364` | U | Todo target atomicity |
+| 74 | `packages/coding-agent/test/tools/todo.test.ts` / 3 | `-746,6 +1106,60` | U | Todo target atomicity |
+| 75 | `packages/coding-agent/test/tools/todo.test.ts` / 4 | `-797,6 +1211,42` | U | Todo target atomicity |
+| 76 | `packages/coding-agent/test/tools/wait.test.ts` / 1 | `-198,17 +198,20` | U | Wait interruption coverage |
+| 77 | `packages/coding-agent/test/tools/wait.test.ts` / 2 | `-322,18 +325,23` | U | Wait interruption coverage |
+| 78 | `packages/coding-agent/test/tools/wait.test.ts` / 3 | `-435,15 +443,25` | U | Wait interruption coverage |
+| 79 | `packages/coding-agent/test/tools/wait.test.ts` / 4 | `-454,6 +472,7` | U | Wait interruption coverage |
+| 80 | `packages/coding-agent/test/tools/wait.test.ts` / 5 | `-998,7 +1017,7` | U | Wait interruption coverage |
+| 81 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 1 | `-53,6 +53,15` | U | Browser todo rendering |
+| 82 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 2 | `-67,7 +76,7` | U | Browser todo rendering |
+| 83 | `packages/collab-web/src/tool-render/tools/todo.tsx` / 3 | `-87,7 +96,7` | U | Browser todo rendering |
+| 84 | `packages/collab-web/test/tool-view.test.tsx` / 1 | `-227,6 +227,62` | U | Browser todo rendering |
+| 85 | `packages/tui/test/todo-targets.test.ts` / 1 | `-0,0 +1,58` | U | Todo target atomicity |
 
 ## Reproduce and verify
 
-Start with a clean private upstream checkout at the exact target. First apply Cataly's committed `native-omp.patch` with `git apply --index`; then install frozen upstream dependencies with `--ignore-scripts` and build/check the export viewer with `bun packages/collab-web/scripts/build-export-viewer.ts --write`. The resulting reviewed overlay is already staged before the capture command below; that command records it and does not apply or resolve it. New directories and tracked files must not be group/world writable; start with `umask 0022`. Do not repair permissions or regenerate assets in a live installed cache.
+Start with a clean private upstream checkout at the exact target. First apply Cataly's committed `native-omp.patch` with `git apply --index`; then install frozen upstream dependencies with `--ignore-scripts` and verify the already-patched export viewer with `bun packages/collab-web/scripts/build-export-viewer.ts --check`. When deliberately changing viewer source, regenerate with `--write` and stage the generated tracked file before capture. The reviewed overlay must already be staged before the capture command below; that command records it and does not apply or resolve it. New directories and tracked files must not be group/world writable; start with `umask 0022`. Do not repair permissions or regenerate assets in a live installed cache.
 
 From Cataly's repository root, capture a reviewed sibling checkout:
 
 ```sh
 bun scripts/update-native-omp.ts --checkout ../native-omp-upstream \
-  --commit 57771ae562b9345e0579bceb2d68d585e3e6927e --version 19.0.0
+  --commit f40f335845f0b136453d12fec8d6057011082766 --version 19.0.1
 ```
 
 The shared generator captures full-index patch bytes, result tree and postimage digests/modes, then admits the checkout before publishing metadata. Follow [CONTRIBUTING.md](../CONTRIBUTING.md#run-the-gates) for `umask 0022; bun run ci` with genuine fixtures. Verify a side installation in a new HOME, actual hc lane/Dori status and monitor delivery, and both locked ULW `code-mode-host-check` and `code-mode-task-host-check` scripts. Run every native test file retained in the inventory above. Runtime evidence must identify synthetic loopback providers separately from real provider or messenger behavior.
 
 For performance, compare this candidate against the pre-port main checkout `e6b60c9` with bound 18.20.0, separate homes, the same Bun/host, and alternating measurements. Guarded `--version` startup time and GNU time peak RSS are not interactive-model latency or aggregate daemon memory. This document specifies contracts and source decisions; the PR evidence records actual command outcomes and limits.
 
-The native regression command runs in that upstream checkout and covers the ten distinct test files present in the remaining-hunk inventory, not the entire upstream suite:
+The native regression command runs in that upstream checkout and covers the eleven distinct test files present in the remaining-hunk inventory plus upstream excluded-row coverage, not the entire upstream suite:
 
 ```sh
 bun test packages/coding-agent/test/agent-session-context-file-reload.test.ts \
+  packages/coding-agent/test/agent-session-next-turn-ownership.test.ts \
+  packages/coding-agent/test/custom-message-exclude-from-context.test.ts \
   packages/coding-agent/test/agent-session-python-cleanup.test.ts \
   packages/coding-agent/test/eval/context-manager-startup.test.ts \
   packages/coding-agent/test/eval/kernel-session-registry.test.ts \

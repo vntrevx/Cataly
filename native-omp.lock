@@ -1,9 +1,9 @@
 {
   "version": 1,
   "repository": "https://github.com/can1357/oh-my-pi.git",
-  "commit": "57771ae562b9345e0579bceb2d68d585e3e6927e",
-  "patchSha256": "649060624a10e169d04a5a00088ddae4d710b98985b5503f6309b41bdf4b9ceb",
-  "resultTree": "e5eb732bf65c9acc05c1f335262d48a881c3ed9c",
+  "commit": "f40f335845f0b136453d12fec8d6057011082766",
+  "patchSha256": "caf4ecd91f4de6dfdd5e1af02d2013d7247ae02d94ea017d457059fe843c965f",
+  "resultTree": "4a131478c22f91efee39f43064d20b14feb4e855",
   "files": [
     {
       "path": "packages/coding-agent/src/export/html/viewer.generated.json",
@@ -22,7 +22,7 @@
     },
     {
       "path": "packages/coding-agent/src/session/agent-session.ts",
-      "sha256": "1a701a48dcba61c6bafb3417b27d541ad73cc91f6e2255e9d6ec4027f109231f",
+      "sha256": "0a7c3fe566eac63f2687afec57a141646fd8f189442f8f8bd568f0675f7c0d3f",
       "executable": false
     },
     {
@@ -43,6 +43,11 @@
     {
       "path": "packages/coding-agent/test/agent-session-context-file-reload.test.ts",
       "sha256": "cfaf0e5fd4a7efc2afafacbf7dfed9c50ddd4cfdba62ab4e420be1f6d9535ab9",
+      "executable": false
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-next-turn-ownership.test.ts",
+      "sha256": "65cc023e01fcc443a3740b5e10da8ebbb85c2a8a08807dfb900ab6fa8736bbb2",
       "executable": false
     },
     {
@@ -96,6 +101,6 @@
       "executable": false
     }
   ],
-  "nativeVersion": "19.0.0",
+  "nativeVersion": "19.0.1",
   "launcher": "packages/coding-agent/scripts/omp"
 }

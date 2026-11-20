@@ -34,7 +34,7 @@ Bound upstream sources
 This distribution includes modified-copy patch excerpts for:
 
 - oh-my-pi (https://github.com/can1357/oh-my-pi), based on
-  57771ae562b9345e0579bceb2d68d585e3e6927e / 19.0.0.
+  f40f335845f0b136453d12fec8d6057011082766 / 19.0.1.
 - omp-ulw (https://github.com/dbc-hbin/omp-ulw), based on
   6ec7ecd40b2b5667f37c9802999db1d12ebbc2ae.
 
