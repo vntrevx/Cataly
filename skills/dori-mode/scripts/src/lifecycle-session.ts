@@ -86,12 +86,14 @@ const readResumeFile = async (deps: FlowDeps, lane: Lane): Promise<string> => {
     file = join(dir, matches[0] ?? "");
   }
   // Records end only at LF bytes, as in OMP: readline would also split at a lone CR or U+2028/U+2029.
-  // A record cut off by the read limit fails to parse and is refused.
   await using handle = await open(file, "r");
-  const head = Buffer.alloc(HEADER_READ_LIMIT);
+  const head = Buffer.allocUnsafe(HEADER_READ_LIMIT); // Only the bytesRead prefix is ever decoded.
   const { bytesRead } = await handle.read(head, 0, head.length, 0);
   for (let start = 0, first = true; start < bytesRead; first = false) {
     const newline = head.subarray(start, bytesRead).indexOf(0x0a);
+    // Without an LF, only a real end of file ends the record; a full window may have cut it off.
+    if (newline === -1 && bytesRead === head.length)
+      throw new LaunchError(`lane ${lane.key} saved session header is too long`);
     const end = newline === -1 ? bytesRead : start + newline;
     const header = JSON.parse(head.toString("utf8", start, end)) as Record<string, unknown>;
     start = end + 1;

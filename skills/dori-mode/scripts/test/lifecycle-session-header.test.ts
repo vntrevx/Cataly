@@ -67,6 +67,12 @@ test.each([
     () => `${titleSlot().replace(/\n$/, "\r")}${header()}`,
     "or cwd unavailable (invalid session header)",
   ],
+  // The 1 MiB header window ends inside this record, whose parsable prefix is only padding before junk.
+  [
+    "header record cut off by the read limit",
+    () => `${header().trimEnd()}${" ".repeat(1024 * 1024)}junk\n`,
+    "header is too long",
+  ],
 ])("%s is refused", async (_name, body, reason) => {
   writeFileSync(f.file, body());
   await expect(resumeFile(f.deps, f.lane)).rejects.toThrow(`saved session ${reason}`);
