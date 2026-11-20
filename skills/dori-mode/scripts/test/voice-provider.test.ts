@@ -77,7 +77,7 @@ test("usage survives restart, counts cached/written tokens and daily boundaries,
     const cfg = settings({ dailyMinuteCap: 1, backendUsdCap: 1 });
     const usage = new VoiceUsage(tmp.directory, cfg, () => now);
     usage.started();
-    usage.live(60);
+    usage.live(usage.today(), 60);
     expect(usage.capReason()).toContain("Daily");
     now += 2000;
     expect(usage.capReason()).toBeUndefined();

@@ -53,7 +53,7 @@ export type LiveEvent = {
   event?: BackendEvent;
   delegation_id?: string | null;
   delegation?: { id: string; response_id?: string };
-  usage?: { seconds?: number };
+  usage?: { seconds?: number; active_seconds?: number; paused_seconds?: number };
   client_event_id?: string;
   error?: { code?: string; client_event_id?: string };
 };

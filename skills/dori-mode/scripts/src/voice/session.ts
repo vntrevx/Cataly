@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { InputAudio, rmsDbfs } from "./audio.ts";
 import { Backend } from "./backend.ts";
 import { Commentary } from "./commentary.ts";
-import { startEvent } from "./prompts.ts";
+import { capEvent, greetEvent, startEvent } from "./prompts.ts";
 import type { VoiceSettings } from "./settings.ts";
 import type { Action, LiveEvent, VoiceSessionPorts, VoiceSocket, Wire } from "./types.ts";
+import { LiveMeter } from "./usage.ts";
 export class VoiceSession {
   state: "connecting" | "live" | "capping" | "closing" | "closed" = "connecting";
   readonly openedAt: number;
@@ -23,7 +24,9 @@ export class VoiceSession {
   private capAt: number | undefined;
   private lastOwnerAt = 0;
   private lastOutputAt = 0;
-  private recordedSeconds = 0;
+  readonly meter: LiveMeter;
+  /** Standby: inference paused until the owner's speech wakes it (WebRTC only). */
+  private paused = false;
   private lastRecordedAt = 0;
   private input: InputAudio | undefined;
   private tasks = new Set<Promise<void>>();
@@ -34,6 +37,7 @@ export class VoiceSession {
     private readonly greet: boolean,
   ) {
     this.openedAt = ports.now();
+    this.meter = new LiveMeter(ports.usage);
     this.backend = new Backend({
       now: ports.now,
       active: () => this.state === "live" && !ports.usage.capReason(),
@@ -83,11 +87,6 @@ export class VoiceSession {
     this.ports.playback.clear();
     this.close("owner audio buffer overflow");
   }
-  private record(seconds: number): void {
-    const delta = Math.max(0, seconds - this.recordedSeconds);
-    this.recordedSeconds += delta;
-    if (delta) this.ports.usage.live(delta);
-  }
   private async event(event: LiveEvent): Promise<void> {
     if (this.finalized) return;
     const now = this.ports.now();
@@ -98,16 +97,12 @@ export class VoiceSession {
         this.state = "live";
         this.startedAt = now;
         this.input = new InputAudio(now);
+        this.paused = this.settings.standby !== undefined;
         this.ports.usage.started();
         this.ports.started();
         this.ports.replies.scan();
-        if (this.greet)
-          this.send({
-            type: "session.commentary.append",
-            event_id: randomUUID(),
-            delegation_id: null,
-            content: `Greet the owner very briefly in their language, then listen.${this.ports.replies.first() ? " Mention an undelivered lead reply; its contents will follow separately." : ""}`,
-          });
+        // A standby session waits for the owner's speech, so it does not greet.
+        if (this.greet && !this.paused) this.send(greetEvent(this.ports.replies.first() !== undefined));
         this.ports.log("VOICE_SESSION_STARTED");
         break;
       case "session.output_audio.delta": {
@@ -134,16 +129,21 @@ export class VoiceSession {
         if (event.event?.type === "response.failed")
           this.close(`provider backend failure ${event.event.response?.error?.code ?? "unknown"}`);
         if (event.event) await this.backend.event(event.event, event.delegation_id);
-        if (this.state === "live") this.commentary.tick(this.timing());
+        if (this.state === "live" && !this.paused) this.commentary.tick(this.timing());
+        break;
+      case "session.paused":
+      case "session.resumed":
+        this.paused = event.type === "session.paused";
+        this.ports.log(this.paused ? "VOICE_SESSION_PAUSED" : "VOICE_SESSION_RESUMED");
         break;
       case "session.usage.updated":
-        this.record(event.usage?.seconds ?? 0);
+        this.meter.provider(event.usage, 0);
         break;
       case "session.closed":
         this.failed ||= this.state !== "closing";
         this.state = "closing";
         this.closingAt ??= now;
-        this.persistClosing(event.usage?.seconds ?? this.recordedSeconds);
+        this.persistClosing(event.usage ?? {});
         this.socket?.close();
         break;
       case "error":
@@ -170,17 +170,11 @@ export class VoiceSession {
     if (this.startedAt === undefined) return;
     if (now - this.lastRecordedAt >= 1000) {
       // Wall time is a conservative local cap when provider usage events are delayed or the socket is lost.
-      this.record((now - this.startedAt) / 1000);
+      this.meter.record((now - this.startedAt) / 1000);
       this.lastRecordedAt = now;
     }
     if (this.state === "live" && this.ports.usage.capReason()) {
-      this.send({
-        type: "session.instructions.append",
-        event_id: randomUUID(),
-        delegation_id: null,
-        content:
-          "Say only that the voice usage limit has been reached and the conversation must continue in text. Then stop.",
-      });
+      this.send(capEvent());
       this.state = "capping";
       this.capAt = now;
     }
@@ -191,7 +185,7 @@ export class VoiceSession {
     if (this.backend.expired()) return void this.close("provider backend stalled");
     if (now - this.lastCommentaryAt >= 1000) {
       if (now - this.lastOutputAt > 1000) this.ports.playback.flushTail();
-      this.commentary.tick(this.timing());
+      if (!this.paused) this.commentary.tick(this.timing());
       this.lastCommentaryAt = now;
     }
     const quiet = now - Math.max(this.lastOwnerAt, this.startedAt, this.lastOutputAt);
@@ -208,10 +202,10 @@ export class VoiceSession {
       audible: this.ports.playback.audible,
     };
   }
-  private persistClosing(seconds?: number): void {
+  private persistClosing(usage?: LiveEvent["usage"]): void {
     try {
-      if (seconds === undefined) this.commentary.close(this.timing());
-      else this.record(seconds);
+      if (usage === undefined) this.commentary.close(this.timing());
+      else this.meter.provider(usage);
     } catch {
       this.failed = true;
       this.ports.log("VOICE_CLOSE_PERSIST_FAILED");
@@ -238,7 +232,7 @@ export class VoiceSession {
     this.state = "closed";
     this.input = undefined;
     try {
-      if (this.startedAt !== undefined) this.persistClosing((this.ports.now() - this.startedAt) / 1000);
+      if (this.startedAt !== undefined) this.persistClosing({ seconds: (this.ports.now() - this.startedAt) / 1000 });
       this.persistClosing();
       await Promise.allSettled([...this.tasks]);
       await this.ports.finished(this);

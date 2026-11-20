@@ -79,7 +79,19 @@ export const parseLiveEvent = (value: unknown): LiveEvent => {
   }
   if (raw["usage"] !== undefined) {
     const usage = object(raw["usage"]);
-    event.usage = usage["seconds"] === undefined ? {} : { seconds: number(usage["seconds"]) };
+    event.usage = {};
+    for (const key of ["seconds", "active_seconds", "paused_seconds"] as const)
+      if (usage[key] !== undefined) event.usage[key] = number(usage[key]);
+    // Each breakdown field is optional and part of the billed total; when both are present they add up to it.
+    const { seconds, active_seconds: active, paused_seconds: paused } = event.usage;
+    if (
+      (paused !== undefined || active !== undefined) &&
+      (seconds === undefined ||
+        (paused ?? 0) > seconds ||
+        (active ?? 0) > seconds ||
+        (active !== undefined && paused !== undefined && active + paused !== seconds))
+    )
+      throw new Error("Invalid voice provider usage breakdown");
   }
   if (raw["error"] !== undefined) {
     const error = object(raw["error"]);
@@ -91,20 +103,29 @@ export const parseLiveEvent = (value: unknown): LiveEvent => {
 };
 
 /** Bun's WebSocket supports request headers; no token is put in a URL, argv or log. */
-export const openVoiceSocket: OpenVoiceSocket = (key, handlers) => {
-  const ws = new WebSocket("wss://api.openai.com/v1/live/sessions", { headers: { Authorization: `Bearer ${key}` } });
-  ws.addEventListener("open", handlers.open);
-  ws.addEventListener("message", (message) => {
-    try {
-      handlers.event(parseLiveEvent(JSON.parse(String(message.data))));
-    } catch {
-      handlers.error();
-    }
-  });
-  ws.addEventListener("error", handlers.error);
-  ws.addEventListener("close", handlers.closed);
-  return { send: (event) => ws.send(JSON.stringify(event)), close: () => ws.close(), terminate: () => ws.terminate() };
-};
+export const liveSocket =
+  (url: string): OpenVoiceSocket =>
+  (key, handlers) => {
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${key}` } });
+    ws.addEventListener("open", handlers.open);
+    ws.addEventListener("message", (message) => {
+      try {
+        handlers.event(parseLiveEvent(JSON.parse(String(message.data))));
+      } catch {
+        handlers.error();
+      }
+    });
+    ws.addEventListener("error", handlers.error);
+    ws.addEventListener("close", handlers.closed);
+    return {
+      send: (event) => ws.send(JSON.stringify(event)),
+      close: () => ws.close(),
+      terminate: () => ws.terminate(),
+    };
+  };
+
+/** The Live primary WebSocket. Standby (wake_policy, idle_timeout_s) exists only for WebRTC sessions, not here. */
+export const openVoiceSocket: OpenVoiceSocket = liveSocket("wss://api.openai.com/v1/live/sessions");
 
 export const parseSummary = (value: unknown): { text: string; usage?: Usage } => {
   const raw = object(value);

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Discord voice can opt into the Live WebRTC transport (`voice.transport: "webrtc"`, default `websocket` unchanged) through the optional pure-TypeScript `werift`, and with it GPT-Live standby (`voice.standby`: `idleTimeoutSec` 5-60, optional `vadThreshold`, required `dailyMinuteCap`). With standby, minute limits count active seconds and the standby cap counts paused seconds; standby sessions do not greet and hold lead replies while paused. Optional `voice.livePrices` adds an estimated Live cost line to the session summary.
+
+- Discord voice documents `gpt-live-1.1` as a `voice.liveModel` (same Live WebSocket protocol as `gpt-live-1`) and records the provider's paused-seconds breakdown as `pausedSeconds` within billed `liveSeconds`; minute limits still count all billed seconds, late paused reports stay on the days that hold the session's billed time, and an inconsistent breakdown ends the session. GPT-Live standby is WebRTC-only, so it is documented as unavailable over Dori's WebSocket transport, where idle close and wake remain.
+
 - `dori park` and `dori reopen` accept saved OMP sessions whose first line is OMP's fixed-width title slot (v1) before the session header; any other leading record, a second title, a missing header, or a different session id or cwd is still refused.
 
 - Discord replies retain their original message ID and copied snapshot, distinguish unresolved, unavailable and observed-empty context, and reject reference or snapshot channel mismatches before owner delivery or checkpoint. Outgoing replies bind to the exact physical channel or thread and require the original target to exist; a deleted or other-channel target no longer silently becomes an unlinked post. Normal `INBOUND` grammar, split-message ordering and non-pinging mentions remain unchanged.

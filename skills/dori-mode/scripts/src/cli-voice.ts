@@ -17,6 +17,7 @@ import { voiceSettings } from "./voice/settings.ts";
 import { postVoiceText, summarizeVoice } from "./voice/summary.ts";
 import { voiceTools } from "./voice/tools.ts";
 import { VoiceUsage } from "./voice/usage.ts";
+import { openWebrtcVoice } from "./voice/webrtc.ts";
 
 /** Opt-in only: normal Dori installation, boot and text intake never start voice or load native codecs. */
 export const voiceCommand: Command = async ({ key: target, config, deps }) => {
@@ -40,10 +41,11 @@ export const voiceCommand: Command = async ({ key: target, config, deps }) => {
       const playback = new Playback();
       const usage = new VoiceUsage(directory, settings, Date.now);
       const replies = new Replies(directory, log);
+      const open = settings.transport === "webrtc" ? await openWebrtcVoice(log) : openVoiceSocket;
       assistant = new VoiceAssistant(settings, {
         key,
         now: Date.now,
-        open: openVoiceSocket,
+        open,
         tool: voiceTools(deps, discord, settings),
         playback,
         replies,

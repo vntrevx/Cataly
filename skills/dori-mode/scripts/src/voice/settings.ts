@@ -2,6 +2,9 @@ import { isDiscordSnowflake } from "../messenger/discord-inbound-state.ts";
 
 export type TokenPrices = { input: number; cached: number; cacheWrite: number; output: number };
 
+/** GPT-Live standby, WebRTC only: inference pauses after idleTimeoutSec without a transcript and wakes on speech. */
+export type StandbySettings = { idleTimeoutSec: number; vadThreshold?: number; dailyMinuteCap: number };
+
 export type VoiceSettings = {
   enabled: boolean;
   channelId: string;
@@ -21,6 +24,32 @@ export type VoiceSettings = {
   wakeRmsDbfs: number;
   webSearchUsdPerCall: number;
   prices: Record<string, TokenPrices>;
+  transport: "websocket" | "webrtc";
+  standby?: StandbySettings;
+  /** Operator USD per Live minute, active and on standby, for the summary's estimate; it is not a cap. */
+  livePrices?: { active: number; standby: number };
+};
+
+const finite = (value: unknown, min: number, max = Number.POSITIVE_INFINITY): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+
+/** Standby needs the WebRTC transport; the primary WebSocket has no wake policy. */
+const checkTransport = (value: Partial<VoiceSettings>): void => {
+  if (value.transport !== "websocket" && value.transport !== "webrtc")
+    throw new Error('voice.transport must be "websocket" or "webrtc"');
+  const standby: Partial<StandbySettings> | null | undefined = value.standby;
+  if (standby !== undefined) {
+    if (value.transport !== "webrtc") throw new Error('voice.standby requires voice.transport="webrtc"');
+    if (!Number.isInteger(standby?.idleTimeoutSec) || !finite(standby?.idleTimeoutSec, 5, 60))
+      throw new Error("voice.standby.idleTimeoutSec must be a whole number from 5 to 60");
+    if (standby?.vadThreshold !== undefined && !finite(standby.vadThreshold, 0, 1))
+      throw new Error("voice.standby.vadThreshold must be from 0 to 1");
+    if (!finite(standby?.dailyMinuteCap, Number.MIN_VALUE))
+      throw new Error("voice.standby.dailyMinuteCap is required and must be positive");
+  }
+  const live: Partial<VoiceSettings["livePrices"]> | null | undefined = value.livePrices;
+  if (live !== undefined && (!finite(live?.active, 0) || !finite(live?.standby, 0)))
+    throw new Error("voice.livePrices.active and .standby must be nonnegative USD per minute");
 };
 
 /** Voice has no implicit model, channel, credentials or pricing. Enabling it is an explicit cost decision. */
@@ -36,8 +65,10 @@ export const voiceSettings = (raw: Partial<VoiceSettings> | undefined): VoiceSet
     backendUsdCap: 3,
     idleCloseSec: 120,
     wakeRmsDbfs: -45,
+    transport: "websocket" as const,
     ...raw,
   };
+  checkTransport(value);
   for (const name of ["channelId", "textChannelId", "liveModel", "backendModel", "summaryModel", "voice"] as const) {
     if (typeof value[name] !== "string" || !value[name]?.trim()) throw new Error(`voice.${name} is required`);
   }

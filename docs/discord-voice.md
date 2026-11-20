@@ -22,7 +22,7 @@ Voice has no separate configuration file, token or state root.
 | --- | --- |
 | `channelId` | Discord voice channel ID to join |
 | `textChannelId` | Discord text channel for notes, notices and summaries |
-| `liveModel` | Model supported by OpenAI Live |
+| `liveModel` | Model supported by OpenAI Live, such as `gpt-live-1.1` or `gpt-live-1` |
 | `backendModel` | Model that runs tools and web search |
 | `summaryModel` | Model that writes the end-of-session summary |
 | `voice` | Voice supported by the selected Live model |
@@ -42,6 +42,9 @@ Optional fields and their defaults:
 | `idleCloseSec` | `120` | Seconds of silence before a session closes |
 | `wakeRmsDbfs` | `-45` | Speech level that wakes a closed session, between -120 and 0 |
 | `webSearchUsdPerCall` | — | Estimated USD charged per web search; required, may be `0` |
+| `transport` | `websocket` | `websocket` (the Live primary WebSocket) or `webrtc`; see [WebRTC and standby](#webrtc-and-standby) |
+| `standby` | — | WebRTC only: `{ "idleTimeoutSec": 5-60, "dailyMinuteCap": <positive>, "vadThreshold": 0-1 (optional) }` |
+| `livePrices` | — | `{ "active": <USD/min>, "standby": <USD/min> }`; adds an estimated Live cost line to the session summary |
 
 A valid starting configuration keeps voice disabled while you enter your actual channel IDs, available models, voice and current prices:
 
@@ -49,6 +52,23 @@ A valid starting configuration keeps voice disabled while you enter your actual 
 {
   "voice": {
     "enabled": false,
+    "timeZone": "UTC",
+    "idleCloseSec": 120,
+    "dailyMinuteCap": 30,
+    "totalMinuteCap": 0,
+    "backendUsdCap": 3
+  }
+}
+```
+
+To use [GPT-Live-1.1](https://developers.openai.com/api/docs/models/gpt-live-1.1), set its model ID; it uses the same Live session protocol as `gpt-live-1`, and `marin` is the provider's default voice. Voice stays disabled until the remaining fields are filled in:
+
+```json
+{
+  "voice": {
+    "enabled": false,
+    "liveModel": "gpt-live-1.1",
+    "voice": "marin",
     "timeZone": "UTC",
     "idleCloseSec": 120,
     "dailyMinuteCap": 30,
@@ -73,7 +93,7 @@ Discord voice is end-to-end encrypted with DAVE. Receiving requires its decrypto
 
 ## Native dependencies
 
-The skill package lists `@discordjs/voice` and `@discordjs/opus` as optional dependencies. DAVE comes from the version of `@snazzah/davey` required by `@discordjs/voice`; no unused second DAVE version is installed. They load only when `dori voice discord` connects. Native Opus and DAVE need compatible platform binaries. This is a source feature, not a claim that the frozen v0.1.2 release contains voice.
+The skill package lists `@discordjs/voice` and `@discordjs/opus` as optional dependencies. DAVE comes from the version of `@snazzah/davey` required by `@discordjs/voice`; no unused second DAVE version is installed. They load only when `dori voice discord` connects. Native Opus and DAVE need compatible platform binaries. The WebRTC transport adds the optional [werift](https://github.com/shinyoshiaki/werift-webrtc) (MIT, pure TypeScript, no install script or native build; about 28 MB installed with its dependencies, including the MPL-2.0 `mediabunny`), loaded only when `voice.transport` is `webrtc`. This is a source feature, not a claim that the frozen v0.1.2 release contains voice.
 
 Review the native packages and their install scripts before installation. Bun may run scripts from its default trusted list. From the skill's `scripts` directory, install frozen dependencies and explicitly run the Opus installer with the same Bun runtime that runs Dori:
 
@@ -98,6 +118,7 @@ It runs in the foreground until stopped. A service is optional; see [Running as 
 
 - When the owner joins the voice channel, a session opens and greets them. When the owner leaves, the session closes.
 - After `idleCloseSec` (2 minutes by default) of silence with no backend work pending, the session closes. Speaking above `wakeRmsDbfs` opens a new one; the last 2.5 seconds of audio before the wake are sent with it, so the first words are kept.
+- GPT-Live [standby](https://developers.openai.com/api/docs/guides/live-conversations#configure-standby) (`wake_policy`, `idle_timeout_s`, billed at a lower paused rate) is available only for WebRTC sessions. With the default WebSocket transport, closing idle sessions and waking a new one, as above, takes its place; see [WebRTC and standby](#webrtc-and-standby) for the opt-in.
 - Speaking over the assistant stops its playback. A discarded lead-reply chunk is not consumed; it is offered again at a later pause or session.
 - A short voice-link interruption mutes output and invalidates queued reply audio without closing the owner's Live session. A disconnect lasting 5 seconds ends that session and rejoins 3 seconds later; all initial and SDK-internal recovery paths have a 30-second readiness deadline. Moving the bot to a different channel stops the bridge rather than playing the owner's answer there.
 - Losing the Discord Gateway suspends voice and discards queued PCM and staged Opus packets. On resume, voice applies replayed channel changes before admitting speech again. After a fresh Gateway session, a guild voice-state snapshot can revalidate both the owner and the bot.
@@ -106,6 +127,28 @@ It runs in the foreground until stopped. A service is optional; see [Running as 
 - If input backs up past three seconds of pending PCM or playback past five seconds, voice discards the interrupted playback, leaves unfinished lead replies pending, and holds until an explicit restart. Reply offsets require the player to pull all queued speech in the current playback generation, including any final padded frame. That does not prove the listener heard it.
 
 The [Live delegation API](https://developers.openai.com/api/docs/guides/live-delegation) can leave a session open after `responses_validation_failed`. Dori deliberately closes and holds voice on this configuration/provider rejection rather than changing delegation settings or retrying paid work. Correct the configuration before an explicit restart.
+
+### WebRTC and standby
+
+`"transport": "webrtc"` connects each session over [WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc?api=live) instead of the primary WebSocket. Dori sends one `POST /v1/live/sessions` per session with the session configuration and its SDP offer, and never retries it. Events travel on the `oai-events` data channel, and audio on an Opus track; the audio format is negotiated in SDP, so `audio.format` is not sent. Dori offers only local host ICE candidates and queries no STUN server. On 2026-11-20 OpenAI documented that creating a WebRTC session bills 15 seconds during initialization, credited against the running session's duration. Dori records those 15 seconds when the creation request succeeds, so a session that ends before it starts still counts them, and later cumulative usage does not add them again. Owner, delivery, risky-work, cap and idle-close rules are the same as over the WebSocket.
+
+Add `standby` (WebRTC only) to wait for speech instead of keeping inference running:
+
+```json
+{
+  "voice": {
+    "transport": "webrtc",
+    "standby": { "idleTimeoutSec": 15, "dailyMinuteCap": 60 },
+    "livePrices": { "active": 0.05, "standby": 0.02 }
+  }
+}
+```
+
+The session is created with `wake_policy: {"type": "speech"}` (plus `vad_threshold` if `vadThreshold` is set) and `idle_timeout_s`. After `idleTimeoutSec` seconds without a transcript, the provider pauses inference (`session.paused`); the owner's speech resumes it (`session.resumed`) in the same session, with its history. A standby session therefore does not greet the owner on join. While paused, Dori offers no lead reply or quick facts; they wait until the session resumes. Backend work that finishes while paused is likewise spoken only after the owner speaks again, so choose an `idleTimeoutSec` longer than typical backend work. `idleCloseSec` still closes a session after that long without owner speech or assistant output, paused or not, so standby lasts at most about `idleCloseSec − idleTimeoutSec` per quiet stretch; raise `idleCloseSec` to keep a standby session open longer.
+
+If a session is stopped while its creation request is still in flight, the request is aborted and its initialization charge is not recorded, although the provider may already have created and billed the session. Failed creation requests are logged as `VOICE_WEBRTC_CREATE_FAILED` with the HTTP status and provider error code, never the key.
+
+This transport has been tested only against a local stand-in endpoint, not against the paid OpenAI service.
 
 ### Tools
 
@@ -140,10 +183,12 @@ Recordings and transcripts are not written to disk. Audio and transcripts go to 
 
 ## Costs and limits
 
-- Live speech is billed for the whole open session, including silence. Joining the channel opens a session.
+- Live speech is billed per second for the whole open session, including silence. Joining the channel opens a session. On 2026-11-20 [OpenAI's pricing](https://developers.openai.com/api/docs/pricing#live-session-duration) listed $0.05 per active minute for both `gpt-live-1` and `gpt-live-1.1`; the $0.02 standby rate applies only to WebRTC standby. Check current rates. Dori estimates Live charges in dollars only in the session summary and only with `livePrices` set; the estimate is not a cap.
 - Web search and backend/summary calls are billed separately.
 - Daily Live time is capped at `dailyMinuteCap` (30 minutes by default) in `timeZone`; `totalMinuteCap` caps cumulative time and is off at `0`. Estimated backend and summary spending is capped at `backendUsdCap` ($3 by default), cumulatively.
-- At a limit, voice does not start and posts one notice per day. The ledger is `<stateDir>/voice/usage.json`; a corrupt ledger stops voice rather than resetting.
+- Minute limits count billed Live seconds (`liveSeconds` in the ledger): the provider's cumulative usage, or wall time since session start when that is higher. If the provider reports a paused breakdown (`paused_seconds`), its part of the billed time is also recorded as `pausedSeconds`; it is not added on top and, without `standby`, still counts toward the minute limits. Paused seconds reported after midnight are recorded on the days that already hold that session's billed time, so a day's `pausedSeconds` never exceeds its `liveSeconds`. A report with `active_seconds` but no `paused_seconds` records the rest of `seconds` as paused. Over the WebSocket transport nothing can be paused, so the provider is not expected to report paused time there.
+- With `standby` configured, the minute limits count active seconds (`liveSeconds` minus `pausedSeconds`) and `standby.dailyMinuteCap` caps the day's `pausedSeconds`. Standby time counts as paused only when the provider reports it (`paused_seconds`, or `seconds` minus `active_seconds`); until then, and for wall time beyond the provider's figure, it counts as active.
+- At a limit, voice does not start and posts one notice per day. The ledger is `<stateDir>/voice/usage.json`; a corrupt ledger stops voice rather than resetting. A provider usage breakdown with a part larger than its billed total, or with active and paused parts that do not add up to it, ends the session as a provider failure.
 - Backend spending is estimated from your configured prices and per-search value, not from provider billing. Usage already in flight when a limit is reached is still billed, so actual charges can exceed a cap. Use provider-side spending limits as well.
 
 ## DAVE and audio limits

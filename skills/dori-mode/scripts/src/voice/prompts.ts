@@ -46,6 +46,22 @@ Only after confirmed delivery, add that the answer will be told by voice when it
 Do not claim any work has finished merely because it was forwarded. A lead answer arrives separately.
 Current time: ${new Date().toLocaleString("en-CA", { timeZone: settings.timeZone })} (${settings.timeZone}).`;
 
+export const greetEvent = (replyWaiting: boolean): Wire => ({
+  type: "session.commentary.append",
+  event_id: randomUUID(),
+  delegation_id: null,
+  content: `Greet the owner very briefly in their language, then listen.${replyWaiting ? " Mention an undelivered lead reply; its contents will follow separately." : ""}`,
+});
+
+export const capEvent = (): Wire => ({
+  type: "session.instructions.append",
+  event_id: randomUUID(),
+  delegation_id: null,
+  content:
+    "Say only that the voice usage limit has been reached and the conversation must continue in text. Then stop.",
+});
+
+/** The session configuration. WebRTC negotiates the audio format in SDP and alone supports the standby fields. */
 export const startEvent = (settings: VoiceSettings): Wire => ({
   type: "session.start",
   event_id: randomUUID(),
@@ -53,7 +69,17 @@ export const startEvent = (settings: VoiceSettings): Wire => ({
     model: settings.liveModel,
     instructions: liveInstructions(settings),
     store: false,
-    audio: { format: { type: "audio/pcm", rate: 24_000 }, output: { voice: settings.voice } },
+    audio: {
+      ...(settings.transport === "webrtc" ? {} : { format: { type: "audio/pcm", rate: 24_000 } }),
+      output: { voice: settings.voice },
+    },
+    ...(settings.standby && {
+      wake_policy: {
+        type: "speech",
+        ...(settings.standby.vadThreshold === undefined ? {} : { vad_threshold: settings.standby.vadThreshold }),
+      },
+      idle_timeout_s: settings.standby.idleTimeoutSec,
+    }),
     delegation: {
       type: "responses",
       responses: {

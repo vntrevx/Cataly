@@ -2,7 +2,7 @@ import type { Discord } from "../messenger/discord.ts";
 import { parseSummary, parseUsage } from "./provider.ts";
 import type { VoiceSession } from "./session.ts";
 import type { VoiceSettings } from "./settings.ts";
-import type { VoiceUsage } from "./usage.ts";
+import type { LiveMeter, VoiceUsage } from "./usage.ts";
 
 type SummaryRequest = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -12,8 +12,19 @@ export const postVoiceText = async (discord: Discord, channelId: string, text: s
     await discord.send(channelId, chars.slice(offset, offset + 1900).join(""));
 };
 
+/** This session's billed Live minutes, active and on standby, priced at the operator's rates; empty without rates. */
+const liveCost = (meter: Pick<LiveMeter, "seconds" | "paused"> | undefined, prices: VoiceSettings["livePrices"]) => {
+  if (!meter || !prices) return "";
+  const active = (meter.seconds - meter.paused) / 60;
+  const standby = meter.paused / 60;
+  const usd = active * prices.active + standby * prices.standby;
+  return `\nLive time: ${active.toFixed(1)} min active, ${standby.toFixed(1)} min standby; estimated $${usd.toFixed(2)} at configured rates`;
+};
+
 export const summarizeVoice = async (
-  session: Pick<VoiceSession, "inputTranscript" | "outputTranscript" | "actions" | "failed">,
+  session: Pick<VoiceSession, "inputTranscript" | "outputTranscript" | "actions" | "failed"> & {
+    meter?: Pick<LiveMeter, "seconds" | "paused">;
+  },
   settings: VoiceSettings,
   usage: VoiceUsage,
   key: string,
@@ -62,7 +73,7 @@ export const summarizeVoice = async (
   await postVoiceText(
     discord,
     settings.textChannelId,
-    `Voice conversation summary\n${summary}${actions ? `\nTool outcomes:\n${actions}` : ""}`,
+    `Voice conversation summary\n${summary}${liveCost(session.meter, settings.livePrices)}${actions ? `\nTool outcomes:\n${actions}` : ""}`,
   );
   session.inputTranscript.length = session.outputTranscript.length = 0;
 };
