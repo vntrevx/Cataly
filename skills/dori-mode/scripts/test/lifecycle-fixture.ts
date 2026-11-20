@@ -1,8 +1,11 @@
+import { expect } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FlowDeps } from "../src/done-flow.ts";
 import { readPaneState } from "../src/lane-state.ts";
-import type { Lane } from "../src/registry.ts";
+import { parkLane } from "../src/park.ts";
+import { sessionOf, upgradeLane, withStatus, type Lane } from "../src/registry.ts";
+import { reopenLane } from "../src/reopen.ts";
 import { sessionDirFor } from "../src/session-id.ts";
 import { agentIn, depsFor, fakeClock, laneState, newWorld, withState, type TestState, type World } from "./fakes.ts";
 
@@ -15,6 +18,7 @@ export type LifecycleFixture = {
   session: string;
   creates: () => number;
   failClose: () => void;
+  keepProcessAlive: () => void;
   failStart: (value?: boolean) => void;
   foreign: () => void;
 };
@@ -46,7 +50,13 @@ export const lifecycleFixture = async (): Promise<LifecycleFixture> => {
   };
   const attach = (pane: string, goal: "active" | "paused", pid: number) => {
     world.panes = world.panes.filter((p) => p.pane_id !== pane);
-    world.panes.push({ pane_id: pane, workspace_id: "w1", agent: "omp", agent_status: "idle" });
+    world.panes.push({
+      pane_id: pane,
+      workspace_id: "w1",
+      tab_id: pane === "w1:p7" ? "w1:t7" : "w1:t8",
+      agent: "omp",
+      agent_status: "idle",
+    });
     agentIn(world, pane, pid);
     laneState(state.dir, pane, { cwd, pid, sessionFile: file, goal: { status: goal } });
   };
@@ -58,6 +68,7 @@ export const lifecycleFixture = async (): Promise<LifecycleFixture> => {
   };
   let createCount = 0;
   let closeFails = false;
+  let processLingers = false;
   let startFails = false;
   let wrongSession = false;
   const clock = {
@@ -72,11 +83,20 @@ export const lifecycleFixture = async (): Promise<LifecycleFixture> => {
     ...base,
     env: { DORI_CONFIG: join(state.dir, "config.json") },
     run: async (argv, options) => {
-      if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "close") {
+      if (argv[0] === "herdr" && (argv[1] === "pane" || argv[1] === "tab") && argv[2] === "close") {
         world.calls.push([...argv]);
         if (closeFails) return { code: 1, out: "", err: "close refused" };
-        world.panes = world.panes.filter((p) => p.pane_id !== argv[3]);
+        const closed = world.panes.filter((p) => (argv[1] === "pane" ? p.pane_id : p.tab_id) === argv[3]);
+        const pids = closed.map((p) => readPaneState(state.dir, p.pane_id)?.pid);
+        world.panes = world.panes.filter((p) => !closed.includes(p));
+        if (!processLingers && world.procs) world.procs = world.procs.filter((p) => !pids.includes(p.pid));
         return { code: 0, out: "{}", err: "" };
+      }
+      if (argv[0] === "hc" && argv[2] === "kill") {
+        const pid = readPaneState(state.dir, argv[3] ?? "")?.pid;
+        const result = await base.run(argv, options);
+        if (result.code === 0 && !processLingers && world.procs) world.procs = world.procs.filter((p) => p.pid !== pid);
+        return result;
       }
       if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") {
         world.calls.push([...argv]);
@@ -109,6 +129,9 @@ export const lifecycleFixture = async (): Promise<LifecycleFixture> => {
     failClose: () => {
       closeFails = true;
     },
+    keepProcessAlive: () => {
+      processLingers = true;
+    },
     failStart: (value = true) => {
       startFails = value;
     },
@@ -116,4 +139,93 @@ export const lifecycleFixture = async (): Promise<LifecycleFixture> => {
       wrongSession = true;
     },
   };
+};
+
+export const closeFixture = async (f: LifecycleFixture, agentStatus: "idle" | "working" = "idle", reopen = true) => {
+  let lane = upgradeLane(f.lane);
+  if (reopen) {
+    const parked = await parkLane(f.deps, lane, "fixture pause");
+    expect(parked.code).toBe(0);
+    const reopened = await reopenLane(f.deps, parked.lane);
+    expect(reopened.code).toBe(0);
+    lane = reopened.lane;
+  }
+  const ref = sessionOf(lane);
+  expect(ref).toBeDefined();
+  if (!ref) throw new Error("reopened native reference is absent");
+  const native = readPaneState(f.state.dir, ref.id);
+  expect(native).not.toBeNull();
+  if (!native) throw new Error("reopened native identity is absent");
+  laneState(f.state.dir, ref.id, { ...native, goal: { status: "none" }, agentStatus });
+  const at = new Date(f.deps.clock.now() - 3_600_000).toISOString();
+  const worktree = join(f.state.dir, "owned-worktree");
+  const claim = withStatus(lane, "done-claimed", "Done signal is live", at, {
+    claim: { at, evidence: "Done signal is live", emitted: true },
+    worktrees: [worktree],
+  });
+  await f.deps.registry.write(claim);
+  f.world.calls.length = 0;
+  return { f, ref, native, claim, worktree };
+};
+
+export type CloseFixture = Awaited<ReturnType<typeof closeFixture>>;
+export const closes = (f: LifecycleFixture) =>
+  f.world.calls.filter(([cmd, , verb]) => cmd === "herdr" && verb === "close");
+export const removals = (f: LifecycleFixture) =>
+  f.world.calls.filter(([cmd, , , kind, verb]) => cmd === "git" && kind === "worktree" && verb === "remove");
+export const paneGone = ({ f, ref }: CloseFixture) => !f.world.panes.some((pane) => pane.pane_id === ref.id);
+
+export const expectHeld = async (ctx: CloseFixture, lines: readonly string[], closeCount: number) => {
+  const lane = await ctx.f.deps.registry.read(ctx.claim.key);
+  expect(lines).toEqual([expect.stringContaining(`LANE_HELD ${ctx.claim.key}`)]);
+  expect(lane?.status).toBe("done-claimed");
+  expect(lane?.receipt).toBeUndefined();
+  expect(closes(ctx.f)).toHaveLength(closeCount);
+  expect(removals(ctx.f)).toHaveLength(0);
+  return lane;
+};
+
+export const intentOf = async (ctx: CloseFixture) => {
+  const lane = await ctx.f.deps.registry.read(ctx.claim.key);
+  const intent = lane?.nativeCloseIntent;
+  if (!intent?.process) throw new Error("prepared process proof is absent");
+  expect(intent).toMatchObject({
+    ref: ctx.ref,
+    session: ctx.claim.session,
+    epoch: ctx.claim.lifecycleEpoch,
+    openedAt: ctx.claim.openedAt,
+    process: { pid: ctx.native.pid, startTicks: String(ctx.native.pid), bootId: "fixture-boot" },
+  });
+  return { ...intent, process: intent.process };
+};
+
+export const expectClosed = async (ctx: CloseFixture, lines: readonly string[]) => {
+  const lane = await ctx.f.deps.registry.read(ctx.claim.key);
+  expect(lines).toEqual([`LANE_CLOSED ${ctx.claim.key} ${JSON.stringify(lane?.receipt)}`]);
+  expect(lane).toMatchObject({
+    status: "closed",
+    receipt: { outcome: "done", cleanup: [`pane ${ctx.ref.id} closed`, `worktree ${ctx.worktree} removed`] },
+  });
+  expect(lane?.nativeCloseIntent).toBeUndefined();
+  expect(closes(ctx.f)).toHaveLength(1);
+  expect(removals(ctx.f)).toHaveLength(1);
+};
+
+export const failFirstClose = (ctx: CloseFixture): FlowDeps => {
+  let failed = false;
+  return {
+    ...ctx.f.deps,
+    run: async (argv, options) => {
+      if (!failed && argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "close") {
+        failed = true;
+        ctx.f.world.calls.push([...argv]);
+        return { code: 1, out: "", err: "close refused" };
+      }
+      return ctx.f.deps.run(argv, options);
+    },
+  };
+};
+
+export const removeProcess = (ctx: CloseFixture, pid: number) => {
+  if (ctx.f.world.procs) ctx.f.world.procs = ctx.f.world.procs.filter((process) => process.pid !== pid);
 };

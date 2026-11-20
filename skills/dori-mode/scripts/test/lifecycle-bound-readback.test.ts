@@ -32,7 +32,8 @@ test("reopened hc close does not kill a shell script that took over during the w
     screen: "──────────\n❯\n──────────",
   });
   f.world.terminals[ref.id] = terminal;
-  laneState(f.state.dir, ref.id, { cwd, pid, sessionId: f.session, sessionFile: f.file });
+  // OSC working may describe background work; this fixture closes a main that the native extension attests idle.
+  laneState(f.state.dir, ref.id, { cwd, pid, sessionId: f.session, sessionFile: f.file, agentStatus: "idle" });
   const nativeBefore = readPaneState(f.state.dir, ref.id);
   expect(nativeBefore).toMatchObject({ pid, sessionId: f.session });
   const shell = { name: "bash", argv: ["bash", "owner-script.sh"], pid: 4251 };

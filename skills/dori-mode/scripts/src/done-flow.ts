@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { PlatformAdapter } from "../../../../src/platform/adapter.ts";
 import { discoverWorktrees, unpushedWork } from "./close-worktrees.ts";
 import type { DoriConfig } from "./config.ts";
 import { withDeliveryLock } from "./delivery-lock.ts";
@@ -18,6 +19,8 @@ export type FlowDeps = {
   readonly config: DoriConfig;
   readonly exists?: (path: string) => boolean;
   readonly signalIo?: SignalIo;
+  /** Kernel process readers; the host adapter is used when absent. */
+  readonly platform?: PlatformAdapter;
   /** The session runtimes; built from `run`, `clock` and `config.runtime` when absent. */
   readonly rts?: ChosenRuntimes;
   /** The environment the runtimes are chosen from and run with; process.env when absent. */
@@ -119,7 +122,10 @@ const closeHeld = async (
   if (!thread.value) return fail(blocked.length ? await objectDone(deps, lane, blocked) : refusal);
   const { result, remaining } = thread.value;
   if (result.kind === "held") return fail(`HELD ${lane.key}: ${result.reason}`);
-  const cleanup = result.pane ? [`pane ${result.pane} closed`] : [];
+  const ref = sessionOf(lane);
+  const cleanup = result.pane
+    ? [`${lane.lifecycleEpoch === undefined && ref?.container ? `tab ${ref.container}` : `pane ${result.pane}`} closed`]
+    : [];
   if (result.kind === "changed")
     return fail(`${await movedOn(deps, lane, "close")}${cleanup[0] ? `; ${cleanup[0]}` : ""}`);
   const { lane: closed } = result;
@@ -136,7 +142,6 @@ const closeHeld = async (
     if (!now || !sameLaneGeneration(closed, now)) return fail(await movedOn(deps, closed, "cleanup (pane closed)"));
   }
   cleanup.push(...(await finishThread(deps, lane, note, remaining)));
-  const ref = sessionOf(lane);
   if (ref && !result.pane) cleanup.push(await closeSession(deps, ref));
   const root = lane.cwd ?? deps.config.defaultCwd;
   const worktrees = await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd]);

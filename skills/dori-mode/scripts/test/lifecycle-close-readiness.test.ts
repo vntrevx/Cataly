@@ -135,6 +135,7 @@ for (const operation of ["close", "park"] as const) {
     };
     await f.deps.registry.write(lane);
     const ref = sessionOf(lane)!;
+    if (!ref.container) throw new Error("reopened native tab is absent");
     const before = await f.deps.registry.read(lane.key);
     expect(before).toMatchObject({ status: "paused", session: f.session });
     const native = readPaneState(f.state.dir, ref.id)!;

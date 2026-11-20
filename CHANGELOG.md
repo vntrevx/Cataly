@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Native lane close refuses a confirmed working or blocked main (including approval waits) and, once close preparation binds its PID/startTicks/bootId, waits for that kernel incarnation to exit before thread or worktree cleanup on herdr/hc. A missing pane or wall-clock shift is not an exit receipt; failed reads after preparation stay held. Unknown first-run legacy closes retain their existing behavior. This protects observed living work, not full quiescence: unknown initial lanes, owned async jobs, queued input and services still need native read-only/unknown/quiescence APIs.
+
 - `dori park` and `dori reopen` accept saved OMP sessions whose first line is OMP's fixed-width title slot (v1) before the session header; any other leading record, a second title, a missing header, or a different session id or cwd is still refused.
 
 - Discord replies retain their original message ID and copied snapshot, distinguish unresolved, unavailable and observed-empty context, and reject reference or snapshot channel mismatches before owner delivery or checkpoint. Outgoing replies bind to the exact physical channel or thread and require the original target to exist; a deleted or other-channel target no longer silently becomes an unlinked post. Normal `INBOUND` grammar, split-message ordering and non-pinging mentions remain unchanged.
