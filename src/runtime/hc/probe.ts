@@ -20,9 +20,16 @@ function foregroundOf(value: unknown): ForegroundProcess | undefined {
   const fg = rec(value);
   const name = text(fg?.["name"]);
   if (fg === undefined || name === undefined) return undefined;
-  const argv = Array.isArray(fg["argv"]) ? fg["argv"].filter((a): a is string => typeof a === "string") : [name];
+  // Keep legacy hints for delivery holds; they are not positive bare-shell proof for close recovery.
+  const raw = fg["argv"];
+  const argv = Array.isArray(raw) ? raw.filter((arg): arg is string => typeof arg === "string") : [name];
   const pid = num(fg["pid"]);
-  return { name, argv, ...(pid === undefined ? {} : { pid }) };
+  return {
+    name,
+    argv,
+    ...(pid === undefined ? {} : { pid }),
+    ...(Array.isArray(raw) && argv.length === raw.length ? {} : { argvIncomplete: true }),
+  };
 }
 
 /** The status word of hc's `status` field (an object `{state}`, or a bare word in `ls` rows); undefined when it never reported. */

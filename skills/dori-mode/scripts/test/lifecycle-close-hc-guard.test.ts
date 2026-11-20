@@ -101,3 +101,70 @@ test.each([false, true])(
     expect(removals(f)).toHaveLength(1);
   },
 );
+
+for (const reopened of [false, true]) {
+  test.each(["missing", "malformed", "lost-before-close", "bare"] as const)(
+    `hc prepared recovery requires observed argv: %s (reopened=${reopened})`,
+    async (mode) => {
+      const { f, deps, ref, pid, claim } = await ready("idle", reopened);
+      let closeAttempts = 0;
+      expect(
+        await watchTick({
+          ...deps,
+          run: async (argv, options) => {
+            if (argv[0] === "hc" && argv[2] === "kill") {
+              closeAttempts++;
+              return { code: 1, out: "", err: "close interrupted" };
+            }
+            return deps.run(argv, options);
+          },
+        }),
+      ).toEqual([expect.stringContaining("LANE_HELD")]);
+      expect(closeAttempts).toBe(1);
+      const prepared = await deps.registry.read(claim.key);
+      expect(prepared?.nativeCloseIntent?.process).toEqual({ pid, startTicks: String(pid), bootId: "fixture-boot" });
+      if (f.world.procs) f.world.procs = f.world.procs.filter((process) => process.pid !== pid);
+      f.world.terminals[ref.id] = hcTerm({
+        status: null,
+        pid: pid - 1,
+        foreground: { name: "bash", argv: ["bash"], pid: pid - 1 },
+      });
+      f.world.calls.length = 0;
+      let exitObserved = false;
+      const lines = await watchTick({
+        ...deps,
+        run: async (argv, options) => {
+          const result = await deps.run(argv, options);
+          if (argv.join(" ") === "ps -A -o pid=") exitObserved = true;
+          if (argv[0] === "hc" && argv[2] === "get") {
+            const known = mode === "bare" || (mode === "lost-before-close" && !exitObserved);
+            const foreground = {
+              name: "bash",
+              pid: pid - 1,
+              ...(known ? { argv: ["bash"] } : mode === "malformed" ? { argv: ["bash", null] } : {}),
+            };
+            return { ...result, out: JSON.stringify({ ...JSON.parse(result.out), foreground }) };
+          }
+          return result;
+        },
+      });
+      if (mode === "bare") {
+        expect(lines).toEqual([expect.stringContaining(`LANE_CLOSED ${claim.key}`)]);
+        expect(effects(f)).toEqual([
+          ["hc", "--json", "kill", ref.id],
+          ["hc", "--json", "rm", ref.id],
+        ]);
+        expect(removals(f)).toHaveLength(1);
+        expect((await deps.registry.read(claim.key))?.status).toBe("closed");
+        expect(await watchTick(deps)).toEqual([]);
+        expect(removals(f)).toHaveLength(1);
+      } else {
+        expect(lines).toEqual([expect.stringContaining(`LANE_HELD ${claim.key}`)]);
+        expect(effects(f)).toEqual([]);
+        expect(removals(f)).toEqual([]);
+        expect(await deps.registry.read(claim.key)).toEqual(prepared);
+      }
+      if (mode === "lost-before-close" || mode === "bare") expect(exitObserved).toBe(true);
+    },
+  );
+}

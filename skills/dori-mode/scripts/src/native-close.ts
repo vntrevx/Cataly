@@ -117,6 +117,7 @@ export const commitClose = async (deps: FlowDeps, seen: Lane, basis: CloseBasis)
   const busy = "main agent is still working";
   const mainBusy = (probe: Probe) =>
     probe.status === "working" || probe.status === "blocked" || probe.approvalPending === true;
+  const observedBareShell = (probe: Probe) => isBareLaneShell(probe) && probe.foreground?.[0]?.argvIncomplete !== true;
   let lane = seen;
   let intent = saved;
   let session = lane.session;
@@ -185,7 +186,7 @@ export const commitClose = async (deps: FlowDeps, seen: Lane, basis: CloseBasis)
       if (!state) {
         const current = await runtime.probe(ref, { foregroundOnly: true });
         if (mainBusy(current)) return hold(busy);
-        if (!isBareLaneShell(current)) return hold(unconfirmed);
+        if (!observedBareShell(current)) return hold(unconfirmed);
         const refusal = await processHold(deps, intent.process);
         if (refusal) return hold(refusal);
       } else {
@@ -219,7 +220,7 @@ export const commitClose = async (deps: FlowDeps, seen: Lane, basis: CloseBasis)
             current.sessionId !== intent.session ||
             current.approvalPending !== false ||
             current.shellInFront !== false
-          : !isBareLaneShell(current)
+          : !observedBareShell(current)
       )
         return hold(unconfirmed);
       await runtime.close(ref, intent.epoch === undefined && ref.container ? "container" : "session");

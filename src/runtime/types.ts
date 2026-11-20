@@ -14,7 +14,13 @@ export type AgentIdentity = {
   readonly pid?: number;
   readonly sessionId?: string;
 };
-export type ForegroundProcess = { readonly name: string; readonly argv: readonly string[]; readonly pid?: number };
+export type ForegroundProcess = {
+  readonly name: string;
+  readonly argv: readonly string[];
+  readonly pid?: number;
+  /** True when argv contains only legacy partial/name hints, not a complete observation. */
+  readonly argvIncomplete?: boolean;
+};
 /** One snapshot: status, identity, foreground and discovery data together (submitTyped compares all of them; deliver re-reads them). `rootPid`: the session's root process (herdr process_info.shell_pid, hc terminal pid). */
 export type Probe = {
   readonly status: AgentStatus;
