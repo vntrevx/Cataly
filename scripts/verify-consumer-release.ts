@@ -240,4 +240,4 @@ writeFileSync(
   )}\n`,
   { flag: "wx", mode: 0o600 },
 );
-console.log(`Version-derived consumer upgrade/rollback and rejection checks completed; evidence: ${out}`);
+console.log(`Consumer upgrade/rollback and rejection checks completed; evidence: ${out}`);

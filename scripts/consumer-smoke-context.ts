@@ -126,8 +126,26 @@ export function createConsumerSmokeContext(rawOut: string, runtime: string, runt
     await run("select-private-candidate", [git, "-C", checkout, "switch", "--detach", candidate]);
     const packageFile = join(checkout, "package.json");
     const before = readFileSync(packageFile, "utf8");
-    const from = JSON.parse(before).version;
-    assert.equal(from, "0.1.2", "This bounded QA derivation requires the canonical candidate version 0.1.2");
+    const from: unknown = JSON.parse(before).version;
+    if (from === "0.1.3") {
+      const proof = {
+        candidate,
+        candidateTree,
+        qa: candidate,
+        qaTree: candidateTree,
+        checkout,
+        from,
+        to: from,
+        changedPaths: [],
+        statement: "Runtime source B is the exact committed v0.1.3 candidate.",
+      };
+      writeFileSync(join(out, "qa-derivation.json"), `${JSON.stringify(proof, null, 2)}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      return proof;
+    }
+    assert.equal(from, "0.1.2", "Consumer smoke requires source at 0.1.2 or 0.1.3");
     // releases.md and release/version.ts define only this root field as canonical; no bump script exists.
     const oldField = '  "version": "0.1.2",';
     const newField = '  "version": "0.1.3",';
