@@ -30,6 +30,13 @@ export interface PlatformAdapter {
   /** The argument vector with each argument NUL-terminated, as the OS cmdline holds it; throws when unreadable. */
   cmdline(pid: number): string;
 
+  /**
+   * The initial environment with each `NAME=value` NUL-terminated, as Linux's `/proc/<pid>/environ` holds it. macOS
+   * reads the entries KERN_PROCARGS2 holds after the arguments (this user's non-platform processes only); throws when
+   * unreadable, so a caller keeps failing closed.
+   */
+  environ(pid: number): string;
+
   /** A path that opens, stats and resolves to the process's executable image; throws when the process is gone. */
   exePath(pid: number): string;
 
@@ -69,7 +76,7 @@ export interface PlatformAdapter {
    */
   terminate(pid: number, expected?: TerminateIdentity, stillOurs?: () => boolean): void;
 
-  /** True when procStat, cmdline, exePath, cwdPath, children and bootId read real kernel facts (Windows: false). */
+  /** True when procStat, cmdline, environ, exePath, cwdPath, children and bootId read real kernel facts (Windows: false). */
   readonly supportsProcessReaders: boolean;
 
   /** True when file ownership is compared by uid, as src/release/files.ts owned() does (Windows: false). */

@@ -26,7 +26,8 @@ posix("when no working directory can be read, the report says so for every ident
   const receipt = nativeCacheFixture(f.source, home, f.checkout);
   rmSync(f.source, { recursive: true });
 
-  const entries = reportNativeCache(home, [], [], () => null, { files: ownProcessFiles });
+  // One privileged process (pid 1, root) asks for working directories; host Dori writers stay out of the table.
+  const entries = reportNativeCache(home, [], [], () => null, { files: ownProcessFiles, table: () => "1 0 init\n" });
 
   expect(entries.map((entry) => [entry.directory, entry.protectedBy])).toEqual([
     [receipt.directory, ["process working directories unavailable"]],

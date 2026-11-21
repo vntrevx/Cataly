@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { platform } from "../platform/index.ts";
+import { procEnviron } from "../update/proc.ts";
 import { nativeStage, readLeases } from "./native-cache-lease.ts";
 import { processCwds, processIsKernelThread, processStart } from "./process-cwd.ts";
 import { type ProcessFiles, processFiles, usesDirectory } from "./process-files.ts";
@@ -13,9 +14,10 @@ const SOURCE_ACTION = /^(?:native|assert-native|consumer|lease-path)$/;
 /**
  * Whether a process is a Dori writer that creates, verifies or launches identities, judged by the base names of its
  * words so absolute and relative paths (`bun scripts/source-dependencies.ts native ...`) count alike: the home it
- * names for `source-dependencies.ts`, `"env"` when its environment's HOME decides, undefined when it is no writer.
- * Writers from this release lease what they use; an older running checkout does not, so while one runs for this cache
- * no identity is confirmed unused.
+ * names for `source-dependencies.ts`, `"env"` when its environment's HOME decides, `""` when its home is unknown here,
+ * undefined when it is no writer. `upstream` commands provision under their deployment config's `home`, which their
+ * HOME does not reveal, so they hold every cache. Writers from this release lease what they use; an older running
+ * checkout does not, so while one runs for this cache no identity is confirmed unused.
  */
 function writerHome(args: string): string | undefined {
   const words = args.split(/\s+/);
@@ -25,8 +27,9 @@ function writerHome(args: string): string | undefined {
     if (base[at] === "source-dependencies.ts" && SOURCE_ACTION.test(next)) return words[at + 3] ?? "";
     if (base[at] === "install-source.sh") return "env";
     if (base[at] === "cli.ts" && /^(?:install|rollback)$/.test(next)) return "env";
-    if (["cli.ts", "dori", "dori-harness"].includes(base[at]!) && /^(?:update|upstream)$/.test(next))
-      if (SUBCOMMAND.test(base[at + 2] ?? "")) return "env";
+    if (["cli.ts", "dori", "dori-harness"].includes(base[at]!) && SUBCOMMAND.test(base[at + 2] ?? ""))
+      if (next === "update") return "env";
+      else if (next === "upstream") return "";
   }
   return undefined;
 }
@@ -62,15 +65,19 @@ function entersAny(pid: string, uid: number): boolean {
 
 /**
  * Whether a writer works on the cache under `homes`: by the home it names (relative to its working directory), else by
- * its environment's HOME. Only a home that resolves to another existing directory rules it out.
+ * its environment's HOME (`procEnviron`: macOS cannot read another user's or a platform binary's, which then counts).
+ * Only a home that resolves to another existing directory rules it out.
  */
 function writesHere(pid: string, args: string, named: string, homes: readonly string[]): boolean {
   if (homes.some((home) => args.includes(home))) return true;
-  if (!platform.procfs && !isAbsolute(named)) return true;
+  if (!platform.procfs && named !== "env" && !isAbsolute(named)) return true;
   try {
     let home: string | undefined;
-    if (named === "env") home = /(?:^|\0)HOME=([^\0]*)/.exec(readFileSync(`/proc/${pid}/environ`, "latin1"))?.[1];
-    else if (named) home = isAbsolute(named) ? named : resolve(readlinkSync(`/proc/${pid}/cwd`), named);
+    if (named === "env") {
+      home = /(?:^|\0)HOME=([^\0]*)/.exec(procEnviron(Number(pid)))?.[1];
+      // A relative HOME would resolve against this process, not the writer's working directory.
+      if (home !== undefined && !isAbsolute(home)) return true;
+    } else if (named) home = isAbsolute(named) ? named : resolve(readlinkSync(`/proc/${pid}/cwd`), named);
     return home === undefined || homes.includes(realpathSync(home));
   } catch {
     return true;

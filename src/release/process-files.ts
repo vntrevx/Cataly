@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { platform, procfsOn } from "../platform/index.ts";
-import { liveTasks, processIsKernelThread } from "./process-cwd.ts";
+import { liveTasks, lsofCommand, processIsKernelThread } from "./process-cwd.ts";
 
 /** What `processFiles` reads: paths by pid, and live pids whose files could not be read (they may use anything). */
 export type ProcessFiles = { readonly files: Map<string, string[]>; readonly unread: readonly string[] };
@@ -42,7 +42,7 @@ export function processFiles(os = platform.os, linuxPids?: readonly string[]): P
   if (!procfsOn(os)) {
     let lsof: ReturnType<typeof Bun.spawnSync>;
     try {
-      lsof = Bun.spawnSync(["lsof", "-n", ...(uid === undefined ? [] : ["-u", String(uid)]), "-F", "pn"], {
+      lsof = Bun.spawnSync([lsofCommand(), "-n", ...(uid === undefined ? [] : ["-u", String(uid)]), "-F", "pn"], {
         stdout: "pipe",
         stderr: "pipe",
         timeout: 60_000,

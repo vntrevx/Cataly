@@ -1,6 +1,10 @@
-import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { platform, procfsOn } from "../platform/index.ts";
 import { procStat } from "../update/proc.ts";
+
+/** The lsof on PATH, else macOS's /usr/sbin one: launchd and test environments can drop /usr/sbin from PATH. */
+export const lsofCommand = (): string =>
+  Bun.which("lsof") ?? (existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof");
 
 /**
  * A process's start, which a reused pid changes: on Linux its start time in clock ticks since boot (`/proc/<pid>/stat`
@@ -95,7 +99,7 @@ export function processCwds(pids: readonly string[], os = platform.os): ProcessC
   let output: string;
   try {
     // -F output: a `p<pid>` line opens each process, its cwd follows as `n<path>`; other fields are skipped.
-    const lsof = Bun.spawnSync(["lsof", "-n", "-a", "-d", "cwd", "-F", "pn"], {
+    const lsof = Bun.spawnSync([lsofCommand(), "-n", "-a", "-d", "cwd", "-F", "pn"], {
       stdout: "pipe",
       stderr: "pipe",
       timeout: 60_000,

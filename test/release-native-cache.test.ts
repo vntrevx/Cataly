@@ -23,6 +23,8 @@ afterEach(() => {
 
 // POSIX-only: the cache refuses group/world-writable paths, which Windows reports for every file and directory.
 const posix = test.skipIf(process.platform === "win32");
+// The fixture's own processes only: the host's running Dori writers (another lane, an upstream watcher) stay out.
+const quiet = { files: ownProcessFiles, table: () => "" };
 
 function cache() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dori-native-cache-")));
@@ -58,7 +60,7 @@ posix("the report names what uses each identity and removes none, the unused one
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n");
     const sources = [live.source];
     const scanned = [join(c.root, "dori")];
-    const entries = reportNativeCache(c.home, sources, scanned, ownProcessCwds, { files: ownProcessFiles });
+    const entries = reportNativeCache(c.home, sources, scanned, ownProcessCwds, quiet);
     const reasons = Object.fromEntries(entries.map((entry) => [entry.directory, entry.protectedBy]));
     expect(reasons[live.receipt.directory]).toEqual(
       expect.arrayContaining([`source ${live.source}`, "receipt source"]),
@@ -104,7 +106,7 @@ posix("a link into the cache, a process working in an entry and a partial receip
   });
   try {
     expect(new TextDecoder().decode((await holder.stdout.getReader().read()).value)).toBe("ready\n");
-    const entries = reportNativeCache(c.home, [], [join(c.root, "dori")], ownProcessCwds, { files: ownProcessFiles });
+    const entries = reportNativeCache(c.home, [], [join(c.root, "dori")], ownProcessCwds, quiet);
     const reasons = Object.fromEntries(entries.map((entry) => [entry.directory, entry.protectedBy]));
     expect(reasons[linked.receipt.directory]).toEqual([`link ${join(bin, "omp")}`]);
     expect(reasons[chained.receipt.directory]).toEqual([`link ${join(bin, "omp-side")}`]);
@@ -187,8 +189,10 @@ posix("dori update cache reports by default; --prune quarantines, trusting only 
   const report = JSON.parse(listed.stdout.toString());
   expect(report).toMatchObject({ removes: "nothing", pending: [] });
   expect(report.entries).toEqual([expect.objectContaining({ directory: superseded.receipt.directory })]);
-  // On a real host only unreadable processes (this user's, listed to trust one by one; privileged ones) hold it.
-  const host = /^unreadable (?:working directory of process |open files of process |working directories of \d+ root)/;
+  // On a real host only unreadable processes (this user's, listed to trust one by one; privileged ones) and the host's
+  // own running Dori writers (another lane's launch, an upstream watcher) hold it.
+  const host =
+    /^(?:Dori cache writer process |unreadable (?:working directory of process |open files of process |working directories of \d+ root))/;
   expect(report.entries[0].protectedBy.filter((reason: string) => !host.test(reason))).toEqual([]);
   expect(existsSync(superseded.receipt.directory)).toBe(true);
   expect(snapshot(cacheRoot)).toBe(before);

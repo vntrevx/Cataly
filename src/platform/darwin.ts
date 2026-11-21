@@ -84,6 +84,28 @@ function libproc(): Darwin {
 const gone = (pid: number, what: string): Error =>
   Object.assign(new Error(`process ${pid} ${what} is unavailable`), { code: "ENOENT" });
 
+/** KERN_PROCARGS2: argc, the exec path, NUL padding, argc NUL-terminated arguments, then the environment's entries. */
+function procArgs(pid: number): { readonly argv: string[]; readonly env: string[] } {
+  const args = libproc().procargs(pid);
+  if (!args || args.length < 4) throw gone(pid, "arguments");
+  const argc = new DataView(args.buffer, args.byteOffset, args.byteLength).getInt32(0, true);
+  let at = args.indexOf(0, 4);
+  if (at < 0) throw gone(pid, "arguments");
+  while (at < args.length && args[at] === 0) at++;
+  const argv: string[] = [];
+  const env: string[] = [];
+  while (at < args.length) {
+    const end = args.indexOf(0, at);
+    if (end < 0) throw gone(pid, "arguments");
+    if (argv.length < argc) argv.push(new TextDecoder().decode(args.subarray(at, end)));
+    else if (end === at) break;
+    else env.push(new TextDecoder().decode(args.subarray(at, end)));
+    at = end + 1;
+  }
+  if (argv.length < argc) throw gone(pid, "arguments");
+  return { argv, env };
+}
+
 /** libproc's executable path: no /proc link here, so the identity token and the image path are the same answer. */
 const executablePath = (pid: number): string => {
   const path = libproc().pidpath(pid);
@@ -130,21 +152,15 @@ export const darwin: PlatformAdapter = {
   },
 
   cmdline(pid: number): string {
-    const args = libproc().procargs(pid);
-    if (!args || args.length < 4) throw gone(pid, "arguments");
-    const argc = new DataView(args.buffer, args.byteOffset, args.byteLength).getInt32(0, true);
-    // KERN_PROCARGS2: argc, the exec path, NUL padding, then argc NUL-terminated arguments.
-    let at = args.indexOf(0, 4);
-    if (at < 0) throw gone(pid, "arguments");
-    while (at < args.length && args[at] === 0) at++;
-    const out: string[] = [];
-    for (let index = 0; index < argc; index++) {
-      const end = args.indexOf(0, at);
-      if (end < 0) throw gone(pid, "arguments");
-      out.push(new TextDecoder().decode(args.subarray(at, end)));
-      at = end + 1;
-    }
-    return out.map((arg) => `${arg}\0`).join("");
+    return procArgs(pid)
+      .argv.map((arg) => `${arg}\0`)
+      .join("");
+  },
+
+  environ(pid: number): string {
+    return procArgs(pid)
+      .env.map((entry) => `${entry}\0`)
+      .join("");
   },
 
   exePath: executablePath,
