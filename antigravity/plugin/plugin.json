@@ -1,0 +1,12 @@
+{
+  "name": "cataly",
+  "displayName": "Cataly",
+  "version": "1.0.0",
+  "description": "Autonomous AI teammate for Antigravity: lead/lane orchestration, verifiable Done = signals, persistent worklog/decisions/lessons/backlog, PR watch, lifecycle hooks, and Discord integration.",
+  "logo": "assets/cataly-avatar.jpg",
+  "suggestedPrompts": [
+    "Start Cataly mode and run boot to inspect open worklog items, pending decisions, and active lanes",
+    "Define verifiable Done = signals for this task and launch a tracked cataly-lane subagent",
+    "Set up Discord integration to receive owner requests and manage work threads"
+  ]
+}
