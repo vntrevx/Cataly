@@ -17,7 +17,7 @@ import { assertNoConsumerLaunches, registerConsumerLaunch, waitLaunchGate } from
 import { supportsReleaseProfile, validateReleaseManifest } from "./manifest.ts";
 import { prerequisites } from "./provision.ts";
 import { consumerReleaseHome } from "./runtime.ts";
-import { hasConsumerState, loadInstalled, recoverInstalled, releasePath, verifyRelease } from "./state.ts";
+import { hasConsumerState, loadInstalled, recoverInstalled, releaseId, releasePath, verifyRelease } from "./state.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 type AutomaticOptions = {
@@ -135,7 +135,9 @@ export async function automaticUpdate(paths: ConsumerPaths, options: AutomaticOp
       if (!current) throw new Error("Consumer installation disappeared during automatic update");
       const runnable = await verifyAutomaticInstallation(paths, current);
       const detail = error instanceof Error ? error.message : String(error);
-      finish(error instanceof SetupConflict || /holds|held|Live/.test(detail) ? "held" : "failed", detail);
+      if (releaseId(current.current) !== releaseId(observed.current))
+        finish("installed", `Committed; maintenance pending: ${detail}`, current.current.tag);
+      else finish(error instanceof SetupConflict || /holds|held|Live/.test(detail) ? "held" : "failed", detail);
       return runnable;
     }
   } finally {

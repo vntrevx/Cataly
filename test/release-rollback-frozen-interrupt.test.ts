@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setAutomaticEnabled } from "../src/release/automatic-state.ts";
+import { referenceRefresh } from "../src/release/completion.ts";
 import { pointer } from "../src/release/files.ts";
 import { installBundle, rollbackRelease } from "../src/release/install.ts";
 import {
@@ -136,6 +137,7 @@ posix(
     expect(readlinkSync(f.paths.live)).toBe(releasePath(f.paths, two.current));
     expect(snapshot(bin)).toBe(wrappers);
     expect(readFileSync(join(f.paths.root, "consumer-references.json"))).toEqual(receipt);
+    expect(referenceRefresh(f.paths, two)).toBeNull();
     const current = Bun.spawnSync([join(bin, "omp"), "--version"], {
       env: { HOME: f.paths.home, PATH: process.env["PATH"] },
       timeout: 10_000,
@@ -155,18 +157,13 @@ posix(
     const rolled = loadInstalled(f.paths)!;
     expect(rolled.current).toEqual(one.current);
     expect(snapshot(bin)).toBe(wrappers);
-    for (const dispatcher of ["newer", "frozen"]) {
-      // The fixture's native OMP for the selected pre-19 release reports its bound version.
-      const older = Bun.spawnSync([join(bin, "omp"), "--version"], {
-        env: { HOME: f.paths.home, PATH: process.env["PATH"] },
-        timeout: 10_000,
-      });
-      expect(older.exitCode, `${dispatcher}: ${older.stderr.toString()}`).toBe(0);
-      expect(older.stdout.toString()).toBe("18.20.0\n");
-      // Reinstalling the selected release renders its own frozen dispatcher once it is selected.
-      if (dispatcher === "newer") expect(await installBundle(f.paths, legacy, rolled)).toEqual(rolled);
-    }
-    expect(readFileSync(join(bin, "omp"), "utf8")).toContain('case "$protocol" in\n  18.20.0) omp=');
-    expect(snapshot(bin)).not.toBe(wrappers);
+    expect(referenceRefresh(f.paths, rolled)?.pending).toBe(true);
+    // CLI repair with both actual controllers is covered by release-rollback-completion.test.ts.
+    const older = Bun.spawnSync([join(bin, "omp"), "--version"], {
+      env: { HOME: f.paths.home, PATH: process.env["PATH"] },
+      timeout: 10_000,
+    });
+    expect(older.exitCode, older.stderr.toString()).toBe(0);
+    expect(older.stdout.toString()).toBe("18.20.0\n");
   },
 );

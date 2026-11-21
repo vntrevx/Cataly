@@ -9,11 +9,13 @@ import { archive, type ConsumerFixture, withArchive } from "./release-consumer-s
 import { boundRelease } from "./release-native-recovery-setup.ts";
 import { nativeCacheFixture, overlayFixture } from "./source-bundle-setup.ts";
 
-// Exact automatic.ts, state.ts, manifest.ts, references.ts and consumer/omp bytes from
+// Exact CLI, installer, automatic.ts, state.ts, manifest.ts, references.ts and consumer/omp bytes from
 // e6b60c9f5efd45925645672e1841a8a9e20e5592. Text fixtures keep the exact bytes reviewable and independent of Git
 // history or a sibling baseline checkout. Only these admission modules are historical; their other dependencies are
 // the real current source, not stubs.
 const frozenAdmission = [
+  ["src/release/cli.ts", "00ab7f999d69b31bbe6c227d7e404bdf013c61f07f95d17caf2fadaed8b2b260"],
+  ["src/release/install.ts", "168a5e4bd1e5dc3d41b2b5e3143f6549fc691543bdfbd52db4fb04120debb802"],
   ["src/release/automatic.ts", "999701297a006279797b0e1006b6219b7c423a43d878effbd315a6a2b101341d"],
   ["src/release/state.ts", "65ea13b440235dd3ec22650dd59cd542613e652cef882f5866b692a8281b7f7a"],
   ["src/release/manifest.ts", "37b62455d91ed5cc27c887e6cbcac00d7a2d89dcb8a74c0c33bace3f4f432d30"],

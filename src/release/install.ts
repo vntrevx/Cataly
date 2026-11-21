@@ -13,6 +13,7 @@ import { freezeSource } from "../update/source.ts";
 import { extractArchive } from "./archive.ts";
 import { setAutomaticEnabled } from "./automatic-state.ts";
 import type { VerifiedBundle } from "./bundle.ts";
+import { clearReferenceRefresh, markReferenceRefresh } from "./completion.ts";
 import {
   type ConsumerPaths,
   owned,
@@ -100,6 +101,7 @@ async function installReferences(
       const install = async () => {
         await target.installIsolatedReferences(paths, source);
         preflightReferences(paths);
+        clearReferenceRefresh(paths);
       };
       // An older release's dispatcher rejects the newer release, which stays selected through a held or interrupted
       // activation. Render it only after activation; the newer dispatcher launches either release meanwhile.
@@ -221,6 +223,7 @@ export async function rollbackRelease(
     current: before.previous,
     ...(reads ? { previous: before.current } : {}),
   };
+  if (!reads && paths.dori !== join(paths.home, ".dori")) markReferenceRefresh(paths, after);
   activateRelease(paths, before, after, undefined, {
     snapshot: published,
     // A requested rollback remains selected until the owner explicitly resumes automatic updates.
