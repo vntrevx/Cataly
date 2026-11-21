@@ -11,7 +11,10 @@ export const VERIFY_MS = 3 * 60_000;
 
 export const runtimeOf = (d: Deps, kind: RuntimeKind): SessionRuntime => d.runtimes.for({ runtime: kind, id: "" });
 
-/** The group new sessions join on the target: this home's group label on hc, a new "dori" workspace on herdr. */
+/**
+ * The group new sessions join on the target: this home's group label on hc, a new "dori" workspace on herdr, the
+ * caller's own session (else one named "dori") on tern.
+ */
 const targetGroup = async (d: Deps, rt: SessionRuntime, cwd: string): Promise<string> =>
   rt.kind === "hc" ? groupId(d.store.root) : rt.createGroup("dori", cwd);
 

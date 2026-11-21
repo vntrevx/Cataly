@@ -1,6 +1,6 @@
 # Sessions (lanes)
 
-A lane is one agent session doing one job in its own herdr tab or hc terminal. You launch it, track it in the registry, answer it when it is stuck, and close it when its work is proven done.
+A lane is one agent session doing one job in its own herdr tab, hc terminal or Tern tab. You launch it, track it in the registry, answer it when it is stuck, and close it when its work is proven done.
 
 ## Launching
 
@@ -77,7 +77,7 @@ One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file 
 | Field | Meaning |
 |---|---|
 | `thread` | where its updates go, as `platform:thread` (or `none`) |
-| `sessionRef` | its session: the runtime (`herdr` or `hc`) and the id; `pane` and `tab` mirror the id and the herdr tab (none on hc). A record from before runtimes existed is read as herdr |
+| `sessionRef` | its session: the runtime (`herdr`, `hc` or `tern`) and the id; `pane` and `tab` mirror the id and the herdr or Tern tab (none on hc). A record from before runtimes existed is read as herdr |
 | `session` | the agent's own session id, so a closed job can be reopened later |
 | `status` | `working`, `done-claimed`, `verified-done`, `not-done`, `closed` |
 | `claim`, `objection`, `history` | what was claimed, what was objected, every status change |
@@ -89,7 +89,7 @@ How the session id is found for a pane, in order:
 1. the role-gated OMP extension's record under `<stateDir>/sessions/<encoded runtime id>.json`, trusted only when its PID belongs to the current session's live agent process;
 2. an OMP session file in `sessionsDir` whose timestamp matches that process, using OMP's temporary, home-relative and legacy directory encodings.
 
-The extension updates its record when the agent switches sessions. A stale PID, wrong terminal or approval-pending record never becomes permission to type into another process. On hc, OMP reports native OSC 7501 status so the runtime's conditional send gate remains active; unknown status stays held.
+The extension updates its record when the agent switches sessions. A stale PID, wrong terminal or approval-pending record never becomes permission to type into another process. On hc, OMP reports native OSC 7501 status so the runtime's conditional send gate remains active; unknown status stays held. On Tern, the record is keyed by `TERN_PANE`, and an OMP with no record of its own stays unknown and is never typed into.
 
 When work is assigned back to a closed lane, use `dori reopen <key> [--note TEXT]`. A reply in the original work thread is not a hand-back while main owns that work. Keep the lane closed until main hands it back. During main ownership, send new instructions to the lead conversation or main session, and keep progress and results in the original work thread.
 
@@ -118,10 +118,10 @@ Ordinary Done close of a reopened lane verifies the saved session's current fore
 
 Before you type into a pane:
 
-1. check it runs a live agent (`herdr pane process-info --pane <id>` / `hc get <t>`), not a shell, a stopped agent or a startup screen;
-2. read it (`herdr pane read <id> --source recent-unwrapped --lines 40` / `hc read <t> --lines 40`) and confirm the input line is empty and no approval or question prompt is open;
-3. send once, as one argument (the scripts' `sendVerified` does this);
-4. confirm delivery from a state change: the agent's status moving to working (herdr's `agent_status`, or the status the agent reports on hc), or the message showing up in the session record. Never press Enter again because of what the screen shows; if no change shows up, treat the send as unconfirmed.
+1. check it runs a live agent (`herdr pane process-info --pane <id>` / `hc get <t>` / `tern process <block>`), not a shell, a stopped agent or a startup screen;
+2. read it (`herdr pane read <id> --source recent-unwrapped --lines 40` / `hc read <t> --lines 40` / `tern capture <block>`) and confirm the input line is empty and no approval or question prompt is open. On Tern this works only for an OMP drawn with its classic UI (`PI_TUI_NATIVE=0`, which every block the Dori opens sets); a natively drawn OMP shows no input to `tern capture`, so hold the send;
+3. send once, as one argument (the scripts' `sendVerified` does this; by hand on Tern, `tern run <block> -- "<text>"` types the line and Enter);
+4. confirm delivery from a state change: the agent's status moving to working (herdr's `agent_status`, the status the agent reports on hc, or Tern's busy flag in `tern inspect --json`), or the message showing up in the session record. Never press Enter again because of what the screen shows; if no change shows up, treat the send as unconfirmed.
 
 Exit code 0 and echoed input are not proof the agent got the message. A reply from the session, or its record of handling the message, is.
 

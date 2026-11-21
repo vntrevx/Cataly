@@ -103,6 +103,14 @@ test.each([
   expect(renderBoard(snapshot, "/home/test", 1960)).toContain("incomplete");
 });
 
+test("a lane in a Tern block is a readable registry record", async () => {
+  const tern = { ...lane, key: "tern-lane", sessionRef: { runtime: "tern", id: "5001" } };
+  writeFileSync(join(state.dir, "lanes", "tern-lane.json"), JSON.stringify(tern));
+  const snapshot = await laneStatus(deps());
+  expect(snapshot.lanes.map((item) => item.key).sort()).toEqual([lane.key, "tern-lane"]);
+  expect(snapshot.registryIncomplete).toBe(false);
+});
+
 test("a specifically requested damaged lane is unknown, not an absent lane or a crash", async () => {
   writeFileSync(join(state.dir, "lanes", "damaged.json"), "{broken");
   const snapshot = await laneStatus(deps(), "damaged");

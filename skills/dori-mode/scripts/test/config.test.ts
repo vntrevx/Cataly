@@ -118,9 +118,9 @@ test("startupWaitSeconds is a nonnegative number of seconds; anything else falls
   }
 });
 
-test("runtime is herdr, hc or absent; any other value stops the load with ConfigError", async () => {
+test("runtime is herdr, hc, tern or absent; any other value stops the load with ConfigError", async () => {
   const path = join(state.dir, "config.json");
-  for (const value of ["herdr", "hc"] as const) {
+  for (const value of ["herdr", "hc", "tern"] as const) {
     await Bun.write(path, JSON.stringify({ runtime: value }));
     expect((await loadConfig(path, "/home/ana")).runtime).toBe(value);
   }

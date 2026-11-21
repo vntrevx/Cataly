@@ -38,7 +38,7 @@ export const USAGE = `dori <command> [options]
   pr track <owner/repo#N|pull-url> [--lane K] [--thread REF] / pr untrack <ref> / pr list
   pr watch [--loop MIN] [--ignore-author LOGIN]... [--self LOGIN]
                                        follow tracked PRs after their lane: PR_FEEDBACK, PR_CI_FAIL, PR_HEAD_MOVED, PR_MERGED
-  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for your own session (HC_TERMINAL_ID or HERDR_PANE_ID)
+  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for your own session (HC_TERMINAL_ID, HERDR_PANE_ID or TERN_PANE)
   object-done <key> --reason TEXT [--reason TEXT ...]
   lesson add <key> --rule TEXT --evidence PATH [--cwd DIR]
   lesson add --global --rule TEXT --evidence REF

@@ -30,7 +30,9 @@ export const originalBrief = (text: string): string => {
 const sendReport = (leadPane: string, runtime: DoriConfig["runtime"]): string | undefined => {
   if (!leadPane || !runtime) return undefined;
   const lead = quoteForPane(leadPane);
-  return runtime === "herdr" ? `herdr pane run ${lead} "$line"` : `hc send ${lead} -- "$line"`;
+  if (runtime === "herdr") return `herdr pane run ${lead} "$line"`;
+  // `tern run` types the line and Enter into the lead's block; `--` keeps the line verbatim.
+  return runtime === "tern" ? `tern run ${lead} -- "$line"` : `hc send ${lead} -- "$line"`;
 };
 
 export const footer = (

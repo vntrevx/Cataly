@@ -63,6 +63,18 @@ test("a headless delivery fence round-trips only a canonical runtime address", (
   expect(() => store().read()).toThrow("invalid delivery state");
 });
 
+test("a tern delivery fence round-trips", () => {
+  const fence: DeliveryRecord = {
+    id: "local-tern-delivery",
+    openedAt: lane.openedAt,
+    at: lane.openedAt,
+    status: "uncertain",
+    session: { runtime: "tern", id: "42" },
+  };
+  store().write(fence);
+  expect(store().read()).toEqual(fence);
+});
+
 test("resolution requires the exact request and records only a release, never another send", async () => {
   await tellLane(deps(), lane, "first request");
   const request = pending();

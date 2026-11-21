@@ -37,7 +37,10 @@ const validRef = (raw: unknown): boolean => {
   if (raw === undefined) return true;
   const ref = object(raw);
   return (
-    (ref?.["runtime"] === "headless" || ref?.["runtime"] === "hc" || ref?.["runtime"] === "herdr") &&
+    (ref?.["runtime"] === "headless" ||
+      ref?.["runtime"] === "hc" ||
+      ref?.["runtime"] === "herdr" ||
+      ref?.["runtime"] === "tern") &&
     typeof ref["id"] === "string" &&
     ref["id"].length > 0
   );

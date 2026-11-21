@@ -26,8 +26,8 @@ const launch: Command = async ({ key, opt, need, ceiling, strings, values, deps 
   // A bare or empty --request must not silently become an unsourced launch.
   const requestId = values["request"] === undefined ? undefined : opt("request") || die("--request needs the input ID");
   const runtime = opt("runtime");
-  if (runtime !== undefined && runtime !== "headless" && runtime !== "hc" && runtime !== "herdr")
-    return die("--runtime must be headless, hc or herdr");
+  if (runtime !== undefined && runtime !== "headless" && runtime !== "hc" && runtime !== "herdr" && runtime !== "tern")
+    return die("--runtime must be headless, hc, herdr or tern");
   if (template && opt("brief")) die("choose --brief or --template, not both");
   if (!template && strings("set").length) die("--set requires --template");
   const variables = Object.fromEntries(

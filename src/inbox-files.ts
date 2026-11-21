@@ -4,15 +4,15 @@ import type { SessionRef } from "./runtime/types.ts";
 import type { QueuedMessage } from "./store-types.ts";
 
 // Inbox files: one JSONL queue per session. A herdr pane keeps the name it had before runtimes existed (`w1_p3.jsonl`),
-// so queues written by an older binary drain; every other runtime is prefixed (`hc--t7.jsonl`). A queue is written aside
-// and renamed in whole (writeQueue), so a reader that does not hold the inbox lock still reads a whole queue and never
-// half of one. Where an inbox moved is recorded beside it (inbox-forward.ts). A message sent while the inbox lock is
-// held waits in `<inbox>.spool/` for the holder (inbox-spool.ts).
+// so queues written by an older binary drain; every other runtime is prefixed (`hc--t7.jsonl`, `tern--42.jsonl`). A
+// queue is written aside and renamed in whole (writeQueue), so a reader that does not hold the inbox lock still reads a
+// whole queue and never half of one. Where an inbox moved is recorded beside it (inbox-forward.ts). A message sent
+// while the inbox lock is held waits in `<inbox>.spool/` for the holder (inbox-spool.ts).
 
 export const INBOX_SUFFIX = ".jsonl";
 export const MOVING = ".moving";
-const HC_PREFIX = "hc--";
 const HEADLESS_PREFIX = "headless--";
+const PREFIXED: readonly SessionRef["runtime"][] = ["hc", "tern"];
 const SPOOL = ".spool";
 
 export function inboxFile(root: string, ref: SessionRef): string {
@@ -23,9 +23,10 @@ export function inboxFile(root: string, ref: SessionRef): string {
 export function refOfInbox(name: string): SessionRef {
   const stem = name.slice(0, -INBOX_SUFFIX.length);
   if (stem.startsWith(HEADLESS_PREFIX)) return { runtime: "headless", id: stem.slice(HEADLESS_PREFIX.length) };
-  return stem.startsWith(HC_PREFIX)
-    ? { runtime: "hc", id: stem.slice(HC_PREFIX.length) }
-    : { runtime: "herdr", id: stem.replaceAll("_", ":") };
+  const runtime = PREFIXED.find((kind) => stem.startsWith(`${kind}--`));
+  return runtime === undefined
+    ? { runtime: "herdr", id: stem.replaceAll("_", ":") }
+    : { runtime, id: stem.slice(runtime.length + 2) };
 }
 
 /**

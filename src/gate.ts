@@ -44,7 +44,7 @@ export async function review(
         ...Object.entries(harnessLaunchEnv(d)).map(([key, value]) => `${key}=${value}`),
         "sh",
         "-c",
-        `unset HERDR_PANE_ID HERDR_WORKSPACE_ID HC_TERMINAL_ID DORI_MANAGED_STARTUP DORI_LANE; ${agentCommand(d, "lane")} "$@"`,
+        `unset HERDR_PANE_ID HERDR_WORKSPACE_ID HC_TERMINAL_ID TERN_PANE DORI_MANAGED_STARTUP DORI_LANE; ${agentCommand(d, "lane")} "$@"`,
         "dori-review",
         "-p",
         "--no-session",

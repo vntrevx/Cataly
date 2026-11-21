@@ -1,8 +1,8 @@
-# Session runtimes: herdr and hc
+# Session runtimes: herdr, hc and tern
 
-**The OMP port retains herdr and hc (herdr-core) through the complete upstream runtime abstraction. Sessions on both can live in one home, and `dori harness migrate` moves sessions between them.** This document describes the source/runtime contract. The [first public preview](releases.md) supports Linux x64/herdr/Discord; Linux hc CI and the cross-OS macOS/Windows CI are distinct from live consumer support and exact-release QA evidence. The hc jobs in the release-gating `ci.yml` run on Linux, while `.github/workflows/cross-os.yml` runs macOS and Windows jobs outside that gate.
+**The OMP port retains herdr and hc (herdr-core) through the complete upstream runtime abstraction and adds Tern as a third adapter. Sessions on all three can live in one home, and `dori harness migrate` moves sessions between them.** This document describes the source/runtime contract. The [first public preview](releases.md) supports Linux x64/herdr/Discord; Linux hc CI and the cross-OS macOS/Windows CI are distinct from live consumer support and exact-release QA evidence, and the Tern adapter is a source feature outside the consumer release path. The hc jobs in the release-gating `ci.yml` run on Linux, while `.github/workflows/cross-os.yml` runs macOS and Windows jobs outside that gate.
 
-A session is one terminal with an agent or a loop in it: the lead, duty, the duty loop, the hourly loop, or a lane. herdr gives Dori workspaces, tabs and panes and detects the agent in a pane. hc gives Dori plain terminals with labels, and the agent in a terminal reports its own status. The harness talks to both through one interface, and nothing above that interface knows which runtime it is using.
+A session is one terminal with an agent or a loop in it: the lead, duty, the duty loop, the hourly loop, or a lane. herdr gives Dori workspaces, tabs and panes and detects the agent in a pane. hc gives Dori plain terminals with labels, and the agent in a terminal reports its own status. Tern gives Dori sessions, tabs and blocks and reports the program in front of a block. The harness talks to all of them through one interface, and nothing above that interface knows which runtime it is using.
 
 The primary installed `dori` remains the skill CLI. Every root harness command here uses `dori harness ...`; `dori-harness ...` after root linking or `bun src/cli.ts ...` are equivalent entrypoints. For example, skill `dori send discord` posts to a messenger, while `dori harness send lead` sends to an agent session.
 
@@ -26,44 +26,48 @@ Process attestation also recognizes the pinned launcher's optional `PI_TIMING=1`
 
 ## The interface
 
-`SessionRuntime` in `src/runtime/types.ts` is the whole contract. Each runtime has one adapter, `src/runtime/herdr/` and `src/runtime/hc/`, and both run their CLI through one injectable process runner (`src/runtime/exec.ts`), so tests replace the binary with a recorder.
+`SessionRuntime` in `src/runtime/types.ts` is the whole contract. Each runtime has one adapter, `src/runtime/herdr/`, `src/runtime/hc/` and `src/runtime/tern/`, and all run their CLI through one injectable process runner (`src/runtime/exec.ts`), so tests replace the binary with a recorder.
 
 | Method | What it does |
 |---|---|
-| `self()` | The caller's own session, from `HERDR_PANE_ID` (+ `HERDR_WORKSPACE_ID`) or `HC_TERMINAL_ID` |
-| `createGroup(label, cwd)` | herdr: a new workspace, returns its id. hc: returns the label, no call |
+| `self()` | The caller's own session, from `HERDR_PANE_ID` (+ `HERDR_WORKSPACE_ID`), `HC_TERMINAL_ID` or `TERN_PANE` |
+| `createGroup(label, cwd)` | herdr: a new workspace, returns its id. hc: returns the label, no call. tern: the caller's own Tern session id, else the label; nothing is created |
 | `create(spec)` | A session with the user's shell in it and nothing started |
 | `start(ref, command)` | Runs the command line in that shell |
 | `list(filter)` | The live sessions, all of them or one group's |
 | `probe(ref)` | One snapshot: status, agent name, foreground processes, title, cwd |
 | `read(ref, lines)` | The last lines of the screen |
 | `deliver(ref, text, opts)` | One message to the agent; never types into a shell |
-| `submitTyped(ref, into)` | Presses only Enter for text an earlier delivery typed (herdr) |
+| `submitTyped(ref, into)` | Presses only Enter for text an earlier delivery typed (herdr, tern) |
 | `typeIntoShell(ref, text)` | The operator's `--to-shell`, only into a session with no agent |
 | `keys(ref, keys)` | Enter or Escape |
-| `close(ref, scope)` | Closes the session, or its herdr tab |
+| `close(ref, scope)` | Closes the session, or its herdr tab (a Tern tab closes with its last block) |
 
-A session is stored as a `SessionRef`: the runtime, the id (`w1:p3` on herdr, `t7` on hc), and the group and tab when the runtime has them. Every stored lane and role keeps its own ref, so commands on an existing session go to the runtime that opened it, whatever runtime is selected for new sessions. Lane records written before runtimes existed have no ref and read as herdr.
+A session is stored as a `SessionRef`: the runtime, the id (`w1:p3` on herdr, `t7` on hc, a decimal block id such as `42` on tern), and the group and tab when the runtime has them. Every stored lane and role keeps its own ref, so commands on an existing session go to the runtime that opened it, whatever runtime is selected for new sessions. Lane records written before runtimes existed have no ref and read as herdr.
 
 ## Choosing a runtime
 
 New sessions open on one runtime, picked in this order (`readRuntimeChoice` in `src/runtime/select.ts`):
 
-1. `DORI_RUNTIME=herdr` or `DORI_RUNTIME=hc`.
-2. `"runtime": "herdr"` or `"runtime": "hc"` in `$DORI_HOME/config.json` (default `~/.dori/config.json`) for the harness. The skill uses its `DORI_CONFIG` file (the same default); when those paths agree, one setting controls both.
+1. `DORI_RUNTIME=herdr`, `DORI_RUNTIME=hc` or `DORI_RUNTIME=tern`.
+2. `"runtime": "herdr"`, `"hc"` or `"tern"` in `$DORI_HOME/config.json` (default `~/.dori/config.json`) for the harness. The skill uses its `DORI_CONFIG` file (the same default); when those paths agree, one setting controls both.
 3. `HC_TERMINAL_ID` is set: Dori runs inside an hc terminal, so hc.
 4. `HERDR_PANE_ID` is set: Dori runs inside a herdr pane, so herdr.
-5. The binaries on PATH: hc (herdr-core) when it is installed, else herdr. hc is the default runtime; with both installed, herdr is one config line away.
+5. hc (herdr-core) or herdr on PATH: hc when it is installed, else herdr. hc is the default runtime; with both installed, herdr is one config line away.
+6. `TERN_PANE` is set: Dori runs inside a Tern block, so tern.
+7. `tern` on PATH.
 
-When neither binary is on PATH and nothing above decides, Dori refuses and prints the fix in one line:
+Tern is a terminal that hc and herdr also run in, so it is detected last: a setup that selected hc or herdr before this adapter existed selects the same runtime now, also from inside a Tern block. With hc or herdr installed, choose Tern with step 1 or 2.
+
+When none of the binaries is on PATH and nothing above decides, Dori refuses and prints the fix in one line:
 
 ```
-neither herdr nor hc is on PATH: install hc (herdr-core) or herdr, or set "runtime": "herdr" or "hc" in <DORI_HOME>/config.json, or DORI_RUNTIME
+none of herdr, hc or tern is on PATH: install hc (herdr-core), herdr or Tern, or set "runtime": "herdr", "hc" or "tern" in <DORI_HOME>/config.json, or DORI_RUNTIME
 ```
 
 (The real message prints the absolute path of your config file.)
 
-An invalid `DORI_RUNTIME` or config value is an error. `dori harness status` prints the choice first, for example `RUNTIME hc (from config)`; sources are `env`, `config`, `detect:HC_TERMINAL_ID`, `detect:HERDR_PANE_ID` and `detect:path`. With no choice it prints `RUNTIME unset:` and a fix. Skill `dori boot` prints the same selection, or `RUNTIME unavailable:` and a failed check.
+An invalid `DORI_RUNTIME` or config value is an error. `dori harness status` prints the choice first, for example `RUNTIME hc (from config)`; sources are `env`, `config`, `detect:HC_TERMINAL_ID`, `detect:HERDR_PANE_ID`, `detect:TERN_PANE` and `detect:path`. With no choice it prints `RUNTIME unset:` and a fix. Skill `dori boot` prints the same selection, or `RUNTIME unavailable:` and a failed check.
 
 ## How herdr verbs map to hc
 
@@ -88,6 +92,45 @@ An injected skill environment controls `DORI_HERDR_SESSION` completely: if absen
 
 Listing is `pane list` on herdr and `ls [--label dori.group=G]` on hc. On hc, `rm` answers `live` while the program is still dying, so Dori retries it 5 times, 200 ms apart, and logs one line if the terminal is still running after that.
 
+## Tern
+
+Tern (`tern`, checked against 0.9.28) is a terminal whose daemon keeps programs running between windows. A Tern session holds tabs and a tab holds blocks. A Dori session is one block: its ref is `tern:<block id>` (decimal, such as `tern:42`), its group the Tern session id and its container the tab id. A Tern session therefore plays the part a herdr workspace plays, and the adapter adds no config key or environment variable of its own.
+
+| Used for | tern call (every call carries `--json`, placed before `--` when the call has one) |
+|---|---|
+| The lead on `dori harness up` | `new session <free name> --cwd D -- env PI_TUI_NATIVE=0 K=V ... $SHELL` (`dori`, else `dori-2`, ...) |
+| Duty, lanes, migrated sessions | `new tab <session id> --cwd D -- env ...`, or `new session <name> ...` when no session has that name yet; then `rename <block> <name>` names the tab |
+| The duty loop and the hourly loop | `split <near block> down --cwd D -- env ...` |
+| Starting the agent or loop, `--to-shell` | `run <block> -- <command>` (types it and Enter) |
+| Probe | `inspect` (the block, whether it is live, Tern's busy flag) and `process <block>` (foreground, process group, the block's root pid) |
+| Screen reads | `capture <block> --scrollback`, trailing blank rows dropped; unwrapped joins rows as wide as the block, as on hc |
+| Delivering a message | `send <block> paste -- <text>`, then `send <block> keys enter` |
+| Enter, Escape | `send <block> keys enter` / `esc` |
+| Closing a session | `close <block>`; `no block is called` means it is already closed |
+| Listing | `inspect`, then `process` for each live terminal block |
+
+A tab opens in the session its spec names (a Tern session name or id), else in the Tern session holding the caller's own block (`TERN_PANE`), else in a session named `dori`. The skill passes `laneWorkspace` as that name, so on tern `laneWorkspace` is a Tern session; unset, a lead running in Tern opens its lanes as tabs beside itself. A name no session holds yet is opened with the first tab; a numeric id that names no session is refused, because Tern would open a session called by that number.
+
+`list()` with a group returns that Tern session's live terminal blocks, and without one every live terminal block of the window, the user's own blocks included. Set the skill's `workspaces` to the lane session on tern so `sync` and `dead-panes` read only that session. Every `tern` command works on one window's sessions (the window holding `$TERN_PANE`, else the first window), so run Dori from a Tern block or use one window.
+
+### Status and the classic UI
+
+Tern reports the foreground process and a busy flag, not agent status words. A shell in front is `shell`. An OMP process in front is `working` while Tern's busy flag is set, else `idle`. Any other program is `unknown` and never receives input. With the configured `stateDir`, the attested OMP record refines this exactly as on herdr and hc (identity, an open approval as `blocked`, its idle/working word), and an OMP in front with no record of its own reads `unknown`. The extension writes that record under `TERN_PANE` when neither `HC_TERMINAL_ID` nor `HERDR_PANE_ID` is set.
+
+OMP in a Tern block normally draws its UI natively over the Tern Surface Protocol, and `tern capture` then shows neither its input nor its dialogs. Every block Dori opens sets `PI_TUI_NATIVE=0` (a spec env may override it), so OMP draws its classic terminal UI and its input can be read. Start a lead by hand the same way.
+
+### Delivery
+
+Tern has no call that prompts an agent, so the adapter types: it pastes the text as one bracketed paste (a line break never submits early) and presses Enter. The probe gates first, as on the other runtimes: a shell or a gone block is `no-agent`, an approval is `blocked`, and an unknown status or one `when` does not accept holds the message. Then the screen decides how much the adapter can check:
+
+- The classic OMP input is recognised (a row starting `╰─` right under the status row, or the older omo box) and reads empty: the text is pasted, Enter is pressed only while a draft is seen there, up to three times, and the delivery counts once the input reads empty again. Text that stays in the input is `typed`, for `submitTyped` to finish with Enter only.
+- The input is recognised and holds a draft: the message is held. Dori does not write over what a person is typing.
+- No input is recognised (a natively drawn OMP, another composer, a dialog the probe does not report): the adapter pastes, checks that the same agent is still in front, and counts one accepted Enter as the delivery, which is herdr's typed fallback. It cannot see whether that Enter submitted the text.
+
+A paste that fails may have typed part of the text and is `ambiguous`; it is never resent. `submitTyped` reports `changed` when the agent is another one or its recognised input reads empty.
+
+A delivery bound to one native session (`expectedSessionId`) is held as `unknown` unless the attested record names that session, as on herdr and hc.
+
 ## Status
 
 Dori reads a session's status before it types anything into it. The words are `idle`, `working`, `blocked`, `done`, `error`, `unknown`, `shell` (no agent, a bare shell) and `gone`.
@@ -106,7 +149,7 @@ Set `notes = false` in `~/.config/herdr-core/config.toml`. With notes on, hc typ
 
 ### OMP identity, goal and approval records
 
-The extension writes `<stateDir>/sessions/<encodeURIComponent(id)>.json`, preferring `HC_TERMINAL_ID` over `HERDR_PANE_ID`. Its schema is `paneId`, `role`, `sessionId`, optional `sessionFile`, `cwd`, `pid`, `startedAt`, `updatedAt`, `goal: {status, objective?}`, `approvalPending` and optional `agentStatus: idle|working` for compatibility with earlier records. `stateDir` follows `DORI_STATE_DIR`, then the `DORI_CONFIG` file's value, then `~/.dori/state`. Production callers pass that configured `stateDir` explicitly to enable OMP refinement. Runtime instances without it preserve native behavior and do not read operator config or extension state.
+The extension writes `<stateDir>/sessions/<encodeURIComponent(id)>.json`, preferring `HC_TERMINAL_ID` over `HERDR_PANE_ID` over `TERN_PANE`. Its schema is `paneId`, `role`, `sessionId`, optional `sessionFile`, `cwd`, `pid`, `startedAt`, `updatedAt`, `goal: {status, objective?}`, `approvalPending` and optional `agentStatus: idle|working` for compatibility with earlier records. `stateDir` follows `DORI_STATE_DIR`, then the `DORI_CONFIG` file's value, then `~/.dori/state`. Production callers pass that configured `stateDir` explicitly to enable OMP refinement. Runtime instances without it preserve native behavior and do not read operator config or extension state.
 
 Both adapters attest the writer against the live terminal root, process ancestry, foreground and process start time before trusting a record. Missing, malformed, reused-pid, foreign or changing OMP identity stays unknown; an open approval becomes blocked even for force/submit-only delivery. Session IDs and files therefore come from the live OMP writer rather than an unrelated newest transcript. Linux process lookup and OMP's temp-relative, home-relative and absolute session-directory forms are preserved.
 
@@ -141,17 +184,17 @@ Only one duty loop runs per home, whatever the runtime: it takes `duty/lock` und
 
 `dori harness send`, `dori harness role` and `dori harness inbox` take a session in several forms:
 
-- `herdr:w1:p3` or `hc:t7`, with the runtime spelled out;
+- `herdr:w1:p3`, `hc:t7` or `tern:42`, with the runtime spelled out;
 - a bare `w1:p3`, which is a herdr pane;
 - `lead` or `duty`;
 - a lane key.
 
-A bare `t7` is not a ref, because `t7` is a legal lane key: a lane named `t7` is that lane. Stored roles and inbox file names keep herdr refs bare and prefix every other runtime (`hc:t7`), so files written before runtimes existed still match.
+A bare `t7` or `42` is not a ref, because both are legal lane keys: a lane named `t7` is that lane. Stored roles and inbox file names keep herdr refs bare and prefix every other runtime (`hc:t7`, `tern:42`; inbox files `hc--t7.jsonl`, `tern--42.jsonl`), so files written before runtimes existed still match.
 
 ## Migrating sessions
 
 ```text
-dori harness migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run] [--wait-minutes N] [--resume]
+dori harness migrate [--to hc|herdr|tern] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run] [--wait-minutes N] [--resume]
 ```
 
 `--to` defaults to the selected runtime. `--all` takes every open lane, then lead and duty, then the duty loop and the hourly loop. For each agent session the steps are:
@@ -159,7 +202,7 @@ dori harness migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hour
 1. Hold. A journal is created at `DORI_HOME/migrate/<name>.json` and the lane is marked as migrating, so the duty loop neither nudges it nor flushes its inbox.
 2. Checkpoint. The agent is asked to write a handoff checkpoint (goal, open todos, last state) to `briefs/<name>.handoff.md` and stop. Dori waits until it stops working, up to `--wait-minutes` (default 10). A `blocked` agent is asked nothing.
 3. Capture. A handoff brief `briefs/<name>.migrate-<time>.md` is written: the original brief, a `## Handoff` section with the last 20 lane log entries, the checkpoint, the last 80 screen lines and the queued messages, then the lane rules.
-4. Open. The replacement opens on the target, in this home's group on hc or a new `dori` workspace on herdr, with the agent started on the handoff brief.
+4. Open. The replacement opens on the target, in this home's group on hc, a new `dori` workspace on herdr or the caller's own Tern session (else one named `dori`) on tern, with the agent started on the handoff brief.
 5. Verify. The replacement must report `idle` or `working` within 3 minutes.
 6. Move the inbox. A forward marker on the old inbox names the new session, and the old entries are merged into the new inbox. Queued entries stay queued, held entries stay held, and an entry that was typed but never submitted becomes held.
 7. Switch. The lane or role record points at the new session, and the lane keeps the old ref in `migratedFrom`.
@@ -254,9 +297,13 @@ Use `dori launch … --runtime headless` or set `"laneRuntime": "headless"` in t
 - Native remote and headless sockets require macOS or Linux. Do not enable remote control on an untrusted machine or share a control link as a substitute for granting a specific operation.
 - No window layout on hc. The lead, duty and the loops are separate terminals; open them with `hc attach <t>`.
 - hc on Windows is untested here.
+- Tern: no agent prompt call and no status words. Delivery types into the block, and its submit is confirmed only for OMP's classic input; see [Delivery](#delivery). CI has no Tern binary, so the adapter is tested against a recorder and checked by hand against a real Tern.
+- Tern: the extension's Discord routes for a lane's own session (owner chat delivered to the lane and automatic ASK forms) find that session through `HC_TERMINAL_ID` or `HERDR_PANE_ID` only, so they stay off for a lane in a Tern block.
 
 ## Tests
 
 These are test entrypoints, not a claim that they passed for any particular release. `bun test ./test/runtime-omp.test.ts ./test/runtime-omp-typed.test.ts` exercises process-bound identity, approvals and typed delivery on fake herdr/hc. Skill `test/omp-session.test.ts`/`test/omp-pause.test.ts` cover OMP session/native goal contracts; extension `test/status.test.ts` asserts HC status frames and role-removal invalidation, and `test/monitor-state.test.ts` asserts the desired monitor manifest. Full `bun test ./test/` includes both adapters against recorders. Real-server fixture tests are `test/e2e.test.ts` (isolated `herdr --session`), `test/e2e-hc.test.ts` (isolated `HC_SESSION`/XDG and an OSC fixture), and `test/e2e-migrate.test.ts` (herdr to hc); each skips without its binary. Fixture tests do not establish real OMP/provider or messenger behavior.
+
+The tern adapter runs against its own recorder (`test/fake-tern.ts`) in `test/runtime-tern.test.ts`, `test/runtime-tern-deliver.test.ts` and `test/runtime-tern-screen.test.ts`; no real-Tern fixture test exists.
 
 The Dori extension appends compact guidance to root Dori and lane prompts when that block is absent, without rewriting incoming blocks or changing permissions. It leaves plain and child sessions unchanged and keeps lane bookkeeping scoped to GPT-6.1 Sol. `extension/test/role-invariants.test.ts` exercises the native prompt hook before and after inserting a synthetic compaction entry into an in-memory session; it does not run live compaction or call a model.

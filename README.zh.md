@@ -121,6 +121,7 @@ Cataly 是项目名称。现有的 `dori`、`omp-dori` 和 `omp` 命令、
 
 请先安装 git、Bun 1.4.4+，以及 herdr 或 hc；详情见
 [源码版前提条件](docs/releases.md#current-source-bundle)。
+源码 `main` 还提供第三种会话运行时 Tern；详见 [Tern](docs/runtime.md#tern)。
 
 请使用独立的检出目录，不要使用正在运行的安装或已冻结的用户发行版：
 

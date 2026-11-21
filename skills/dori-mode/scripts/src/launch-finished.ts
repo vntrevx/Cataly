@@ -1,6 +1,7 @@
 import type { Runtimes } from "../../../../src/runtime/registry.ts";
 import { isKind } from "../../../../src/runtime/hc/exec.ts";
 import { reasonOf, ToolError } from "../../../../src/runtime/herdr/exec.ts";
+import { isMissing } from "../../../../src/runtime/tern/exec.ts";
 import type { SessionRef } from "../../../../src/runtime/types.ts";
 import { finished } from "./boot-monitors.ts";
 import type { FlowDeps } from "./done-flow.ts";
@@ -36,6 +37,7 @@ export const goalShown = (screen: string, marker: string): boolean =>
 
 const missingSession = (ref: SessionRef, error: unknown): boolean =>
   isKind(error, "not_found") ||
+  isMissing(error) ||
   (ref.runtime === "herdr" && error instanceof ToolError && /not.?found/i.test(reasonOf(error)));
 
 export const launchFinished = async (deps: FlowDeps, launched: Lane): Promise<boolean> => {

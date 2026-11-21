@@ -39,13 +39,14 @@ export async function startLane(
   await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
 
   // The group is the caller's own when it runs in a session of the selected runtime (a lane opened from the lead's
-  // workspace stays there); otherwise herdr gets a new "dori" workspace and hc this home's group label.
+  // workspace stays there); otherwise herdr gets a new "dori" workspace, hc this home's group label and tern a session
+  // named "dori".
   const rt = d.runtimes.default;
   const self = d.runtimes.selfAny(process.env);
   const group =
     opts.group ??
     (self?.runtime === rt.kind ? self.group : undefined) ??
-    (rt.kind === "herdr" ? await rt.createGroup("dori", cwd) : groupId(d.store.root));
+    (rt.kind === "hc" ? groupId(d.store.root) : await rt.createGroup("dori", cwd));
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
   const ref = await openSession(
     rt,

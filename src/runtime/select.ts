@@ -2,7 +2,8 @@ import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { TerminalRuntimeKind } from "./types.ts";
 
-export type RuntimeSource = "env" | "config" | "detect:HC_TERMINAL_ID" | "detect:HERDR_PANE_ID" | "detect:path";
+export type RuntimeSource =
+  "env" | "config" | "detect:HC_TERMINAL_ID" | "detect:HERDR_PANE_ID" | "detect:TERN_PANE" | "detect:path";
 export type RuntimeChoice = { readonly kind: TerminalRuntimeKind; readonly source: RuntimeSource };
 
 /** No runtime could be chosen; the message is the one-line fix. */
@@ -11,8 +12,9 @@ export class RuntimeChoiceError extends Error {}
 export class ConfigError extends Error {}
 
 // A record keyed by kind, so a new RuntimeKind cannot be left out here. Key order is not a preference: PATH detection
-// asks for hc first, then herdr, whatever order the keys or the PATH entries have.
-const KIND_SET: Readonly<Record<TerminalRuntimeKind, true>> = { herdr: true, hc: true };
+// asks for hc first, then herdr, then tern, whatever order the keys or the PATH entries have.
+const KIND_SET: Readonly<Record<TerminalRuntimeKind, true>> = { herdr: true, hc: true, tern: true };
+const ONE_OF = '"herdr", "hc" or "tern"';
 const KINDS = Object.keys(KIND_SET) as TerminalRuntimeKind[];
 const isKind = (value: unknown): value is TerminalRuntimeKind => KINDS.some((k) => k === value);
 
@@ -47,8 +49,7 @@ function configRuntime(configPath: string): TerminalRuntimeKind | undefined {
     throw new ConfigError(`${configPath} must hold a JSON object`);
   if (!("runtime" in parsed)) return undefined;
   const value: unknown = parsed.runtime;
-  if (!isKind(value))
-    throw new ConfigError(`${configPath}: "runtime" must be "herdr" or "hc", got ${JSON.stringify(value)}`);
+  if (!isKind(value)) throw new ConfigError(`${configPath}: "runtime" must be ${ONE_OF}, got ${JSON.stringify(value)}`);
   return value;
 }
 
@@ -60,7 +61,9 @@ function onPath(pathVar: string | undefined, exists: (path: string) => boolean):
 /**
  * Which runtime new sessions open on, and why. Precedence: `DORI_RUNTIME` > the config file's `runtime` key >
  * `HC_TERMINAL_ID` (inside an hc terminal) > `HERDR_PANE_ID` (inside a herdr pane) > the runtime binaries on PATH: hc
- * (herdr-core) when it is installed, else herdr. Neither binary, with nothing else set, is refused with the fix in one line.
+ * (herdr-core) when it is installed, else herdr > `TERN_PANE` (inside a Tern block) > tern on PATH. Tern comes last
+ * because it is a terminal people also run hc or herdr in: whoever has one of those keeps it. None of the three, with
+ * nothing else set, is refused with the fix in one line.
  */
 export function readRuntimeChoice(options: {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -70,7 +73,7 @@ export function readRuntimeChoice(options: {
   const { env, configPath } = options;
   const fromEnv = nonEmpty(env["DORI_RUNTIME"]);
   if (fromEnv !== undefined) {
-    if (!isKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
+    if (!isKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be ${ONE_OF}, got ${JSON.stringify(fromEnv)}`);
     return { kind: fromEnv, source: "env" };
   }
   const fromConfig = configRuntime(configPath);
@@ -80,7 +83,9 @@ export function readRuntimeChoice(options: {
   const found = onPath(env["PATH"], options.exists ?? isExecutableFile);
   if (found.includes("hc")) return { kind: "hc", source: "detect:path" };
   if (found.includes("herdr")) return { kind: "herdr", source: "detect:path" };
+  if (nonEmpty(env["TERN_PANE"]) !== undefined) return { kind: "tern", source: "detect:TERN_PANE" };
+  if (found.includes("tern")) return { kind: "tern", source: "detect:path" };
   throw new RuntimeChoiceError(
-    `neither herdr nor hc is on PATH: install hc (herdr-core) or herdr, or set "runtime": "herdr" or "hc" in ${configPath}, or DORI_RUNTIME`,
+    `none of herdr, hc or tern is on PATH: install hc (herdr-core), herdr or Tern, or set "runtime": ${ONE_OF} in ${configPath}, or DORI_RUNTIME`,
   );
 }

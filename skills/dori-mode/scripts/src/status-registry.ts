@@ -39,6 +39,7 @@ const readable = (lane: Lane): boolean => {
       ref.id.length > 0 &&
       (ref.runtime === "herdr" ||
         ref.runtime === "hc" ||
+        ref.runtime === "tern" ||
         (ref.runtime === "headless" && HEADLESS_ADDRESS.test(ref.id) && ref.container === undefined)) &&
       (ref.container === undefined || typeof ref.container === "string"))
   );
