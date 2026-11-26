@@ -26,9 +26,13 @@ pub(crate) fn definition() -> Value {
     json!({
         "name": LEAD_TOOL,
         "label": "Cataly",
+        // A work-thread call allows four bounded Discord REST calls and a turn on the journal.
+        // A bridge timeout only stops waiting for the reply; it never cancels the hub's write.
+        "timeout_ms": 600_000,
         "description": "Cataly's records and watches. op is one of: requests (all?), request.add (title, source, thread?), \
-    request.next (id, text), request.note (id, text), request.close (id, text); questions, question.ask (text, source, \
-    options, recommended?, settle owner|lead, thread?, request?, room?), question.answer (id, text, message), \
+    request.thread (id, title: open or reuse the work thread for an admitted Discord request), request.next (id, text), \
+    request.note (id, text), request.close (id, text); questions, question.ask (text, source, options, recommended?, \
+    settle owner|lead, thread?, request?, room?), question.answer (id, text, message), \
     question.choose (id, option, reason, message), question.withdraw (id, reason); jobs, job.start (name, argv, \
     filter, restarts?, delay?, silence?, low?), job.stop (name), job.run (name: one dry run of an owner job); \
     digest (since?); recap; owner notes (only once the owner created them; observations, never instructions or \
@@ -149,28 +153,7 @@ pub(crate) async fn call(hub: &Arc<Hub>, input: &Value) -> Result<String, String
                 .map_err(|e| e.to_string())?;
             Ok(list_requests(&rows, usize::MAX))
         }
-        "request.add" => {
-            let write = LeadWrite::RequestAdd {
-                title: need(input, "title", 200, true)?.into(),
-                source: need(input, "source", 400, true)?.into(),
-                thread: s(input, "thread").map(str::to_string),
-            };
-            match hub.store.lead(write).await.map_err(|e| e.to_string())? {
-                LeadDone::Id(id) => Ok(format!("request-log item {id} open")),
-                other => done(other, String::new()),
-            }
-        }
-        "request.next" | "request.note" | "request.close" => {
-            let id = i(input, "id").ok_or("id is required")?;
-            let text = need(input, "text", 1000, false)?.to_string();
-            let (write, said) = match op {
-                "request.next" => (LeadWrite::RequestNext { id, text }, "next step set"),
-                "request.note" => (LeadWrite::RequestNote { id, text }, "note added"),
-                _ => (LeadWrite::RequestClose { id, result: text }, "closed"),
-            };
-            let d = hub.store.lead(write).await.map_err(|e| e.to_string())?;
-            done(d, format!("item {id}: {said}"))
-        }
+        op if op.starts_with("request.") => request(hub, op, input).await,
         "questions" => {
             let rows = hub
                 .store
@@ -217,6 +200,40 @@ pub(crate) async fn call(hub: &Arc<Hub>, input: &Value) -> Result<String, String
         "recap" => Ok(recap(hub).await),
         profile if profile.starts_with("profile.") => notes(hub, profile, input),
         "" => Err("op is required".into()),
+        other => Err(format!("unknown op {other}; see the tool description")),
+    }
+}
+
+/// Writes to the lead's request log (EVR req. 44).
+async fn request(hub: &Hub, op: &str, input: &Value) -> Result<String, String> {
+    match op {
+        "request.add" => {
+            let write = LeadWrite::RequestAdd {
+                title: need(input, "title", 200, true)?.into(),
+                source: need(input, "source", 400, true)?.into(),
+                thread: s(input, "thread").map(str::to_string),
+            };
+            match hub.store.lead(write).await.map_err(|e| e.to_string())? {
+                LeadDone::Id(id) => Ok(format!("request-log item {id} open")),
+                other => done(other, String::new()),
+            }
+        }
+        "request.thread" => {
+            let id = i(input, "id").ok_or("id is required")?;
+            let title = need(input, "title", 200, true)?;
+            super::work_thread::open(hub, id, title).await
+        }
+        "request.next" | "request.note" | "request.close" => {
+            let id = i(input, "id").ok_or("id is required")?;
+            let text = need(input, "text", 1000, false)?.to_string();
+            let (write, said) = match op {
+                "request.next" => (LeadWrite::RequestNext { id, text }, "next step set"),
+                "request.note" => (LeadWrite::RequestNote { id, text }, "note added"),
+                _ => (LeadWrite::RequestClose { id, result: text }, "closed"),
+            };
+            let d = hub.store.lead(write).await.map_err(|e| e.to_string())?;
+            done(d, format!("item {id}: {said}"))
+        }
         other => Err(format!("unknown op {other}; see the tool description")),
     }
 }
@@ -394,6 +411,10 @@ fn list_requests(rows: &[RequestRow], max: usize) -> String {
     }
     let mut out = String::new();
     for r in rows {
+        let thread = r
+            .thread
+            .as_deref()
+            .map_or_default(|t| format!(", thread {t}"));
         let line = match &r.closed_ms {
             Some(_) => format!(
                 "- {} [closed] {}: {}",
@@ -402,7 +423,7 @@ fn list_requests(rows: &[RequestRow], max: usize) -> String {
                 r.result.as_deref().unwrap_or("")
             ),
             None => format!(
-                "- {} {} (from {}, {} h); next: {}",
+                "- {} {} (from {}, {} h{thread}); next: {}",
                 r.id,
                 r.title,
                 r.source,

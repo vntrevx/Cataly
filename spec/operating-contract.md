@@ -165,8 +165,9 @@ Verdict count: KEEP 67, SIMPLIFY 21, DROP 5.
     lead as owner. Hand-back reverses this and restores the worker's saved session.
 17. When the daemon's capacity check fails, the launch is queued, and the lead tells the owner the reason and the
     condition for starting.
-18. A thread is created when a worker is launched or when the lead marks a request as substantive. Quick answers stay
-    where the question was asked.
+18. A thread is created when a worker is launched or when the lead marks an admitted Discord request as
+    substantive with `request.thread`. For lead-owned work this happens before execution or the first owner
+    decision. A request already in a watched thread uses that thread; quick answers stay where they were asked.
 19. The daemon sets the thread title prefix to a working, waiting or done word from lane state, keeps one edited
     status line with elapsed time, and archives the thread on close. An owner message in an archived thread
     unarchives it and marks it working.

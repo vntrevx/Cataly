@@ -198,8 +198,12 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 ### Request log (EVR-25)
 
 44. The lead adds an item for each owner request: title (one line, 1 to 200), source reference (1 to 400), optional
-    thread. It then sets the next step (replaces, 1 to 1000), appends notes (1 to 1000), and closes the item with a
-    result (1 to 1000). Changing a closed item is refused. Listing shows open or all items.
+    thread. For an admitted Discord request the lead can open and bind a work thread with `request.thread`.
+    It uses the owner message that opened the item, never a separate model-supplied destination. Intake records
+    admission on the request itself so regular relay retention does not erase it. A confirmed binding is reused
+    rather than recreated; a conflicting binding or a closed item is refused. The lead then
+    sets the next step (replaces, 1 to 1000), appends notes (1 to 1000), and closes the item with a result
+    (1 to 1000). Changing a closed item is refused. Listing shows open or all items.
 
 ### Learned rules (EVR-27)
 

@@ -14,6 +14,7 @@ mod to_lead;
 mod tool;
 #[cfg(feature = "voice")]
 pub(crate) mod voice;
+mod work_thread;
 
 use std::path::Path;
 use std::process::ExitCode;

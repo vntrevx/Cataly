@@ -14,7 +14,7 @@ struct Migration {
     additive: bool,
 }
 
-const MIGRATIONS: [Migration; 9] = [
+const MIGRATIONS: [Migration; 10] = [
     Migration {
         sql: include_str!("migrations/0001_init.sql"),
         additive: false,
@@ -49,6 +49,10 @@ const MIGRATIONS: [Migration; 9] = [
     },
     Migration {
         sql: include_str!("migrations/0009_receipt_sessions.sql"),
+        additive: true,
+    },
+    Migration {
+        sql: include_str!("migrations/0010_request_admission.sql"),
         additive: true,
     },
 ];
@@ -161,6 +165,40 @@ mod tests {
         conn.execute_batch("UPDATE meta SET value = '1' WHERE key = 'min_reader';")
             .unwrap();
         migrate(&mut conn, &dir.join("backup")).unwrap();
+    }
+
+    #[test]
+    fn legacy_work_request_admission_survives_handoff_retention() {
+        let dir = scratch("schema-admission");
+        let mut conn = Connection::open(dir.join("s.db")).unwrap();
+        for migration in MIGRATIONS.iter().take(9) {
+            conn.execute_batch(migration.sql).unwrap();
+        }
+        conn.execute_batch(
+            "PRAGMA user_version = 9;
+             INSERT INTO requests (id, title, source, created_ms, updated_ms)
+                 VALUES (1, 'confirmed', 'discord:1:2', 1, 1),
+                        (2, 'manual', 'discord:1:3', 1, 1);
+             INSERT INTO handoffs (relay, room, message, seq, target, request_id, digest,
+                                    state, answer, created_ms, updated_ms)
+                 VALUES ('discord', '1', '2', 2, 'lead', 'discord:1:2', 'digest',
+                         'delivered', 'posted', 1, 1);
+             INSERT INTO positions (relay, room, position, updated_ms)
+                 VALUES ('discord', '1', 2, 1);",
+        )
+        .unwrap();
+
+        let backup = dir.join("backup");
+        migrate(&mut conn, &backup).unwrap();
+        let tx = conn.transaction().unwrap();
+        super::super::relay::maintain(&tx, 8 * 24 * 60 * 60 * 1000).unwrap();
+        tx.commit().unwrap();
+
+        assert!(backup.join("cataly-v9.db").exists());
+        let reads = super::super::Reads(conn);
+        assert!(reads.handoff("discord", "1", "2").unwrap().is_none());
+        assert!(reads.request(1).unwrap().unwrap().admitted);
+        assert!(!reads.request(2).unwrap().unwrap().admitted);
     }
 
     #[test]

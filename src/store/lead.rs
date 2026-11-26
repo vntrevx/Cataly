@@ -24,6 +24,9 @@ pub(crate) struct RequestRow {
     pub(crate) result: Option<String>,
     pub(crate) created_ms: i64,
     pub(crate) closed_ms: Option<i64>,
+    /// Set by intake, never by the lead's records tool.
+    #[serde(skip)]
+    pub(crate) admitted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -68,6 +71,10 @@ pub(crate) enum LeadWrite {
         title: String,
         source: String,
         thread: Option<String>,
+    },
+    RequestThread {
+        id: i64,
+        thread: String,
     },
     RequestNext {
         id: i64,
@@ -150,7 +157,8 @@ pub(crate) fn open_request(
         .unwrap_or("(no text)");
     let title: String = first.trim().chars().take(200).collect();
     tx.execute(
-        "INSERT OR IGNORE INTO requests (title, source, created_ms, updated_ms) VALUES (?1, ?2, ?3, ?3)",
+        "INSERT INTO requests (title, source, created_ms, updated_ms, admitted) \
+         VALUES (?1, ?2, ?3, ?3, 1) ON CONFLICT (source) DO UPDATE SET admitted = 1",
         params![title, source, now],
     )
     .map(drop)
@@ -182,6 +190,14 @@ pub(crate) fn write(tx: &Transaction<'_>, w: &LeadWrite, now: i64) -> rusqlite::
                 r.get(0)
             })?)
         }
+        LeadWrite::RequestThread { id, thread } => changed_or(
+            tx.execute(
+                "UPDATE requests SET thread = ?2, updated_ms = ?3 WHERE id = ?1 \
+                 AND closed_ms IS NULL AND (thread IS NULL OR thread = ?2)",
+                params![id, thread, now],
+            )?,
+            "the request closed or already has another work thread",
+        ),
         LeadWrite::RequestNext { id, text } => changed_or(
             tx.execute(
                 "UPDATE requests SET next = ?2, updated_ms = ?3 WHERE id = ?1 AND closed_ms IS NULL",
@@ -314,7 +330,7 @@ fn note(tx: &Transaction<'_>, id: i64, text: &str, now: i64) -> rusqlite::Result
 }
 
 const REQUEST_COLUMNS: &str =
-    "id, title, source, thread, next, notes, result, created_ms, closed_ms";
+    "id, title, source, thread, next, notes, result, created_ms, closed_ms, admitted";
 const QUESTION_COLUMNS: &str = "id, text, source, thread, options, recommended, lead_may, request, \
      room, message, state, outcome, created_ms";
 
@@ -329,6 +345,7 @@ fn request_of(r: &Row<'_>) -> rusqlite::Result<RequestRow> {
         result: r.get(6)?,
         created_ms: r.get(7)?,
         closed_ms: r.get(8)?,
+        admitted: r.get(9)?,
     })
 }
 
@@ -363,6 +380,11 @@ impl Reads {
             format!("SELECT {REQUEST_COLUMNS} FROM requests {filter} ORDER BY id DESC LIMIT 200");
         let mut stmt = self.0.prepare(&sql)?;
         stmt.query_map([], request_of)?.collect()
+    }
+
+    pub(crate) fn request(&self, id: i64) -> rusqlite::Result<Option<RequestRow>> {
+        let sql = format!("SELECT {REQUEST_COLUMNS} FROM requests WHERE id = ?1");
+        self.0.query_row(&sql, [id], request_of).optional()
     }
 
     pub(crate) fn questions(&self, open_only: bool) -> rusqlite::Result<Vec<QuestionRow>> {

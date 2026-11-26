@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The lead can open a Discord work thread on the original request before starting substantial work
+  or asking the owner for a decision, without launching a lane. Work already in a thread stays there.
+
 ## 0.2.3 (2026-11-27)
 
 - `cataly update` and `cataly rollback` no longer report a stopping hub as held. A hub that

@@ -151,10 +151,10 @@ impl DiscordThreads {
             .get("parent_id")
             .and_then(Value::as_str)
             .and_then(Snowflake::parse);
-        let Some(thread) = thread.filter(|_| parent == Some(room)) else {
+        let Some(thread) = thread.filter(|&t| t == message && parent == Some(room)) else {
             return Err((
                 true,
-                "Discord's answer named no thread under the source channel".into(),
+                "Discord's answer did not identify the thread on the source message".into(),
             ));
         };
         if config.lanes.thread_member {

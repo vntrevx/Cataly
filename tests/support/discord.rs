@@ -601,7 +601,6 @@ async fn answer(
     if let Some(r) = setup_route(&mut s, &method, &parts, &body) {
         return Ok(r);
     }
-    let unknown = json!({ "message": "Unknown Message", "code": 10008 });
     let response = match (method.as_str(), parts.as_slice()) {
         ("GET", ["applications", "@me"]) => reply(200, &application(&s)),
         ("GET", ["gateway"]) => {
@@ -640,22 +639,24 @@ async fn answer(
                 .collect();
             reply(200, &Value::Array(page))
         }
-        ("GET", ["channels", id, "messages", mid]) => {
-            match s
-                .history
-                .get(*id)
-                .and_then(|l| l.iter().find(|m| m["id"] == *mid).cloned())
-            {
-                Some(m) => reply(200, &m),
-                None => reply(404, &unknown),
-            }
+        ("GET", ["channels", id, "messages", mid]) => match s
+            .history
+            .get(*id)
+            .and_then(|l| l.iter().find(|m| m["id"] == *mid))
+        {
+            Some(m) => reply(200, m),
+            None => unknown_message(),
+        },
+        ("POST", ["channels", id, "messages", mid, "threads"]) => {
+            create_thread(&mut s, (id, mid), &body["name"])
         }
         ("POST", ["channels", id, "messages"]) => create(&mut s, id, &body),
         ("PATCH", ["channels", id, "messages", mid]) => edit_message(&mut s, id, mid, &body),
         (
             "PUT",
             ["channels", _, "messages", _, "reactions", _, "@me"]
-            | ["channels", _, "messages", "pins", _],
+            | ["channels", _, "messages", "pins", _]
+            | ["channels", _, "thread-members", _],
         ) => reply(204, &Value::Null),
         ("POST", ["channels", _, "typing"] | ["interactions", _, _, "callback"]) => {
             reply(204, &Value::Null)
@@ -674,6 +675,37 @@ fn decode(content_type: Option<&str>, bytes: &[u8]) -> (Value, Vec<(String, usiz
             Vec::new(),
         ),
     }
+}
+
+fn unknown_message() -> Response<Full<Bytes>> {
+    reply(404, &json!({"message": "Unknown Message", "code": 10_008}))
+}
+
+/// Discord permits one public thread per source message, with the message ID as its ID.
+fn create_thread(
+    s: &mut State,
+    (room, message): (&str, &str),
+    name: &Value,
+) -> Response<Full<Bytes>> {
+    if s.channels.contains_key(message) {
+        return reply(
+            400,
+            &json!({"code": 160_004, "message": "Thread already created"}),
+        );
+    }
+    let Some(source) = s
+        .history
+        .get_mut(room)
+        .and_then(|list| list.iter_mut().find(|m| m["id"] == message))
+    else {
+        return unknown_message();
+    };
+    let thread = json!({"id": message, "parent_id": room, "type": 11, "guild_id": GUILD,
+        "name": name, "thread_metadata": {"archived": false}});
+    source["thread"] = thread.clone();
+    s.channels.insert(message.to_string(), thread.clone());
+    s.threads.push(thread.clone());
+    reply(201, &thread)
 }
 
 /// A channel edit: a thread's name or archived flag.

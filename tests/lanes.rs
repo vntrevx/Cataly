@@ -966,6 +966,180 @@ fn lead_tool(bridge: &mut Bridge, session: &Value, call: &str, input: Value) -> 
     )
 }
 
+fn request_log_id(hub: &TestHub, b: &mut Bridge, session: &Value, source: &str) -> i64 {
+    let mut read = 0;
+    hub.until(WAIT, || {
+        read += 1;
+        let (requests, err) = lead_tool(
+            b,
+            session,
+            &format!("requests-{source}-{read}"),
+            json!({"op": "requests"}),
+        );
+        assert!(!err, "{requests}");
+        requests
+            .lines()
+            .find(|line| line.contains(source))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<i64>()
+            .ok()
+    })
+}
+
+fn discord_lead(fake: &FakeDiscord) -> (TestHub, Bridge, Value) {
+    let (mut hub, work) = lane_hub("");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    let token = hub.private_file("token", "fake-token");
+    fake.channel(CH, 0, None);
+    hub.write_config(&format!(
+        "{config}[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n{}",
+        work.display(),
+        fake.config(&token, OWNER, &[CH]),
+    ));
+    start(&mut hub);
+    let (bridge, meta) = lead_bridge(&hub);
+    hub.until(WAIT, || {
+        (hub.json(&["discord", "status", "--json"])["healthy"] == true).then_some(())
+    });
+    (hub, bridge, meta["session"].clone())
+}
+
+#[test]
+fn lead_cannot_open_a_work_thread_for_an_unadmitted_source() {
+    let fake = FakeDiscord::start();
+    let earlier = 800_000_000_000_000_080u64;
+    fake.put(FakeDiscord::message(CH, earlier, OWNER, "Old request"));
+    let (mut hub, mut b, session) = discord_lead(&fake);
+    let s = &session;
+    let old_source = format!("discord:{CH}:{earlier}");
+    let (_, err) = lead_tool(
+        &mut b,
+        s,
+        "manual-request",
+        json!({"op": "request.add", "title": "Old request", "source": old_source}),
+    );
+    assert!(!err);
+    let old_id = request_log_id(&hub, &mut b, s, &old_source);
+    let (refused, err) = lead_tool(
+        &mut b,
+        s,
+        "unadmitted-source",
+        json!({"op": "request.thread", "id": old_id.to_string(), "title": "Old request"}),
+    );
+    assert!(err && refused.contains("no retained proof"), "{refused}");
+    assert!(fake.calls("POST", "/threads").is_empty());
+    drop(b);
+    assert!(hub.stop().success());
+}
+
+/// OPC req. 18: the lead can mark its own substantive work, before it has a lane or asks a question.
+#[test]
+fn lead_opens_a_work_thread_before_asking_for_a_decision() {
+    let fake = FakeDiscord::start();
+    let (mut hub, mut b, session) = discord_lead(&fake);
+    let s = &session;
+
+    let message = 800_000_000_000_000_081u64;
+    let source = format!("discord:{CH}:{message}");
+    fake.say(FakeDiscord::message(
+        CH,
+        message,
+        OWNER,
+        "Prepare the release",
+    ));
+    let id = request_log_id(&hub, &mut b, s, &source);
+    assert!(
+        fake.calls("POST", "/threads").is_empty(),
+        "intake alone does not create a thread"
+    );
+
+    let mark =
+        json!({"op": "request.thread", "id": id.to_string(), "title": "Prepare the release"});
+    let thread = format!("discord:{message}");
+    let (opened, err) = lead_tool(&mut b, s, "open-work-thread", mark);
+    assert!(!err && opened.contains(&thread), "{opened}");
+    let creates = fake.calls("POST", "/threads");
+    assert_eq!(creates.len(), 1);
+    assert!(
+        creates[0]
+            .path
+            .ends_with(&format!("/channels/{CH}/messages/{message}/threads"))
+    );
+    assert_eq!(creates[0].body["name"], "Prepare the release");
+    let (again, err) = lead_tool(
+        &mut b,
+        s,
+        "reuse-work-thread",
+        json!({"op": "request.thread", "id": id.to_string(), "title": "A new title must not open another thread"}),
+    );
+    assert!(!err && again.contains(&thread), "{again}");
+    assert_eq!(fake.calls("POST", "/threads").len(), 1);
+
+    let (posted, err) = lead_tool(
+        &mut b,
+        s,
+        "work-question",
+        json!({
+            "op": "question.ask", "text": "Which release branch?", "source": source,
+            "options": ["stable", "next"], "request": id, "thread": thread, "room": message.to_string(),
+        }),
+    );
+    assert!(!err, "{posted}");
+    let room = message.to_string();
+    let questions: Vec<_> = fake
+        .bot_messages(&room)
+        .into_iter()
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|t| t.contains("Which release branch?"))
+        })
+        .collect();
+    assert_eq!(questions.len(), 1, "{posted}");
+
+    let answer_id = questions[0]["id"].as_str().unwrap().parse::<u64>().unwrap() + 1;
+    let mut reply = FakeDiscord::message(&room, answer_id, OWNER, "2");
+    reply["type"] = json!(19);
+    reply["message_reference"] = json!({"message_id": questions[0]["id"], "channel_id": room});
+    fake.say(reply);
+    let session_file = hub.json(&["lead", "status", "--json"])["session"]["session_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    hub.until(WAIT, || {
+        std::fs::read_to_string(&session_file)
+            .unwrap_or_default()
+            .contains("(Which release branch?): option 2 (next)")
+            .then_some(())
+    });
+
+    let follow_up = answer_id + 2;
+    fake.say(FakeDiscord::message(
+        &room,
+        follow_up,
+        OWNER,
+        "Also run the smoke tests",
+    ));
+    let id = request_log_id(&hub, &mut b, s, &format!("discord:{room}:{follow_up}"));
+    let (reused, err) = lead_tool(
+        &mut b,
+        s,
+        "continue-in-thread",
+        json!({"op": "request.thread", "id": id.to_string(), "title": "Run the smoke tests"}),
+    );
+    assert!(!err && reused.contains(&thread), "{reused}");
+    assert_eq!(fake.calls("POST", "/threads").len(), 1);
+    let follow_up_id = follow_up.to_string();
+    fake.wait(WAIT, |f| {
+        f.bot_messages(&room)
+            .into_iter()
+            .find(|m| m["message_reference"]["message_id"] == follow_up_id)
+    });
+    drop(b);
+    assert!(hub.stop().success());
+}
+
 /// Milestone 7 check 8: onboarding asks one consent question before reading anything (no tool is
 /// recorded before it), a "no" is stored and not asked again (also after a restart), and messenger
 /// writes from the lead (tool posts and `cataly` commands in its shell) are refused while it runs.
@@ -993,6 +1167,13 @@ fn onboarding_consent_is_stored_and_writes_wait() {
     // Writes wait while onboarding runs.
     let ask = json!({ "op": "question.ask", "text": "Which?", "source": "discord:1:2", "options": ["a", "b"] });
     let (why, err) = lead_tool(&mut b, &s, "o4", ask.clone());
+    assert!(err && why.contains("onboarding"), "{why}");
+    let (why, err) = lead_tool(
+        &mut b,
+        &s,
+        "onboarding-thread",
+        json!({"op": "request.thread", "id": "1", "title": "No Discord writes yet"}),
+    );
     assert!(err && why.contains("onboarding"), "{why}");
     let (why, err) = lead_tool(&mut b, &s, "o5", json!({ "op": "lane.open", "key": "k" }));
     assert!(err && why.contains("onboarding"), "{why}");

@@ -119,12 +119,19 @@ pub(crate) enum Caller {
     },
 }
 
+enum ThreadOwner<'a> {
+    Lane(&'a str),
+    Request(i64),
+}
+
 /// The lanes of this hub.
 pub(crate) struct Lanes<R: Runtime> {
     env: Env<R>,
     live: Mutex<HashMap<String, Arc<R::Session>>>,
     turns: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     opening: Mutex<Vec<String>>,
+    /// Serializes work-thread creation across lead requests and lane launches (DISC-OUT req. 58).
+    opening_thread: AsyncMutex<()>,
     /// Closes on threads are serialised so two last lanes cannot both skip the hook (LANE req. 42).
     closing: AsyncMutex<()>,
     overlay: OnceLock<PathBuf>,
@@ -177,6 +184,7 @@ impl<R: Runtime> Lanes<R> {
             live: Mutex::new(HashMap::new()),
             turns: Mutex::new(HashMap::new()),
             opening: Mutex::new(Vec::new()),
+            opening_thread: AsyncMutex::new(()),
             closing: AsyncMutex::new(()),
             overlay: OnceLock::new(),
             spend: Mutex::new(HashMap::new()),
@@ -1010,7 +1018,10 @@ impl<R: Runtime> Lanes<R> {
         let mut rec = Self::build(&valid, &config, crate::host::random_hex(8));
         self.tern_spend(&config, &rec).await?;
         if let Some(source) = thread_from {
-            rec.thread = Some(self.thread_for(&rec.key, &rec.title, &source).await?);
+            rec.thread = Some(
+                self.thread_for(ThreadOwner::Lane(&rec.key), &rec.title, &source)
+                    .await?,
+            );
         }
         if let Some(w) = &valid.worktree {
             git::add_worktree(&valid.cwd, &w.path, &w.branch, &w.base).await?;
@@ -1056,9 +1067,31 @@ impl<R: Runtime> Lanes<R> {
         Ok(outcome)
     }
 
-    /// A thread for the lane from the owner's message, journaled before the request (DISC-OUT
-    /// req. 53-57).
-    async fn thread_for(&self, key: &str, title: &str, source: &str) -> Result<String, String> {
+    pub(crate) async fn thread_for_request(
+        &self,
+        request: i64,
+        title: &str,
+        source: &str,
+    ) -> Result<String, String> {
+        self.thread_for(ThreadOwner::Request(request), title, source)
+            .await
+    }
+
+    /// A work thread from the owner's message, journaled before the request (DISC-OUT req. 53-58).
+    async fn thread_for(
+        &self,
+        owner: ThreadOwner<'_>,
+        title: &str,
+        source: &str,
+    ) -> Result<String, String> {
+        let _creation = tokio::time::timeout(TURN_WAIT, self.opening_thread.lock())
+            .await
+            .map_err(|_| "work thread journal is busy; this call created nothing")?;
+        let (key, prefix) = match owner {
+            ThreadOwner::Lane(key) => (key.to_string(), "[working] "),
+            // A lead request has a separate key space and no lane status lifecycle.
+            ThreadOwner::Request(id) => (format!("@request:{id}"), ""),
+        };
         let (room, message) = source
             .strip_prefix("discord:")
             .and_then(|r| r.split_once('/'))
@@ -1072,7 +1105,7 @@ impl<R: Runtime> Lanes<R> {
             .read(move |r| r.journal(&src))
             .await
             .map_err(|e| e.to_string())?;
-        let k = key.to_string();
+        let k = key.clone();
         if let Some(other) = self
             .env
             .store
@@ -1081,7 +1114,7 @@ impl<R: Runtime> Lanes<R> {
             .map_err(|e| e.to_string())?
             && other != source
         {
-            return Err("this lane already has a thread creation".into());
+            return Err("this work item already has a thread creation".into());
         }
         if let Some(j) = earlier {
             return match (j.state.as_str(), j.thread) {
@@ -1091,7 +1124,7 @@ impl<R: Runtime> Lanes<R> {
         }
         let journal = |state: &str, thread: Option<String>| LaneWrite::Journal {
             source: source.to_string(),
-            lane: key.to_string(),
+            lane: key.clone(),
             parent: room.to_string(),
             operation: fingerprint.clone(),
             state: state.to_string(),
@@ -1102,8 +1135,7 @@ impl<R: Runtime> Lanes<R> {
             .lanes(journal("pending", None))
             .await
             .map_err(|e| e.to_string())?;
-        let title = format!("[working] {title}");
-        let cut: String = title.chars().take(100).collect();
+        let cut: String = prefix.chars().chain(title.chars()).take(100).collect();
         match self.env.threads.create(room, message, &cut).await {
             Ok(thread) => {
                 self.env
