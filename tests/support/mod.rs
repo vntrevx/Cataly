@@ -30,9 +30,10 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_cataly");
 pub const ADMISSION: &str = "\n[jobs.test-admission]\nkind = \"pressure\"\nenabled = false\n\
     min_free_memory = 0\nmin_free_disk_gb = 0\nmax_sessions = 0\n";
 
-/// A hub sandbox: short root under /tmp (socket paths have a 103-byte limit on macOS).
+/// A hub sandbox under `/tmp`, with canonical fixture paths and a short socket path.
 pub struct TestHub {
     pub root: PathBuf,
+    runtime_dir: PathBuf,
     pub child: Option<Child>,
     /// Extra environment for the hub and CLI processes.
     pub env: Vec<(String, PathBuf)>,
@@ -41,17 +42,23 @@ pub struct TestHub {
 impl TestHub {
     pub fn new(config: &str) -> Self {
         static N: AtomicU32 = AtomicU32::new(0);
-        let root = PathBuf::from(format!(
-            "/tmp/cy-{}-{}",
+        let tmp = Path::new("/tmp");
+        let name = format!(
+            "cy-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let root = tmp.canonicalize().unwrap().join(&name);
+        // Socket limits count the supplied pathname, not the resolved target of `/tmp`.
+        let runtime_dir = tmp.join(name).join("run");
         let _ = std::fs::remove_dir_all(&root);
-        for dir in ["home", "config/cataly", "state", "run"] {
+        for dir in ["home", "config/cataly", "state"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
+        std::fs::create_dir_all(&runtime_dir).unwrap();
         let hub = Self {
             root,
+            runtime_dir,
             child: None,
             env: Vec::new(),
         };
@@ -63,8 +70,13 @@ impl TestHub {
         self.root.join("config/cataly/config.toml")
     }
 
+    /// The short spelling of the sandbox's `run` directory, used for `XDG_RUNTIME_DIR`.
+    pub(super) fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
+    }
+
     pub fn socket(&self) -> PathBuf {
-        self.root.join("run/cataly/hub.sock")
+        self.runtime_dir().join("cataly/hub.sock")
     }
 
     pub fn state(&self) -> PathBuf {
@@ -105,7 +117,7 @@ impl TestHub {
             .env("HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
-            .env("XDG_RUNTIME_DIR", self.root.join("run"));
+            .env("XDG_RUNTIME_DIR", self.runtime_dir());
         for (key, value) in &self.env {
             cmd.env(key, value);
         }

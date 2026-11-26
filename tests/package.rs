@@ -166,6 +166,19 @@ fn fake_manager(hub: &TestHub, name: &str, expect: &str, dir: &Path, builds: &[(
     executable(&hub.root.join("bin").join(name), &script);
 }
 
+/// Keep package operations away from the real user service manager.
+fn fake_service_manager(hub: &TestHub) {
+    let name = if cfg!(target_os = "macos") {
+        "launchctl"
+    } else {
+        "systemctl"
+    };
+    executable(
+        &hub.root.join("bin").join(name),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/manager.log\"\n",
+    );
+}
+
 fn run_with(hub: &TestHub, program: &Path, args: &[&str]) -> Output {
     with_env(hub, program)
         .env("PATH", fake_path(hub))
@@ -190,6 +203,7 @@ fn an_npm_install_updates_through_npm_and_restarts_the_hub() {
         github.base()
     ));
     trust_test_key(&mut hub);
+    fake_service_manager(&hub);
     let new = variant(&v2, false);
     github.publish(&format!("v{v2}"), release(&hub.root.join("r2"), &new, &v2));
     let prefix = hub.root.join("npm");
@@ -269,10 +283,7 @@ fn a_bun_install_updates_through_bun() {
     ));
     trust_test_key(&mut hub);
     hub.install_fake("omp");
-    executable(
-        &hub.root.join("bin/systemctl"),
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/manager.log\"\n",
-    );
+    fake_service_manager(&hub);
     let new = variant(&v2, false);
     github.publish(&format!("v{v2}"), release(&hub.root.join("r2"), &new, &v2));
     let home = hub.root.join("bun");
@@ -325,6 +336,16 @@ fn a_bun_install_updates_through_bun() {
         assert!(
             unit.contains(&format!("ExecStart={} hub\n", binary.display())),
             "{unit}"
+        );
+    } else if cfg!(target_os = "macos") {
+        let plist = std::fs::read_to_string(
+            hub.root
+                .join("home/Library/LaunchAgents/dev.cataly.hub.plist"),
+        )
+        .unwrap();
+        assert!(
+            plist.contains(&format!("<string>{}</string>", binary.display())),
+            "{plist}"
         );
     }
     std::fs::remove_file(root.join("service")).unwrap();

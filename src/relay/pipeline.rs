@@ -64,6 +64,31 @@ struct Live {
     row: Option<QueueRow>,
 }
 
+struct Publishing {
+    room: String,
+    message: String,
+    deferred: bool,
+}
+
+/// Releases a deferred room when the live timestamp is published, or on a duplicate or cancellation.
+struct PublishDone<'a> {
+    publishing: &'a Mutex<Option<Publishing>>,
+    wake: &'a Notify,
+}
+
+impl Drop for PublishDone<'_> {
+    fn drop(&mut self) {
+        let pending = self
+            .publishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if pending.is_some_and(|p| p.deferred) {
+            self.wake.notify_one();
+        }
+    }
+}
+
 /// The pipeline of one relay.
 pub(crate) struct Pipeline<R: Relay, T: Runtime> {
     pub(crate) relay: Arc<R>,
@@ -80,6 +105,9 @@ pub(crate) struct Pipeline<R: Relay, T: Runtime> {
     stuck: Mutex<HashSet<String>>,
     /// A failed seen mark is logged once per run (MSG-04).
     seen_failed: AtomicBool,
+    /// The live source awaits each arrival before reading the next one. The round can skip its
+    /// room until metadata is published and keep draining the other rooms.
+    publishing: Mutex<Option<Publishing>>,
     /// Live messages not handed off yet, by room and message.
     live: Mutex<HashMap<(String, String), Live>>,
     /// Frame read time of a wake still waiting for its turn to start.
@@ -111,6 +139,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             context: Context::default(),
             stuck: Mutex::default(),
             seen_failed: AtomicBool::new(false),
+            publishing: Mutex::new(None),
             live: Mutex::default(),
             wake: Mutex::new(None),
             wake_latency,
@@ -165,6 +194,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             raw: raw.clone(),
             created_ms: now_ms(),
         });
+        let mut publication = read_at.map(|_| self.begin_publication(&room, &message, wake));
         let write = RelayWrite::Arrive {
             relay: R::NAME.into(),
             room,
@@ -186,6 +216,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                             row: Some(row),
                         },
                     );
+                    drop(publication);
                     wake.notify_one();
                     return std::future::pending().await;
                 }
@@ -201,6 +232,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                         row: Some(row),
                     },
                 );
+                drop(publication.take());
                 wake.notify_one();
                 committed.await
             }
@@ -221,9 +253,51 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             arrived.as_ref().ok().copied(),
             read_at,
             early.is_some(),
-            wake,
         );
+        // In the early path the guard was dropped with the initial wake. Otherwise the round
+        // must see the timestamp before it can handle this committed row.
+        drop(publication);
+        if read_at.is_some() && early.is_none() && matches!(arrived, Ok(Arrived::Queued)) {
+            wake.notify_one();
+        }
         arrived.map_err(|e| e.to_string())
+    }
+
+    /// SQLite readers can see an arrival before the writer's reply resumes its live source.
+    fn begin_publication<'a>(
+        &'a self,
+        room: &str,
+        message: &str,
+        wake: &'a Notify,
+    ) -> PublishDone<'a> {
+        *self
+            .publishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Publishing {
+            room: room.to_string(),
+            message: message.to_string(),
+            deferred: false,
+        });
+        PublishDone {
+            publishing: &self.publishing,
+            wake,
+        }
+    }
+
+    /// Leaves this row and its room's later rows for the round woken by publication.
+    fn defer_publication(&self, row: &QueueRow) -> bool {
+        let mut publishing = self
+            .publishing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(pending) = publishing
+            .as_mut()
+            .filter(|p| p.room == row.room && p.message == row.message)
+        else {
+            return false;
+        };
+        pending.deferred = true;
+        true
     }
 
     /// Keeps a live message's entry in step with what its arrival became (`None`: the store
@@ -234,7 +308,6 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
         arrived: Option<Arrived>,
         read_at: Option<Instant>,
         early: bool,
-        wake: &Notify,
     ) {
         let mut live = self.live();
         match (arrived, read_at) {
@@ -252,8 +325,6 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                         row: None,
                     },
                 );
-                drop(live);
-                wake.notify_one();
             }
             // Not queued after all: a round that has not taken it never will.
             _ if early => {
@@ -316,6 +387,10 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             .collect();
         for row in queue {
             if blocked.contains(&row.room) {
+                continue;
+            }
+            if self.defer_publication(&row) {
+                blocked.insert(row.room);
                 continue;
             }
             let room = row.room.clone();
@@ -1077,7 +1152,130 @@ fn keep_only(stuck: &Mutex<HashSet<String>>, still: &HashSet<&str>) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::time::Duration;
+
     use super::*;
+    use crate::host::headless::Headless;
+    use crate::lanes;
+    use crate::omp::Omp;
+    use crate::relay::boards::ChatBoards;
+    use crate::relay::discord::intake::DiscordRelay;
+    use crate::relay::discord::threads::DiscordThreads;
+    use crate::relay::discord::{Rest, Snowflake};
+    use crate::relay::http::Base;
+    use crate::store::tests::open_temp;
+
+    fn pipeline(store: &Store, dir: &Path) -> Pipeline<DiscordRelay, Headless> {
+        let (_, config) = watch::channel(Arc::new(Config::default()));
+        let checks = config.borrow().outgoing.clone();
+        let events: Events = Arc::new(|_| ());
+        let omp = Omp::new();
+        let lead = Lead::new(crate::host::lead::Env {
+            config: config.clone(),
+            omp: Arc::clone(&omp),
+            quota_hold: Arc::new(|_| None),
+            bridge_link: Arc::new(|| Ok(())),
+            events: Arc::clone(&events),
+            store: store.clone(),
+            state_dir: dir.to_path_buf(),
+            make: Box::new(|_, _, _| unreachable!("draining rows needs no session")),
+        });
+        let lanes = lanes::Lanes::new(lanes::Env {
+            config: config.clone(),
+            omp,
+            store: store.clone(),
+            state_dir: dir.to_path_buf(),
+            events: Arc::clone(&events),
+            make: Box::new(|_, _, _| unreachable!("draining rows needs no session")),
+            quota_hold: Arc::new(|_| None),
+            bridge_link: Arc::new(|| Ok(())),
+            lead_live: Arc::new(|| false),
+            threads: Arc::new(DiscordThreads {
+                config: config.clone(),
+                rest: Arc::new(|_| Err("no thread calls expected".into())),
+            }),
+            boards: Arc::new(ChatBoards {
+                config: config.clone(),
+                config_file: dir.join("config.toml"),
+                store: store.clone(),
+            }),
+        });
+        let relay = DiscordRelay {
+            rest: Arc::new(
+                Rest::new(Base::parse("http://127.0.0.1").unwrap(), "test", None).unwrap(),
+            ),
+            bot: Snowflake::parse("1").unwrap(),
+            checks,
+        };
+        Pipeline::new(
+            Arc::new(relay),
+            Parts {
+                store: store.clone(),
+                lead,
+                lanes,
+                spill_dir: dir.to_path_buf(),
+                events,
+                config,
+            },
+            Latency::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn pending_duplicate_defers_only_its_room_and_wakes_it_in_order() {
+        let (store, writer, dir) = open_temp("relay-publication");
+        let pipeline = pipeline(&store, &dir);
+        let wake = Notify::new();
+        let arrive = |room: &str, seq: i64| RelayWrite::Arrive {
+            relay: "discord".into(),
+            room: room.into(),
+            message: seq.to_string(),
+            seq,
+            parent: None,
+            raw: "{}".into(),
+        };
+        for (room, seq) in [("a", 1), ("b", 2), ("a", 3)] {
+            assert_eq!(
+                store.relay(arrive(room, seq)).await.unwrap(),
+                RelayDone::Arrived(Arrived::Queued)
+            );
+        }
+        let drain = async || {
+            let mut handled = Vec::new();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                pipeline.drain(|row| {
+                    handled.push(row.seq);
+                    let pipeline = &pipeline;
+                    async move {
+                        pipeline.finish(&row.room, &row.message, None).await?;
+                        Ok(Step::Done)
+                    }
+                }),
+            )
+            .await
+            .expect("a pending publication must not stall the round")
+            .unwrap();
+            handled
+        };
+        // Hold the publication open while the source has not processed the duplicate's reply.
+        let publication = pipeline.begin_publication("a", "1", &wake);
+        let duplicate = store.relay_queued(arrive("a", 1)).await.unwrap();
+        assert_eq!(drain().await, [2]);
+        assert_eq!(
+            duplicate.await.unwrap(),
+            RelayDone::Arrived(Arrived::Duplicate)
+        );
+        drop(publication);
+        tokio::time::timeout(Duration::from_secs(2), wake.notified())
+            .await
+            .expect("the deferred room must wake without a new arrival");
+        assert_eq!(drain().await, [1, 3]);
+        drop(pipeline);
+        drop(store);
+        writer.join().unwrap().unwrap();
+    }
 
     #[test]
     fn stuck_deliveries_are_forgotten_once_settled() {

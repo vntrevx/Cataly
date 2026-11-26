@@ -170,9 +170,11 @@ fn usage(pid: u64) -> (u64, u64) {
 #[cfg(not(target_os = "linux"))]
 fn usage(pid: u64) -> (u64, u64) {
     let out = Command::new("ps")
-        .args(["-o", "rss=,time=", "-p", &pid.to_string()])
+        .args(["-o", "rss=", "-o", "time=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
         .output()
         .unwrap();
+    assert!(out.status.success(), "ps for OMP PID {pid}: {out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
     let mut words = text.split_whitespace();
     let rss = words.next().unwrap().parse().unwrap();
@@ -358,7 +360,8 @@ fn omp_argv(calls: &str, file: &Path) -> Vec<String> {
 fn without_bridge(hub: &TestHub, model: &FakeModel, argv: &[String]) -> (u64, u64, u64, u64, u64) {
     let input = typing(hub);
     let work = hub.root.join("work");
-    let out = Command::new(hub.root.join("bin/tern"))
+    let tern = hub.root.join("bin/tern");
+    let out = Command::new(&tern)
         .args([
             "new",
             "tab",
@@ -373,30 +376,23 @@ fn without_bridge(hub: &TestHub, model: &FakeModel, argv: &[String]) -> (u64, u6
         .env("HOME", hub.root.join("home"))
         .env("XDG_CONFIG_HOME", hub.root.join("config"))
         .env("XDG_STATE_HOME", hub.root.join("state"))
-        .env("XDG_RUNTIME_DIR", hub.root.join("run"))
+        .env("XDG_RUNTIME_DIR", hub.runtime_dir())
         .env("PI_CODING_AGENT_DIR", hub.root.join("agent"))
         .output()
         .unwrap();
+    assert!(out.status.success(), "opening the bare Tern block: {out:?}");
     let block: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let id = block["id"].as_str().unwrap();
     let mut input = input.join().unwrap();
-    let pidfile = hub.root.join(format!(
-        "bin/tern-data/block-{}.pid",
-        block["id"].as_str().unwrap()
-    ));
-    let pty: u64 = std::fs::read_to_string(pidfile)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    // The stand-in records the PTY program's PID separately from the wrapper's PID.
+    let pidfile = hub.root.join(format!("bin/tern-data/block-{id}.omp"));
     let pid: u64 = hub.until(WAIT, || {
-        let out = Command::new("ps")
-            .args(["-o", "pid=", "--ppid", &pty.to_string()])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+        let text = std::fs::read_to_string(&pidfile).ok()?;
+        text.trim().parse().ok()
     });
     let result = workload(pid, || typed_turns(hub, model, &mut input));
-    kill(pid);
+    let out = Command::new(&tern).args(["close", id]).output().unwrap();
+    assert!(out.status.success(), "closing the bare Tern block: {out:?}");
     result
 }
 

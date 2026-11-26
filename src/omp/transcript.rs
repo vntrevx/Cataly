@@ -1044,6 +1044,8 @@ mod tests {
         for dir in [state.clone(), state.join("sessions"), root.clone()] {
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         }
+        // The hub resolves its state directory before recording a transcript path.
+        let root = fs::canonicalize(root).unwrap();
         let id = "01a21383-7906-7055-a149-9cb73150b636";
         let stem = format!("2026-11-25T16-21-53-030Z_{id}");
         let file = root.join(format!("{stem}.jsonl"));
@@ -1080,6 +1082,14 @@ mod tests {
         let lane = |cwd: &Path| exact(&file, &root, id, &Folder::Exactly(cwd.to_path_buf()));
         assert_eq!(lane(&home).unwrap(), None, "a lane keeps its exact folder");
         assert!(lane(&work).unwrap().is_some());
+
+        let alias = artifacts.join(file.file_name().unwrap());
+        std::os::unix::fs::symlink(&file, &alias).unwrap();
+        assert_eq!(
+            exact(&alias, &root, id, &Folder::Recorded(home.clone())).unwrap(),
+            None,
+            "a transcript symlink is refused even when it points to the owned file"
+        );
 
         if rustix::process::getuid().as_raw() != 0 {
             write(Path::new("/"));

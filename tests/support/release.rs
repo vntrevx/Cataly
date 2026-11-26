@@ -209,7 +209,7 @@ pub fn with_env(hub: &TestHub, program: &Path) -> Command {
         .env("HOME", hub.root.join("home"))
         .env("XDG_CONFIG_HOME", hub.root.join("config"))
         .env("XDG_STATE_HOME", hub.root.join("state"))
-        .env("XDG_RUNTIME_DIR", hub.root.join("run"))
+        .env("XDG_RUNTIME_DIR", hub.runtime_dir())
         .stdin(Stdio::null());
     for (k, v) in &hub.env {
         cmd.env(k, v);

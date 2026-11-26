@@ -64,6 +64,15 @@ fn ready(hub: &TestHub, relays: &[&str]) {
     });
 }
 
+/// A relay can post an answer before the lead's idle readback has finished.
+fn lead_idle(hub: &TestHub) {
+    hub.until(WAIT, || {
+        let lead = hub.json(&["lead", "status", "--json"]);
+        (lead["session"]["status"] == "idle" && lead["sent"] == 0 && lead["waiting"] == 0)
+            .then_some(())
+    });
+}
+
 fn session_file(hub: &TestHub) -> PathBuf {
     let lead = hub.json(&["lead", "status", "--json"]);
     PathBuf::from(lead["session"]["session_file"].as_str().unwrap())
@@ -109,6 +118,7 @@ fn telegram_and_slack_requests_are_answered_in_place_with_seen_marks() {
     let mut hub = relay_hub(Some(&tg), Some(&slack), "");
     hub.start();
     ready(&hub, &["telegram", "slack"]);
+    lead_idle(&hub);
     tg.push(
         "message",
         FakeTelegram::message(11, FakeTelegram::dm(), 7, "hello from telegram"),
@@ -124,6 +134,12 @@ fn telegram_and_slack_requests_are_answered_in_place_with_seen_marks() {
     assert_eq!(marks.len(), 1, "one seen mark");
     assert_eq!(marks[0].body["message_id"], 11);
     assert_eq!(marks[0].body["reaction"][0]["emoji"], "\u{1F440}");
+    // A reply can arrive before its relay records the turn-start sample.
+    hub.until(WAIT, || {
+        let stats = hub.json(&["stats", "--json"]);
+        (stats["telegram_wake_latency"]["count"].as_u64()? >= 1).then_some(())
+    });
+    lead_idle(&hub);
     let ts = slack.say(DM, fake_slack::OWNER, "hello from slack", None);
     let posted = slack.wait(WAIT, |f| slack_posts_in(f, DM, &ts).pop());
     assert_eq!(posted.body["text"], "the answer");
@@ -131,12 +147,12 @@ fn telegram_and_slack_requests_are_answered_in_place_with_seen_marks() {
     assert_eq!(reactions.len(), 1, "one seen mark");
     assert_eq!(reactions[0].body["timestamp"], ts.as_str());
     assert_eq!(reactions[0].body["name"], "eyes");
-    assert!(
-        slack
-            .acks()
-            .iter()
-            .all(|(_, d)| *d < Duration::from_secs(3))
-    );
+    let acks = slack.wait(WAIT, |f| {
+        let acks = f.acks();
+        (!acks.is_empty()).then_some(acks)
+    });
+    assert_eq!(acks.len(), 1, "{acks:?}");
+    assert!(acks[0].1 < Duration::from_secs(3), "{acks:?}");
     let asked = requests(&hub, "[telegram 7/11]");
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert!(
@@ -151,8 +167,13 @@ fn telegram_and_slack_requests_are_answered_in_place_with_seen_marks() {
             (s["counts"]["owed_settled"] == 1 && s["counts"]["queued"] == 0).then_some(())
         });
     }
+    hub.until(WAIT, || {
+        let stats = hub.json(&["stats", "--json"]);
+        (stats["slack_wake_latency"]["count"].as_u64()? >= 1).then_some(())
+    });
     // An edit is delivered as kind "edit" labelled with the message it edits, and gets no seen
     // mark (TELE req. 26, MSG req. 6).
+    lead_idle(&hub);
     let mut edit = FakeTelegram::message(11, FakeTelegram::dm(), 7, "hello again, edited");
     edit["edit_date"] = json!(2_000_000_000);
     tg.push("edited_message", edit);
@@ -172,16 +193,17 @@ fn telegram_and_slack_requests_are_answered_in_place_with_seen_marks() {
     );
     // Its answer replies to the edited message.
     tg.wait(WAIT, |f| (tg_replies_to(f, 11).len() == 2).then_some(()));
-    let stats = hub.json(&["stats", "--json"]);
-    for key in [
-        "telegram_wake_latency",
-        "slack_wake_latency",
-        "telegram_receive_lag",
+    // The outbound reply can be visible before the relay records the turn-start sample.
+    let stats = hub.until(WAIT, || {
+        let stats = hub.json(&["stats", "--json"]);
+        (stats["telegram_wake_latency"]["count"].as_u64()? >= 2).then_some(stats)
+    });
+    for (key, count) in [
+        ("telegram_wake_latency", 2),
+        ("slack_wake_latency", 1),
+        ("telegram_receive_lag", 2),
     ] {
-        assert!(
-            stats[key]["count"].as_u64().unwrap_or(0) >= 1,
-            "{key}: {stats}"
-        );
+        assert_eq!(stats[key]["count"].as_u64(), Some(count), "{key}: {stats}");
         eprintln!("measure {key}: {}", stats[key]);
     }
     assert!(hub.stop().success());
