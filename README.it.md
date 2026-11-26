@@ -116,10 +116,10 @@ parlare con il lead in un canale vocale Discord.
 
 **Cataly 0.2.0 è un prodotto nuovo**
 
-Le pre-release OMP-Dori (v0.1.x) in questo repository e le versioni npm di `cataly`
+Le release precedenti alla v0.2.0 in questo repository e le versioni npm di `cataly`
 precedenti alla 0.2.0 sono un prodotto precedente e distinto. Da esse non viene
-ripreso nulla: aggiornare il pacchetto npm sostituisce il vecchio comando
-`dori-harness` con `cataly`. Esegui `cataly setup` per ripartire da zero.
+ripreso nulla: aggiornare il pacchetto npm sostituisce il vecchio comando con
+`cataly`. Esegui `cataly setup` per ripartire da zero.
 
 </td></tr></table>
 

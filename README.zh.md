@@ -88,7 +88,7 @@
 
 **Cataly 0.2.0 是一个新产品**
 
-本仓库中的 OMP-Dori 预发布版本（v0.1.x）以及 0.2.0 之前的 `cataly` npm 版本是一个更早的、独立的产品。它们的任何内容都不会被沿用：更新 npm 包会用 `cataly` 替换旧的 `dori-harness` 命令。运行 `cataly setup` 重新开始。
+本仓库中 v0.2.0 之前的发布版本以及 0.2.0 之前的 `cataly` npm 版本是一个更早的、独立的产品。它们的任何内容都不会被沿用：更新 npm 包会用 `cataly` 替换旧的命令。运行 `cataly setup` 重新开始。
 
 </td></tr></table>
 

@@ -112,10 +112,9 @@ turned on, you can also talk to the lead in a Discord voice channel.
 
 **Cataly 0.2.0 is a new product**
 
-The OMP-Dori pre-releases (v0.1.x) in this repository and `cataly` npm versions
-before 0.2.0 are an earlier, separate product. Nothing is carried over from them:
-updating the npm package replaces the old `dori-harness` command with `cataly`.
-Run `cataly setup` to start fresh.
+Releases before v0.2.0 in this repository and `cataly` npm versions before 0.2.0
+are an earlier, separate product. Nothing is carried over from them: updating the
+npm package replaces the old command with `cataly`. Run `cataly setup` to start fresh.
 
 </td></tr></table>
 

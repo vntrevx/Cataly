@@ -117,10 +117,10 @@ Lead sprechen.
 
 **Cataly 0.2.0 ist ein neues Produkt**
 
-Die OMP-Dori-Vorabversionen (v0.1.x) in diesem Repository und `cataly`-npm-Versionen
-vor 0.2.0 sind ein früheres, eigenständiges Produkt. Von ihnen wird nichts
-übernommen: Ein Update des npm-Pakets ersetzt den alten Befehl `dori-harness` durch
-`cataly`. Führe `cataly setup` aus, um neu zu beginnen.
+Releases vor v0.2.0 in diesem Repository und `cataly`-npm-Versionen vor 0.2.0 sind
+ein früheres, eigenständiges Produkt. Von ihnen wird nichts übernommen: Ein Update
+des npm-Pakets ersetzt den alten Befehl durch `cataly`. Führe `cataly setup` aus,
+um neu zu beginnen.
 
 </td></tr></table>
 
