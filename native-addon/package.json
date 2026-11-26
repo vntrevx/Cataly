@@ -1,8 +1,0 @@
-{
-  "name": "omp-cataly-native-addon",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": {
-    "@oh-my-pi/pi-natives": "19.0.1"
-  }
-}
