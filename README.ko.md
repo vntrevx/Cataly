@@ -20,7 +20,8 @@
   <a href="https://github.com/vntrevx/Cataly/releases/latest"><img alt="최신 릴리스" src="https://img.shields.io/github/v/release/vntrevx/Cataly?label=release&labelColor=2b2d33&color=c8102e"></a>
   <a href="https://www.npmjs.com/package/cataly"><img alt="npm" src="https://img.shields.io/npm/v/cataly?label=npm&labelColor=2b2d33&color=8b9099"></a>
   <a href="https://omp.sh"><img alt="OMP 19.1.1 이상" src="https://img.shields.io/badge/omp-%E2%89%A519.1.1-8b9099?labelColor=2b2d33"></a>
-  <a href="LICENSE"><img alt="라이선스: 상용" src="https://img.shields.io/badge/license-proprietary-8b9099?labelColor=2b2d33"></a>
+  <a href="LICENSE"><img alt="라이선스: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-8b9099?labelColor=2b2d33"></a>
+  <a href="https://github.com/vntrevx/cataly-core"><img alt="소스" src="https://img.shields.io/badge/source-cataly--core-8b9099?labelColor=2b2d33&logo=github"></a>
 </p>
 
 <p align="center">
@@ -181,7 +182,8 @@ Telegram과 Slack은 테스트는 통과했지만 실제 사용은 아직 적습
 
 ## 라이선스
 
-Cataly는 상용 소프트웨어입니다. [LICENSE](LICENSE)를 보세요. 라이선스 문의는
-[GitHub의 vntrevx](https://github.com/vntrevx)로 해주세요. Cataly는 별도로 설치하는
-[oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 위에서 돌아갑니다. 서드파티
-라이선스는 모든 릴리스의 `THIRD-PARTY-NOTICES.txt`에 들어 있습니다.
+Cataly는 [GNU AGPL 3.0](LICENSE) 오픈소스입니다. 소스는
+[vntrevx/cataly-core](https://github.com/vntrevx/cataly-core)에 있습니다. AGPL 의무 없이
+쓰고 싶다면 [vntrevx](https://github.com/vntrevx)에게 상용 라이선스를 문의해주세요.
+Cataly는 별도로 설치하는 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 위에서
+돌아갑니다. 서드파티 라이선스는 모든 릴리스의 `THIRD-PARTY-NOTICES.txt`에 들어 있습니다.

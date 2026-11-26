@@ -16,7 +16,8 @@
   <a href="https://github.com/vntrevx/Cataly/releases/latest"><img alt="最新リリース" src="https://img.shields.io/github/v/release/vntrevx/Cataly?label=release&labelColor=2b2d33&color=c8102e"></a>
   <a href="https://www.npmjs.com/package/cataly"><img alt="npm" src="https://img.shields.io/npm/v/cataly?label=npm&labelColor=2b2d33&color=8b9099"></a>
   <a href="https://omp.sh"><img alt="OMP 19.1.1 以降" src="https://img.shields.io/badge/omp-%E2%89%A519.1.1-8b9099?labelColor=2b2d33"></a>
-  <a href="LICENSE"><img alt="ライセンス：プロプライエタリ" src="https://img.shields.io/badge/license-proprietary-8b9099?labelColor=2b2d33"></a>
+  <a href="LICENSE"><img alt="ライセンス：AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-8b9099?labelColor=2b2d33"></a>
+  <a href="https://github.com/vntrevx/cataly-core"><img alt="ソース" src="https://img.shields.io/badge/source-cataly--core-8b9099?labelColor=2b2d33&logo=github"></a>
 </p>
 
 <p align="center">
@@ -151,4 +152,4 @@ cataly setup
 
 ## ライセンス
 
-Cataly はプロプライエタリソフトウェアです。[LICENSE](LICENSE) を参照してください。ライセンスに関するお問い合わせは [GitHub の vntrevx](https://github.com/vntrevx) までどうぞ。Cataly は別途インストールする [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 上で動作します。サードパーティのライセンスは、各リリースの `THIRD-PARTY-NOTICES.txt` に同梱されています。
+Cataly は [GNU AGPL 3.0](LICENSE) のオープンソースです。ソースは [vntrevx/cataly-core](https://github.com/vntrevx/cataly-core) にあります。AGPL の義務なしで使いたい場合は、[vntrevx](https://github.com/vntrevx) に商用ライセンスをお問い合わせください。Cataly は別途インストールする [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 上で動作します。サードパーティのライセンスは、各リリースの `THIRD-PARTY-NOTICES.txt` に同梱されています。

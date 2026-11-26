@@ -20,7 +20,8 @@
   <a href="https://github.com/vntrevx/Cataly/releases/latest"><img alt="Ultima release" src="https://img.shields.io/github/v/release/vntrevx/Cataly?label=release&labelColor=2b2d33&color=c8102e"></a>
   <a href="https://www.npmjs.com/package/cataly"><img alt="npm" src="https://img.shields.io/npm/v/cataly?label=npm&labelColor=2b2d33&color=8b9099"></a>
   <a href="https://omp.sh"><img alt="OMP 19.1.1 o successivo" src="https://img.shields.io/badge/omp-%E2%89%A519.1.1-8b9099?labelColor=2b2d33"></a>
-  <a href="LICENSE"><img alt="Licenza: proprietaria" src="https://img.shields.io/badge/license-proprietary-8b9099?labelColor=2b2d33"></a>
+  <a href="LICENSE"><img alt="Licenza: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-8b9099?labelColor=2b2d33"></a>
+  <a href="https://github.com/vntrevx/cataly-core"><img alt="Sorgente" src="https://img.shields.io/badge/source-cataly--core-8b9099?labelColor=2b2d33&logo=github"></a>
 </p>
 
 <p align="center">
@@ -191,7 +192,8 @@ includere token, ID e trascrizioni private nelle segnalazioni pubbliche.
 
 ## Licenza
 
-Cataly è software proprietario; vedi [LICENSE](LICENSE). Per le licenze, contatta
-[vntrevx su GitHub](https://github.com/vntrevx). Cataly gira su
-[oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi), installato separatamente.
+Cataly è open source sotto la [GNU AGPL 3.0](LICENSE); il sorgente è su
+[vntrevx/cataly-core](https://github.com/vntrevx/cataly-core). Licenze commerciali senza
+gli obblighi della AGPL sono disponibili da [vntrevx](https://github.com/vntrevx). Cataly
+gira su [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi), installato separatamente.
 Le licenze di terze parti sono incluse in ogni release in `THIRD-PARTY-NOTICES.txt`.

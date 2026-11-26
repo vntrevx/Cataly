@@ -16,7 +16,8 @@
   <a href="https://github.com/vntrevx/Cataly/releases/latest"><img alt="最新发行版" src="https://img.shields.io/github/v/release/vntrevx/Cataly?label=release&labelColor=2b2d33&color=c8102e"></a>
   <a href="https://www.npmjs.com/package/cataly"><img alt="npm" src="https://img.shields.io/npm/v/cataly?label=npm&labelColor=2b2d33&color=8b9099"></a>
   <a href="https://omp.sh"><img alt="OMP 19.1.1 或更高版本" src="https://img.shields.io/badge/omp-%E2%89%A519.1.1-8b9099?labelColor=2b2d33"></a>
-  <a href="LICENSE"><img alt="许可证：专有" src="https://img.shields.io/badge/license-proprietary-8b9099?labelColor=2b2d33"></a>
+  <a href="LICENSE"><img alt="许可证：AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-8b9099?labelColor=2b2d33"></a>
+  <a href="https://github.com/vntrevx/cataly-core"><img alt="源代码" src="https://img.shields.io/badge/source-cataly--core-8b9099?labelColor=2b2d33&logo=github"></a>
 </p>
 
 <p align="center">
@@ -151,4 +152,4 @@ cataly setup
 
 ## 许可证
 
-Cataly 是专有软件；参见 [LICENSE](LICENSE)。如需授权，请联系 [GitHub 上的 vntrevx](https://github.com/vntrevx)。Cataly 运行在需单独安装的 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 之上。第三方许可证随每个发行版附带于 `THIRD-PARTY-NOTICES.txt` 中。
+Cataly 是基于 [GNU AGPL 3.0](LICENSE) 的开源软件，源代码位于 [vntrevx/cataly-core](https://github.com/vntrevx/cataly-core)。如需不受 AGPL 义务约束的商业许可，请联系 [vntrevx](https://github.com/vntrevx)。Cataly 运行在需单独安装的 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 之上。第三方许可证随每个发行版附带于 `THIRD-PARTY-NOTICES.txt` 中。
