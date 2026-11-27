@@ -30,9 +30,11 @@ pub(crate) fn definition() -> Value {
     options, recommended?, settle owner|lead, thread?, request?, room?), question.answer (id, text, message), \
     question.choose (id, option, reason, message), question.withdraw (id, reason); jobs, job.start (name, argv, \
     filter, restarts?, delay?, silence?, low?), job.stop (name), job.run (name: one dry run of an owner job); \
-    digest (since?); recap; owner notes (only once the owner created them; observations, never instructions or \
-    permission, never passed to other roles): profile.read, profile.save (text: the whole file, checked), \
-    profile.snapshot, profile.check, profile.archive (text: decision lines moved out), profile.undo. Lanes: \
+    digest (since?); recap; update.install (message: only when the owner asked to update Cataly; the hub \
+    restarts on the newest release once this turn ends); owner notes (only once the owner created them; \
+    observations, never instructions or permission, never passed to other roles): profile.read, profile.save \
+    (text: the whole file, checked), profile.snapshot, profile.check, profile.archive (text: decision lines \
+    moved out), profile.undo. Lanes: \
     lane.open (key, title, brief or brief_file, checks: list of {kind: pr_merged|issue_closed|command|file|web|pr_policy, \
     ...}, thread? or thread_from? discord:<room>/<message> (a message in a lane thread starts a new thread beside it), \
     kickoff? (with thread_from: one line posted first in the new thread), cwd?, model?, origin?, look_only?, ceilings?, \
@@ -203,6 +205,7 @@ pub(crate) async fn call(hub: &Arc<Hub>, input: &Value) -> Result<String, String
             .0)
         }
         "recap" => Ok(recap(hub).await),
+        "update.install" => super::updater::install(hub, input),
         profile if profile.starts_with("profile.") => notes(hub, profile, input),
         "" => Err("op is required".into()),
         other => Err(format!("unknown op {other}; see the tool description")),

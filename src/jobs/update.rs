@@ -1,10 +1,11 @@
 //! The release notice (IR-21, IR-22; req. 36-39; owner decision 12): once a day the hub reads
 //! GitHub's latest stable release and tells the owner, once per version, when it is newer than this
 //! binary. It never downloads, installs or restarts anything; `cataly update` does that when the
-//! owner runs it. A version the owner rolled back from is never announced again. With the check off
-//! no request is made. The notice, and the message after the hub first runs an updated or rolled
-//! back version, go to `[update] destinations`, else to the owner's home room through the normal
-//! outgoing path; they are never work for the lead.
+//! owner runs it or asks the lead, whose `update.install` starts it. A version the owner rolled
+//! back from is never announced again. With the check off no request is made. The notice, and the
+//! message after the hub first runs an updated or rolled back version, go to
+//! `[update] destinations`, else to the owner's home room through the normal outgoing path; they
+//! are never work for the lead.
 
 use std::path::PathBuf;
 use std::sync::Arc;

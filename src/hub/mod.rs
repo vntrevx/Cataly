@@ -12,6 +12,7 @@ mod streams;
 pub(crate) mod supervisor;
 mod to_lead;
 mod tool;
+mod updater;
 #[cfg(feature = "voice")]
 pub(crate) mod voice;
 

@@ -966,6 +966,24 @@ fn lead_tool(bridge: &mut Bridge, session: &Value, call: &str, input: Value) -> 
     )
 }
 
+/// Owner decision 12: the lead starts an update only with the owner's message; without one nothing
+/// starts and nothing is logged.
+#[test]
+fn the_lead_update_needs_the_owners_message() {
+    let (mut hub, work) = lane_hub("");
+    let text = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{text}[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        work.display()
+    ));
+    start(&mut hub);
+    let (mut b, meta) = lead_bridge(&hub);
+    let s = meta["session"].clone();
+    let (why, err) = lead_tool(&mut b, &s, "u1", json!({ "op": "update.install" }));
+    assert!(err && why.contains("owner's message"), "{why}");
+    assert!(!hub.state().join("logs/update.log").exists());
+}
+
 /// Milestone 7 check 8: onboarding asks one consent question before reading anything (no tool is
 /// recorded before it), a "no" is stored and not asked again (also after a restart), and messenger
 /// writes from the lead (tool posts and `cataly` commands in its shell) are refused while it runs.
@@ -998,6 +1016,9 @@ fn onboarding_consent_is_stored_and_writes_wait() {
     assert!(err && why.contains("onboarding"), "{why}");
     let (why, _) = lead_tool(&mut b, &s, "o6", json!({ "op": "lane.list" }));
     assert!(!why.contains("onboarding"), "reads stay allowed: {why}");
+    let update = json!({ "op": "update.install", "message": "discord:1/2" });
+    let (why, err) = lead_tool(&mut b, &s, "o6u", update);
+    assert!(err && why.contains("onboarding"), "{why}");
     let shell = |b: &mut Bridge, command: &str| {
         b.call(
             "bridge.shell",

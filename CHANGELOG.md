@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.6 (Unreleased)
+
+- The lead can update Cataly when the owner asks for it: the new `cataly_lead` op
+  `update.install` takes the owner's message and starts `cataly update` as a process of its own
+  (under a systemd user service, a transient unit, so stopping the hub does not stop it). It
+  waits for busy sessions as `cataly update` does, then stops the hub, installs the newest
+  release and starts the hub again; its output goes to `<state>/logs/update.log`. Without the
+  owner's message, and while onboarding runs, it is refused. Before, the owner had to run
+  `cataly update` in a terminal even after asking the lead, because shell rule 0 keeps every
+  changing `cataly` verb out of the lead's shell; that rule is unchanged.
+
 ## 0.2.5 (2026-11-27)
 
 - The lead can open lanes again: `cataly_lead` now declares every parameter its operations read,

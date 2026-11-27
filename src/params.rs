@@ -558,6 +558,7 @@ mod tests {
         "src/hub/tool.rs",
         "src/hub/onboarding.rs",
         "src/hub/streams.rs",
+        "src/hub/updater.rs",
         "src/lanes/board.rs",
         "src/lanes/mod.rs",
         "src/lanes/oversight.rs",

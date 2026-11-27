@@ -815,7 +815,7 @@ From `docs/decisions.md`. These are no longer assumptions.
 | 9 | Hub restart | Every lane that was running is restarted on its exact session file after the lease shows it free. OMP restores a goal paused; the hub sends `goal resume` only for lanes whose goal was active when the hub stopped, and leaves lanes paused by the lead or owner paused (OPC-34) | A7 |
 | 10 | Slack senders | Allowlist, default the owner only | part of A20 |
 | 11 | Voice transport | WebSocket and WebRTC behind one `RealtimeLink` (5.2); a gated live test against the real API before release, at a cost the owner approves; CI uses a fake | A21 |
-| 12 | Updates | Notice only; `cataly update` installs; nothing installs by itself (11.3) | part of A28 |
+| 12 | Updates | Notice only; `cataly update` installs, run by the owner or started by the lead's `update.install` when the owner asked for it; nothing installs by itself (11.3) | part of A28 |
 | 13 | Weight | Two crates, one implementation per concern, dependency list cut (10.1, 10.2) | — |
 
 ### 12.2 Resolved conflicts and open assumptions
