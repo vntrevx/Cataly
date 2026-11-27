@@ -678,32 +678,38 @@ lines; the panel words them, in `[hub] language`, and the event log keeps them a
 | `alerts.github` | boolean | `true` | | Post GitHub news: `github.pr`, `github.notification`, `pr.feedback`, `pr.check_failed`, `pr.merged`. |
 | `alerts.mail` | boolean | `true` | | Post new items of an `items` job, such as a mail watch (`items.new`). |
 
-**The panel** is one embed message: created once with Cataly's banner and thumbnail, pinned when
-the bot may pin (the Pin Messages or Manage Messages permission; without it the panel stays
-unpinned), and then edited in place, only when something shown changed and at most once a
-minute, like the [board](#coordination-coord). After an uncertain create it is never posted again:
-it stays in doubt until the lead names the message it found (board destination
-`ops:<channel id>`).
-Its colour is the worst state: green when all is fine, amber when something is worth a look (host
-busy, a limit of a provider a live session uses at 90 % or more, a job with a failure, the lead in
-error), red when it needs you (host in alert, the lead held by OMP's usage limit or for the owner,
-a job failing twice or waiting for your ack). A spent limit of a provider no live session uses
-does not change the colour. It shows:
+**The panel** is one Discord [Components V2](https://discord.com/developers/docs/components/reference)
+message: created once with Cataly's banner, pinned when the bot may pin (the Pin Messages or
+Manage Messages permission; without it the panel stays unpinned and its last line says so), and
+then edited in place, only when something shown changed and at most once a minute, like the
+[board](#coordination-coord). After an uncertain create it is never posted again: it stays in
+doubt until the lead names the message it found (board destination `ops:<channel id>`). A panel
+an earlier Cataly posted as an embed becomes the new message in place on its next edit, its
+banner uploaded again.
+The accent colour of its container is the worst state: green when all is fine, amber when
+something is worth a look (host busy, a limit of a provider a live session uses at 90 % or more, a
+job with a failure, the lead in error), red when it needs you (host in alert, the lead held by
+OMP's usage limit or for the owner, a job failing twice or waiting for your ack). A spent limit of
+a provider no live session uses does not change the colour. From the top it shows:
 
+- the banner;
+- a small "Cataly status" line with the last update as a relative time, then the state as a
+  headline (🟢 All fine, 🟡 Worth a look, 🔴 Needs you) with one line for each thing that keeps it
+  from green, and the mute while alerts are muted;
 - 🖥️ host: load bar and per cent, free memory and disk, live sessions (the lead and the lanes)
   of `max_sessions` (load and memory rounded to 5 %, so noise does not edit the panel);
+- 👥 lead and lanes: the lead's state and model, lanes running and waiting, and workers;
 - 🔋 usage: one line per provider, by the name OMP reports, with its most used limit, a bar, the
-  per cent and the reset time;
-- 👥 sessions: the lead's state and model, lanes running and waiting;
+  per cent and the reset time, and the 📊 details button beside it;
 - 🛠️ jobs: all fine, or which jobs need attention;
 - 📮 recent: the last three events routed here (busy and ready changes left out), with relative
   times;
-- the last update as a relative time under the summary, and the version in the footer with the
-  update time beside it.
+- 🎙️ voice, with Discord voice on;
+- the buttons, then the version in small print.
 
-Buttons, for the owner only (anyone else gets a private refusal): 🔄 refresh (once a minute at
-most), 📊 usage details (a private reply with every limit), 🔕 mute (silences new alerts for
-`mute`; press again to unmute; the panel keeps updating), 📡 watched channels.
+Buttons, for the owner only (anyone else gets a private refusal): 📊 details (a private reply
+with every limit), 🔄 refresh (once a minute at most), 🔕 mute (silences new alerts for `mute`;
+while muted it turns green and unmutes; the panel keeps updating), 📡 watched channels.
 
 **📡 Watched channels** opens a private channel picker (text and forum channels, up to 25) with
 the watched channels already chosen. On submit the hub first asks Discord, once per newly picked

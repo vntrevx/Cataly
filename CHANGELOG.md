@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.7 (Unreleased)
+
+- The ops panel is redesigned as a Discord Components V2 message. The banner is at the top of a
+  container whose accent colour shows the state, under a large headline such as "🟢 All fine". When
+  the panel is not green, the headline lists why: host busy or overloaded, the lead held or in
+  error, high usage per provider, jobs to check. Host, lead and lanes, usage, jobs and recent
+  events each get their own titled part between dividers. The usage details button now sits next
+  to the usage. Refresh is the highlighted button, and while alerts are muted, the unmute button
+  is green. The update time is now shown once, under the title, and the version moves to a small
+  last line. The usage details reply uses the same layout. A panel posted as an embed by an
+  earlier version becomes the new message in place on its next edit, with the banner uploaded
+  again, so nothing is posted twice. Alerts stay embeds. The fake Discord now refuses content or
+  embeds on a Components V2 message, as Discord does (@tknmaxxer).
+
 ## 0.2.6 (2026-11-27)
 
 - The npm/Bun `cataly` launcher now takes signals before it starts the binary. On a busy machine a

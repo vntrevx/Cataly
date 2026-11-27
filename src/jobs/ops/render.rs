@@ -1,7 +1,7 @@
-//! The words and Discord embeds of the ops room, in the owner's language: the panel with its
-//! buttons, the alerts and their resolved form, the usage table, and the short lines of the recent
-//! list. Everything here is pure: the facts come in, a message body goes out, within Discord's
-//! embed limits.
+//! The words and Discord messages of the ops room, in the owner's language: the panel (a
+//! Components V2 container) with its buttons, the alerts (embeds) and their resolved form, the
+//! usage table, and the short lines of the recent list. Everything here is pure: the facts come
+//! in, a message body goes out, within Discord's component and embed limits.
 
 use std::fmt::Write as _;
 
@@ -28,10 +28,15 @@ pub(crate) const PICKER_MAX: usize = 25;
 /// Discord's embed limits (characters).
 const TITLE_MAX: usize = 256;
 const DESCRIPTION_MAX: usize = 4096;
-const FIELD_NAME_MAX: usize = 256;
-const FIELD_VALUE_MAX: usize = 1024;
-const FOOTER_MAX: usize = 2048;
 const EMBED_TOTAL_MAX: usize = 6000;
+/// The message flag of a Components V2 message: no `content` or `embeds`, only components. Once
+/// set on a message it cannot be removed.
+pub(crate) const COMPONENTS_V2: u64 = 1 << 15;
+const EPHEMERAL: u64 = 1 << 6;
+/// Discord's Components V2 limit on the characters of all text displays together.
+const TEXT_TOTAL_MAX: usize = 4000;
+/// Characters [`stamp`] adds in place of [`UPDATED_AT`] (`<t:1795660240:R>` for its 9).
+const STAMP_GROWTH: usize = 8;
 /// Provider lines on the panel; the usage button shows them all.
 const PROVIDERS_SHOWN: usize = 6;
 const ISSUES_SHOWN: usize = 3;
@@ -229,41 +234,29 @@ pub(crate) struct Panel {
 /// message is sent, so an unchanged panel renders the same body.
 const UPDATED_AT: &str = "\u{1}updated\u{1}";
 
-/// Puts the update time `now` on a message body's first embed when it has a footer: the embed's
-/// timestamp, which Discord prints after the footer in the reader's zone, and the panel's
-/// "updated" line as a relative time.
+/// Puts the update time `now`, as a relative time the reader's client words, wherever a message
+/// body holds [`UPDATED_AT`]; a body without it is left as it is.
 pub(crate) fn stamp(body: &mut Value, now: i64) {
-    let Some(embed) = body.pointer_mut("/embeds/0") else {
-        return;
-    };
-    let Ok(at) = jiff::Timestamp::from_millisecond(now) else {
-        return;
-    };
-    if embed.get("footer").is_none() {
-        return;
-    }
-    set(embed, "timestamp", json!(at.to_string()));
-    if let Some(d) = embed.get("description").and_then(Value::as_str)
-        && d.contains(UPDATED_AT)
-    {
-        let d = d.replace(UPDATED_AT, &when(now, 'R'));
-        set(embed, "description", json!(d));
+    match body {
+        Value::String(s) if s.contains(UPDATED_AT) => *s = s.replace(UPDATED_AT, &when(now, 'R')),
+        Value::Array(list) => list.iter_mut().for_each(|v| stamp(v, now)),
+        Value::Object(map) => map.values_mut().for_each(|v| stamp(v, now)),
+        _ => {}
     }
 }
 
-/// The footer: the version, after the unpinned note while the bot may not pin. Discord shows the
-/// embed's timestamp after it.
+/// The small last line: the version, after the unpinned note while the bot may not pin.
 fn footer(pin_refused: bool, lang: Language, version: &str) -> String {
     let tail = format!("Cataly {version}");
     if pin_refused {
         let note = t(
             lang,
-            "고정 안 됨: 봇에 메시지 고정 권한이 없어요",
-            "Not pinned: the bot has no permission to pin messages",
+            "⚠️ 고정 안 됨: 봇에 메시지 고정 권한이 없어요",
+            "⚠️ Not pinned: the bot has no permission to pin messages",
         );
-        format!("{note}\n{tail}")
+        format!("-# {note} · {tail}")
     } else {
-        tail
+        format!("-# {tail}")
     }
 }
 
@@ -325,26 +318,86 @@ fn plain(text: &str) -> String {
     out
 }
 
+/// One reason the panel is not green, named under its headline.
+#[derive(Debug)]
+enum Concern {
+    HostBusy,
+    HostAlert,
+    LeadHeld,
+    LeadError,
+    /// Providers a live session uses at [`HIGH_LIMIT`] or more, each with its worst per cent.
+    Usage(Vec<(String, f64)>),
+    /// Jobs with a failure or waiting for an ack.
+    Jobs(usize),
+}
+
+impl Concern {
+    fn words(&self, lang: Language) -> String {
+        match self {
+            Self::HostAlert => t(lang, "🔥 서버 과부하", "🔥 Host overloaded").into(),
+            Self::HostBusy => t(lang, "🖥️ 서버가 바빠요", "🖥️ Host busy").into(),
+            Self::LeadHeld => t(lang, "⏸️ 리드가 보류됐어요", "⏸️ Lead held").into(),
+            Self::LeadError => t(lang, "⚠️ 리드 오류", "⚠️ Lead in error").into(),
+            Self::Usage(high) => {
+                let list = high
+                    .iter()
+                    .map(|(p, pc)| format!("{} {}", plain(p), percent(*pc, 1.0)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} {list}", t(lang, "🔋 사용량 높음 ·", "🔋 High usage ·"))
+            }
+            Self::Jobs(n) => match (lang, n) {
+                (Language::Korean, n) => format!("🛠️ 살펴볼 작업 {n}개"),
+                (Language::English, 1) => "🛠️ 1 job to check".into(),
+                (Language::English, n) => format!("🛠️ {n} jobs to check"),
+            },
+        }
+    }
+}
+
 impl Panel {
     /// Red only when the owner must act: the host overloaded, a job failing or waiting for an ack,
     /// or the lead held.
     pub(crate) fn level(&self) -> Level {
-        let failing = self.issues.iter().any(|i| i.failures >= 2 || i.needs_ack);
-        if self.host.state == HostState::Alert || failing || self.people.lead == LeadState::Held {
-            return Level::Act;
+        self.concerns()
+            .into_iter()
+            .map(|(level, _)| level)
+            .max()
+            .unwrap_or(Level::Fine)
+    }
+
+    /// Everything that keeps the panel from green, each with how serious it is.
+    fn concerns(&self) -> Vec<(Level, Concern)> {
+        let mut out = Vec::new();
+        match self.host.state {
+            HostState::Alert => out.push((Level::Act, Concern::HostAlert)),
+            HostState::Busy => out.push((Level::Watch, Concern::HostBusy)),
+            HostState::Ready => {}
         }
-        let high = self.limits.iter().flatten().any(|l| {
-            self.used_by_a_session(&l.provider) && l.percent.is_some_and(|p| p >= HIGH_LIMIT)
-        });
-        if self.host.state == HostState::Busy
-            || high
-            || !self.issues.is_empty()
-            || self.people.lead == LeadState::Error
-        {
-            Level::Watch
-        } else {
-            Level::Fine
+        match self.people.lead {
+            LeadState::Held => out.push((Level::Act, Concern::LeadHeld)),
+            LeadState::Error => out.push((Level::Watch, Concern::LeadError)),
+            _ => {}
         }
+        let high: Vec<(String, f64)> = self
+            .limits
+            .iter()
+            .flatten()
+            .filter_map(|l| {
+                let p = l.percent.filter(|p| *p >= HIGH_LIMIT)?;
+                self.used_by_a_session(&l.provider)
+                    .then(|| (l.provider.clone(), p))
+            })
+            .collect();
+        if !high.is_empty() {
+            out.push((Level::Watch, Concern::Usage(high)));
+        }
+        if !self.issues.is_empty() {
+            let failing = self.issues.iter().any(|i| i.failures >= 2 || i.needs_ack);
+            let level = if failing { Level::Act } else { Level::Watch };
+            out.push((level, Concern::Jobs(self.issues.len())));
+        }
+        out
     }
 
     /// Whether a live session uses `provider`. A model without a provider may use any of them.
@@ -517,107 +570,171 @@ fn jobs_value(jobs: usize, issues: &[Issue], lang: Language) -> String {
 
 fn recent_value(recent: &[Recent], lang: Language) -> String {
     if recent.is_empty() {
-        return t(lang, "아직 없음", "nothing yet").to_string();
+        return format!("-# {}", t(lang, "아직 없음", "nothing yet"));
     }
     recent
         .iter()
         .rev()
-        .map(|r| format!("• {} · {}", cut(&line(r, lang), 160), when(r.at_ms, 'R')))
+        .map(|r| format!("- {} · {}", cut(&line(r, lang), 160), when(r.at_ms, 'R')))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// The panel message with [`UPDATED_AT`] for its update time (the messenger fills it in), so equal
-/// bodies mean nothing changed.
-pub(crate) fn panel(p: &Panel, lang: Language, version: &str) -> Value {
+/// The top of the panel and its accent colour: a small overline with the update time, the state as
+/// the headline, then why it is not green and the mute.
+fn headline(p: &Panel, lang: Language) -> (u32, String) {
     let (colour, summary) = match p.level() {
         Level::Fine => (GREEN, t(lang, "🟢 모두 정상", "🟢 All fine")),
         Level::Watch => (AMBER, t(lang, "🟡 살펴볼 것이 있어요", "🟡 Worth a look")),
         Level::Act => (RED, t(lang, "🔴 확인이 필요해요", "🔴 Needs you")),
     };
-    let mut description = summary.to_string();
+    let mut header = format!(
+        "-# {} · 🕒 {} {UPDATED_AT}\n## {summary}",
+        t(lang, "Cataly 상황판", "Cataly status"),
+        t(lang, "갱신", "updated"),
+    );
+    for (_, concern) in p.concerns() {
+        header.push('\n');
+        header.push_str(&concern.words(lang));
+    }
     if let Some(until) = p.muted_until_ms {
         let _ = write!(
-            description,
+            header,
             "\n🔕 {} {}",
             t(lang, "알림 꺼짐 ·", "Alerts muted until"),
             when(until, 't')
         );
         if lang == Language::Korean {
-            description.push_str("까지");
+            header.push_str("까지");
         }
     }
-    let _ = write!(
-        description,
-        "\n🕒 {} {UPDATED_AT}",
-        t(lang, "마지막 갱신", "Updated")
+    (colour, header)
+}
+
+/// The panel message with [`UPDATED_AT`] for its update time (the messenger fills it in), so equal
+/// bodies mean nothing changed.
+pub(crate) fn panel(p: &Panel, lang: Language, version: &str) -> Value {
+    let (colour, mut header) = headline(p, lang);
+    let section = |title: &str, body: String| format!("### {title}\n{body}");
+    let mut host = section(t(lang, "🖥️ 서버", "🖥️ Host"), host_value(&p.host, lang));
+    let mut people = section(
+        t(lang, "👥 리드와 레인", "👥 Lead and lanes"),
+        people_value(&p.people, lang),
     );
-    let field = |name: &str, value: String, inline: bool| json!({ "name": cut(name, FIELD_NAME_MAX), "value": cut(&value, FIELD_VALUE_MAX), "inline": inline });
-    let mut fields = vec![
-        field(
-            t(lang, "🖥️ 서버", "🖥️ Host"),
-            host_value(&p.host, lang),
-            true,
-        ),
-        field(
-            t(lang, "👥 세션", "👥 Sessions"),
-            people_value(&p.people, lang),
-            true,
-        ),
-        field(
-            t(lang, "🔋 사용량", "🔋 Usage"),
-            usage_value(p.limits.as_deref(), lang),
-            false,
-        ),
-        field(
-            t(lang, "🛠️ 작업", "🛠️ Jobs"),
-            jobs_value(p.jobs, &p.issues, lang),
-            false,
-        ),
-        field(
-            t(lang, "📮 최근", "📮 Recent"),
-            recent_value(&p.recent, lang),
-            false,
-        ),
+    let mut usage_title = format!("### {}", t(lang, "🔋 사용량", "🔋 Usage"));
+    let mut usage = usage_value(p.limits.as_deref(), lang);
+    let mut jobs = section(
+        t(lang, "🛠️ 작업", "🛠️ Jobs"),
+        jobs_value(p.jobs, &p.issues, lang),
+    );
+    let mut recent = section(
+        t(lang, "📮 최근", "📮 Recent"),
+        recent_value(&p.recent, lang),
+    );
+    let mut voice = p
+        .voice
+        .as_ref()
+        .map(|v| section(t(lang, "🎙️ 음성", "🎙️ Voice"), plain(&v.text(lang))));
+    let mut last = footer(p.pin_refused, lang, version);
+    let mut all = vec![
+        &mut header,
+        &mut host,
+        &mut people,
+        &mut usage_title,
+        &mut usage,
+        &mut jobs,
+        &mut recent,
+        &mut last,
     ];
-    if let Some(voice) = &p.voice {
-        fields.push(field(
-            t(lang, "음성", "Voice"),
-            plain(&voice.text(lang)),
-            false,
-        ));
-    }
-    let embed = json!({
-        "title": t(lang, "Cataly 상황판", "Cataly status"),
-        "description": cut(&description, DESCRIPTION_MAX),
-        "color": colour,
-        "thumbnail": { "url": format!("attachment://{THUMB}") },
-        "image": { "url": format!("attachment://{BANNER}") },
-        "fields": fields,
-        "footer": { "text": cut(&footer(p.pin_refused, lang, version), FOOTER_MAX) },
-    });
+    all.extend(voice.as_mut());
+    fit_texts(&mut all, TEXT_TOTAL_MAX - STAMP_GROWTH);
     let mute = if p.muted_until_ms.is_some() {
-        button(t(lang, "알림 다시 켜기", "Unmute alerts"), "🔔", MUTE)
+        button(
+            t(lang, "알림 다시 켜기", "Unmute alerts"),
+            "🔔",
+            MUTE,
+            SUCCESS,
+        )
     } else {
         let label = match lang {
             Language::Korean => format!("{} 조용히", minutes_words(p.mute_minutes, lang)),
             Language::English => format!("Mute {}", minutes_words(p.mute_minutes, lang)),
         };
-        button(&label, "🔕", MUTE)
+        button(&label, "🔕", MUTE, SECONDARY)
     };
-    json!({
-        "embeds": [fit(embed)],
-        "components": [{ "type": 1, "components": [
-            button(t(lang, "새로고침", "Refresh"), "🔄", REFRESH),
-            button(t(lang, "사용량 자세히", "Usage details"), "📊", USAGE),
+    let mut parts = vec![
+        json!({ "type": 12, "items": [{
+            "media": { "url": format!("attachment://{BANNER}") },
+            "description": "Cataly",
+        }]}),
+        text_display(&header),
+        separator(),
+        text_display(&host),
+        separator(),
+        text_display(&people),
+        separator(),
+        // The details button beside the usage title; the lines below keep the full width, which
+        // a narrow phone needs for a bar and a reset time.
+        json!({ "type": 9, "components": [text_display(&usage_title)],
+            "accessory": button(t(lang, "자세히", "Details"), "📊", USAGE, SECONDARY) }),
+        text_display(&usage),
+        separator(),
+        text_display(&jobs),
+        separator(),
+        text_display(&recent),
+    ];
+    if let Some(v) = &voice {
+        parts.extend([separator(), text_display(v)]);
+    }
+    parts.extend([
+        separator(),
+        json!({ "type": 1, "components": [
+            button(t(lang, "새로고침", "Refresh"), "🔄", REFRESH, PRIMARY),
             mute,
-            button(t(lang, "감시 채널", "Watched channels"), "📡", WATCH),
-        ]}],
+            button(t(lang, "감시 채널", "Watched channels"), "📡", WATCH, SECONDARY),
+        ]}),
+        text_display(&last),
+    ]);
+    json!({
+        "flags": COMPONENTS_V2,
+        "components": [{ "type": 17, "accent_color": colour, "components": parts }],
     })
 }
 
-fn button(label: &str, emoji: &str, id: &str) -> Value {
-    json!({ "type": 2, "style": 2, "label": cut(label, 80), "emoji": { "name": emoji }, "custom_id": id })
+/// Button styles.
+const PRIMARY: u8 = 1;
+const SECONDARY: u8 = 2;
+const SUCCESS: u8 = 3;
+
+fn text_display(content: &str) -> Value {
+    json!({ "type": 10, "content": content })
+}
+
+/// A thin divider with small padding between the panel's parts.
+fn separator() -> Value {
+    json!({ "type": 14, "divider": true, "spacing": 1 })
+}
+
+fn button(label: &str, emoji: &str, id: &str, style: u8) -> Value {
+    json!({ "type": 2, "style": style, "label": cut(label, 80), "emoji": { "name": emoji }, "custom_id": id })
+}
+
+/// Keeps text displays within Discord's total: the longest shortened until all fit in `max`.
+fn fit_texts(texts: &mut [&mut String], max: usize) {
+    loop {
+        let total: usize = texts.iter().map(|s| s.chars().count()).sum();
+        if total <= max {
+            return;
+        }
+        let Some(longest) = texts.iter_mut().max_by_key(|s| s.chars().count()) else {
+            return;
+        };
+        let len = longest.chars().count();
+        if len <= 1 {
+            return;
+        }
+        **longest = cut(longest, len.saturating_sub(total - max).max(1));
+    }
 }
 
 /// `1시간`, `30분`, `1h30m` style words for a length in minutes.
@@ -705,20 +822,25 @@ pub(crate) fn usage_table(
             .collect::<Vec<_>>()
             .join("\n"),
     };
+    let mut head = format!("## {}", t(lang, "📊 사용량 자세히", "📊 Usage details"));
     if let Some(at) = fetched_ms {
         let _ = write!(
-            text,
-            "\n\n{} {}",
+            head,
+            "\n-# {} {}",
             t(lang, "읽은 시각", "Read"),
             when(at, 'R')
         );
     }
-    let embed = json!({
-        "title": t(lang, "📊 사용량 자세히", "📊 Usage details"),
-        "description": cut(&text, DESCRIPTION_MAX),
-        "color": GREY,
-    });
-    json!({ "type": 4, "data": { "embeds": [fit(embed)], "flags": 64 } })
+    fit_texts(&mut [&mut head, &mut text], TEXT_TOTAL_MAX);
+    json!({ "type": 4, "data": {
+        "flags": EPHEMERAL | COMPONENTS_V2,
+        "allowed_mentions": { "parse": [] },
+        "components": [{ "type": 17, "accent_color": GREY, "components": [
+            text_display(&head),
+            separator(),
+            text_display(&text),
+        ]}],
+    }})
 }
 
 /// An ephemeral answer to a button press.
@@ -1118,62 +1240,136 @@ pub(crate) mod tests {
         );
     }
 
+    /// The panel's container: its accent colour and parts.
+    fn container(body: &Value) -> &Value {
+        &body["components"][0]
+    }
+
+    /// Every component of a message, at every depth, in order.
+    fn components(v: &Value) -> Vec<&Value> {
+        let mut out = Vec::new();
+        let children = v["components"].as_array().into_iter().flatten();
+        for c in children.chain(v.get("accessory")) {
+            out.push(c);
+            out.extend(components(c));
+        }
+        out
+    }
+
+    /// The text displays' contents, one per line.
+    fn texts(body: &Value) -> String {
+        components(body)
+            .into_iter()
+            .filter(|c| c["type"] == 10)
+            .map(|c| c["content"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The buttons' labels and styles, in order.
+    fn buttons(body: &Value) -> Vec<(&str, &str, u64)> {
+        components(body)
+            .into_iter()
+            .filter(|c| c["type"] == 2)
+            .map(|b| {
+                let label = b["label"].as_str().unwrap();
+                (
+                    label,
+                    b["custom_id"].as_str().unwrap(),
+                    b["style"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The first text display: the overline, the headline and what keeps it from green.
+    fn header(p: &Panel, lang: Language) -> String {
+        let body = panel(p, lang, "x");
+        container(&body)["components"][1]["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn korean_and_english_panels() {
         let ko = panel(&sample(), Language::Korean, "0.1.1");
-        let embed = &ko["embeds"][0];
-        assert_eq!(embed["title"], "Cataly 상황판");
+        assert_eq!(ko["flags"], COMPONENTS_V2);
+        assert!(ko.get("embeds").is_none() && ko.get("content").is_none());
+        let c = container(&ko);
+        assert_eq!(c["type"], 17);
         assert_eq!(
-            embed["color"], AMBER,
+            c["accent_color"], AMBER,
             "a lane's provider at 97 % is worth a look"
         );
-        assert_eq!(embed["image"]["url"], "attachment://panel-banner.jpg");
-        assert_eq!(embed["thumbnail"]["url"], "attachment://panel-thumb.jpg");
-        let text = embed.to_string();
+        assert_eq!(
+            c["components"][0]["items"][0]["media"]["url"], "attachment://panel-banner.jpg",
+            "the banner leads"
+        );
+        assert!(!ko.to_string().contains(THUMB), "the banner alone");
+        let text = texts(&ko);
         for want in [
-            "🖥️ 서버",
-            "부하 `▰▰▰▱▱▱▱▱` 40%",
+            "-# Cataly 상황판 · 🕒 갱신 ",
+            "\n## 🟡 살펴볼 것이 있어요\n🔋 사용량 높음 · openai-codex 97%\n",
+            "### 🖥️ 서버\n부하 `▰▰▰▱▱▱▱▱` 40%",
             "세션 3/20",
-            "리드: 작업 중 · claude-opus-5-5",
+            "### 👥 리드와 레인\n리드: 작업 중 · claude-opus-5-5",
             "레인: 실행 2 · 대기 1",
-            "✅ 모두 정상 (5개)",
-            "🐙 새 PR me/app#12 · <t:1700000000:R>",
+            "### 🛠️ 작업\n✅ 모두 정상 (5개)",
+            "### 📮 최근\n- 🐙 새 PR me/app#12 · <t:1700000000:R>",
             "<t:1800000000:R>",
+            "\n-# Cataly 0.1.1",
         ] {
             assert!(text.contains(want), "{want} in {text}");
         }
-        let labels: Vec<&str> = ko["components"][0]["components"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|b| b["label"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            labels,
-            ["새로고침", "사용량 자세히", "1시간 조용히", "감시 채널"]
-        );
+        assert!(text.contains(UPDATED_AT), "the time is added when sent");
+        // The usage details sit beside the usage title, the lines below at full width.
+        let parts = c["components"].as_array().unwrap();
+        let at = parts.iter().position(|c| c["type"] == 9).unwrap();
+        assert_eq!(parts[at]["components"][0]["content"], "### 🔋 사용량");
+        assert_eq!(parts[at]["accessory"]["custom_id"], USAGE);
         assert!(
-            embed.get("timestamp").is_none(),
-            "the time is added when sent"
+            parts[at + 1]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("**anthropic** `▰▰▰▰▰▱▱▱` 64%")
+        );
+        assert_eq!(
+            buttons(&ko),
+            [
+                ("자세히", USAGE, 2),
+                ("새로고침", REFRESH, 1),
+                ("1시간 조용히", MUTE, 2),
+                ("감시 채널", WATCH, 2),
+            ]
         );
         let en = panel(&sample(), Language::English, "0.1.1");
-        let text = en.to_string();
+        let text = texts(&en);
         for want in [
-            "Cataly status",
-            "🖥️ Host",
-            "Lead: working",
+            "-# Cataly status · 🕒 updated ",
+            "## 🟡 Worth a look\n🔋 High usage · openai-codex 97%",
+            "### 🖥️ Host",
+            "### 👥 Lead and lanes\nLead: working",
             "2 running · 1 waiting",
             "✅ all fine (5)",
-            "Mute 1 hour",
             "🐙 New PR me/app#12",
         ] {
             assert!(text.contains(want), "{want} in {text}");
         }
+        let labels: Vec<&str> = buttons(&en).into_iter().map(|b| b.0).collect();
+        assert_eq!(
+            labels,
+            ["Details", "Refresh", "Mute 1 hour", "Watched channels"]
+        );
         let mut calm = sample();
         calm.limits = Some(Vec::new());
         assert_eq!(
-            panel(&calm, Language::Korean, "x")["embeds"][0]["color"],
+            container(&panel(&calm, Language::Korean, "x"))["accent_color"],
             GREEN
+        );
+        assert!(
+            header(&calm, Language::Korean).ends_with("\n## 🟢 모두 정상"),
+            "nothing listed under a green headline"
         );
         // A sleeping lead is a normal state: the panel stays green and says so.
         let mut asleep = calm.clone();
@@ -1184,32 +1380,73 @@ pub(crate) mod tests {
             (Language::English, "Lead: asleep\n"),
         ] {
             let body = panel(&asleep, lang, "x");
-            assert_eq!(body["embeds"][0]["color"], GREEN);
-            assert!(
-                body.to_string().contains(&want.replace('\n', "\\n")),
-                "{want}"
-            );
+            assert_eq!(container(&body)["accent_color"], GREEN);
+            assert!(texts(&body).contains(want), "{want}");
         }
         calm.host.state = HostState::Busy;
         assert_eq!(
-            panel(&calm, Language::Korean, "x")["embeds"][0]["color"],
+            container(&panel(&calm, Language::Korean, "x"))["accent_color"],
             AMBER
         );
+        assert!(header(&calm, Language::Korean).ends_with("\n🖥️ 서버가 바빠요"));
         calm.muted_until_ms = Some(1_700_000_360_000);
         let muted = panel(&calm, Language::Korean, "x");
-        assert!(
-            muted
-                .to_string()
-                .contains("🔕 알림 꺼짐 · <t:1700000360:t>까지")
-        );
+        assert!(header(&calm, Language::Korean).ends_with("\n🔕 알림 꺼짐 · <t:1700000360:t>까지"));
+        assert_eq!(buttons(&muted)[2], ("알림 다시 켜기", MUTE, 3));
+    }
+
+    /// Red names every reason under the headline, the worst first in the panel's order.
+    #[test]
+    fn the_headline_names_what_needs_the_owner() {
+        let mut p = sample();
+        p.host.state = HostState::Alert;
+        p.people.lead = LeadState::Held;
+        p.issues = vec![
+            Issue {
+                job: "backup".into(),
+                failures: 2,
+                needs_ack: false,
+            },
+            Issue {
+                job: "mail".into(),
+                failures: 1,
+                needs_ack: false,
+            },
+        ];
+        assert_eq!(p.level(), Level::Act);
         assert_eq!(
-            muted["components"][0]["components"][2]["label"],
-            "알림 다시 켜기"
+            container(&panel(&p, Language::English, "x"))["accent_color"],
+            RED
+        );
+        assert!(
+            header(&p, Language::Korean).ends_with(
+                "\n## 🔴 확인이 필요해요\n🔥 서버 과부하\n⏸️ 리드가 보류됐어요\n🔋 사용량 높음 · openai-codex 97%\n🛠️ 살펴볼 작업 2개"
+            ),
+            "{}",
+            header(&p, Language::Korean)
+        );
+        assert!(
+            header(&p, Language::English)
+                .ends_with("\n🔥 Host overloaded\n⏸️ Lead held\n🔋 High usage · openai-codex 97%\n🛠️ 2 jobs to check")
+        );
+        // One job with one failure is worth a look, not red.
+        let mut p = sample();
+        p.limits = Some(Vec::new());
+        p.people.lead = LeadState::Error;
+        p.issues = vec![Issue {
+            job: "mail".into(),
+            failures: 1,
+            needs_ack: false,
+        }];
+        assert_eq!(p.level(), Level::Watch);
+        assert!(
+            header(&p, Language::English)
+                .ends_with("\n## 🟡 Worth a look\n⚠️ Lead in error\n🛠️ 1 job to check")
         );
     }
 
     #[test]
-    fn embeds_stay_within_discord_limits() {
+    fn messages_stay_within_discord_limits() {
         let mut big = sample();
         big.limits = Some(
             (0..40)
@@ -1237,19 +1474,33 @@ pub(crate) mod tests {
                 text: "w".repeat(500),
             })
             .collect();
+        // Every provider spent and possibly in use: the headline names them all.
+        big.people.models.push("no-provider".into());
+        for l in big.limits.iter_mut().flatten() {
+            l.percent = Some(95.0);
+        }
+        let total = |body: &Value| {
+            components(body)
+                .into_iter()
+                .filter(|c| c["type"] == 10)
+                .map(|c| c["content"].as_str().unwrap().chars().count())
+                .sum::<usize>()
+        };
         for lang in [Language::Korean, Language::English] {
-            let body = panel(&big, lang, "0.1.1");
-            let embed = &body["embeds"][0];
-            assert!(embed_size(embed) <= EMBED_TOTAL_MAX);
-            for f in embed["fields"].as_array().unwrap() {
-                assert!(f["value"].as_str().unwrap().chars().count() <= FIELD_VALUE_MAX);
-                assert!(f["name"].as_str().unwrap().chars().count() <= FIELD_NAME_MAX);
-            }
-            assert!(embed["fields"].as_array().unwrap().len() <= 25);
+            let mut body = panel(&big, lang, "0.1.1");
+            assert!(header(&big, lang).chars().count() > 100);
+            stamp(&mut body, 1_795_660_240_551);
+            assert!(!body.to_string().contains(UPDATED_AT));
+            assert!(total(&body) <= TEXT_TOTAL_MAX, "{}", total(&body));
+            assert!(components(&body).len() <= 40, "Discord's 40 components");
+            assert!(
+                buttons(&body)
+                    .iter()
+                    .all(|(label, _, _)| label.chars().count() <= 80)
+            );
             let table = usage_table(big.limits.as_deref(), Some(1), lang);
-            let e = &table["data"]["embeds"][0];
-            assert!(e["description"].as_str().unwrap().chars().count() <= DESCRIPTION_MAX);
-            assert_eq!(table["data"]["flags"], 64);
+            assert!(total(&table["data"]) <= TEXT_TOTAL_MAX);
+            assert_eq!(table["data"]["flags"], EPHEMERAL | COMPONENTS_V2);
         }
         // A total over 6000 shortens the longest values until it fits.
         let fat = json!({ "title": "t", "description": "d".repeat(3000), "fields": [
@@ -1327,25 +1578,18 @@ pub(crate) mod tests {
         p
     }
 
-    fn description(p: &Panel, lang: Language) -> String {
-        panel(p, lang, "x")["embeds"][0]["description"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
-
     #[test]
     fn a_spent_provider_no_live_session_uses_stays_green() {
         let p = spent_elsewhere();
         assert_eq!(p.level(), Level::Fine);
         let ko = panel(&p, Language::Korean, "x");
-        assert_eq!(ko["embeds"][0]["color"], GREEN);
+        assert_eq!(container(&ko)["accent_color"], GREEN);
         for lang in [Language::Korean, Language::English] {
-            let d = description(&p, lang);
-            assert!(!d.contains('⛔'), "{d}");
+            let d = header(&p, lang);
+            assert!(!d.contains('⛔') && !d.contains("🔋"), "{d}");
         }
-        assert!(description(&p, Language::English).starts_with("🟢 All fine\n"));
-        let usage = ko.to_string();
+        assert!(header(&p, Language::English).ends_with("\n## 🟢 All fine"));
+        let usage = texts(&ko);
         assert!(
             usage.contains("**devin** `▰▰▰▰▰▰▰▰` 100%"),
             "the bars stay: {usage}"
@@ -1367,9 +1611,10 @@ pub(crate) mod tests {
         anthropic(&mut p, 90.0);
         assert_eq!(p.level(), Level::Watch);
         assert_eq!(
-            panel(&p, Language::English, "x")["embeds"][0]["color"],
+            container(&panel(&p, Language::English, "x"))["accent_color"],
             AMBER
         );
+        assert!(header(&p, Language::English).ends_with("\n🔋 High usage · anthropic 90%"));
         // A lane on a spent provider counts as much as the lead.
         let mut p = spent_elsewhere();
         p.people.models.push("devin/swe-1".into());
@@ -1384,22 +1629,27 @@ pub(crate) mod tests {
     fn sessions_count_the_lead_and_the_time_is_relative() {
         let p = spent_elsewhere();
         for (lang, want, updated) in [
-            (Language::Korean, "세션 1/20", "🕒 마지막 갱신 "),
-            (Language::English, "Sessions 1/20", "🕒 Updated "),
+            (Language::Korean, "세션 1/20", "-# Cataly 상황판 · 🕒 갱신 "),
+            (
+                Language::English,
+                "Sessions 1/20",
+                "-# Cataly status · 🕒 updated ",
+            ),
         ] {
             let mut body = panel(&p, lang, "0.1.4");
-            assert!(body.to_string().contains(want), "{want}");
-            assert_eq!(body["embeds"][0]["footer"]["text"], "Cataly 0.1.4");
+            assert!(texts(&body).contains(want), "{want}");
+            assert!(texts(&body).ends_with("\n-# Cataly 0.1.4"));
             stamp(&mut body, 1_795_660_240_551);
-            let embed = &body["embeds"][0];
-            let d = embed["description"].as_str().unwrap();
-            assert!(d.ends_with(&format!("{updated}<t:1795660240:R>")), "{d}");
-            assert_eq!(embed["timestamp"], "2026-11-26T02:30:40.551Z");
+            let text = texts(&body);
+            assert!(
+                text.starts_with(&format!("{updated}<t:1795660240:R>\n")),
+                "{text}"
+            );
         }
-        // An alert keeps its text; only the timestamp is added.
+        // An alert has no update time: it is left as it is.
         let mut a = alert("t", "d", 0, Level::Watch, Language::Korean);
-        let before = a["embeds"][0]["description"].clone();
+        let before = a.clone();
         stamp(&mut a, 1_795_660_240_551);
-        assert_eq!(a["embeds"][0]["description"], before);
+        assert_eq!(a, before);
     }
 }

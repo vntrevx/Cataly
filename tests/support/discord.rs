@@ -962,18 +962,37 @@ fn patch_channel(s: &mut State, id: &str, body: &Value) -> Response<Full<Bytes>>
     reply(200, &channel)
 }
 
-/// A message edit: its content and components.
+/// The Components V2 message flag.
+const COMPONENTS_V2: u64 = 1 << 15;
+
+/// As on Discord, a Components V2 message holds no content and no embeds.
+fn v2_invalid(m: &Value) -> bool {
+    let flags = m["flags"].as_u64().unwrap_or(0);
+    let content = m["content"].as_str().is_some_and(|c| !c.is_empty());
+    let embeds = m["embeds"].as_array().is_some_and(|e| !e.is_empty());
+    flags & COMPONENTS_V2 != 0 && (content || embeds)
+}
+
+/// A message edit: its content, components, embeds and attachments. The Components V2 flag can be
+/// set but never removed, and a V2 message must have its content and embeds emptied.
 fn edit_message(s: &mut State, id: &str, mid: &str, body: &Value) -> Response<Full<Bytes>> {
     if let Some(m) = s
         .history
         .get_mut(id)
         .and_then(|l| l.iter_mut().find(|m| m["id"] == mid))
     {
-        for key in ["content", "components", "embeds"] {
+        let mut next = m.clone();
+        for key in ["content", "components", "embeds", "attachments"] {
             if let Some(c) = body.get(key) {
-                m[key] = c.clone();
+                next[key] = c.clone();
             }
         }
+        let flags = next["flags"].as_u64().unwrap_or(0) | body["flags"].as_u64().unwrap_or(0);
+        next["flags"] = json!(flags);
+        if v2_invalid(&next) {
+            return reply(400, &json!({"message": "Invalid Form Body", "code": 50035}));
+        }
+        *m = next;
     }
     reply(200, &json!({ "id": mid, "channel_id": id }))
 }
@@ -995,6 +1014,9 @@ fn create(s: &mut State, id: &str, body: &Value) -> Response<Full<Bytes>> {
         .as_str()
         .is_some_and(|c| c.encode_utf16().count() > 2000)
     {
+        return reply(400, &json!({"message": "Invalid Form Body", "code": 50035}));
+    }
+    if v2_invalid(body) {
         return reply(400, &json!({"message": "Invalid Form Body", "code": 50035}));
     }
     let nonce = body["nonce"].as_str().unwrap_or_default().to_string();
@@ -1032,7 +1054,8 @@ fn create(s: &mut State, id: &str, body: &Value) -> Response<Full<Bytes>> {
     }
     let mut created = json!({ "id": message.to_string(), "channel_id": id, "content": body["content"],
                 "author": {"id": BOT, "bot": true}, "type": 0, "components": body["components"],
-                "embeds": body["embeds"], "attachments": body["attachments"] });
+                "embeds": body["embeds"], "attachments": body["attachments"],
+                "flags": body["flags"].as_u64().unwrap_or(0) });
     if let Some(r) = &reference {
         created["type"] = json!(19);
         created["message_reference"] = json!({"message_id": r, "channel_id": id});

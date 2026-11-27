@@ -351,14 +351,18 @@ fn ops_panel_reports_waiting_from_the_same_voice_state() {
             .into_iter()
             .find(|c| c.path == format!("/channels/{ops}/messages"))
     });
-    let fields = post.body["embeds"][0]["fields"].as_array().unwrap();
-    let voice = fields
+    let parts = post.body["components"][0]["components"].as_array().unwrap();
+    let voice = parts
         .iter()
-        .find(|f| f["name"] == "음성")
-        .expect("voice field");
+        .find_map(|p| {
+            p["content"]
+                .as_str()
+                .filter(|c| c.starts_with("### 🎙️ 음성\n"))
+        })
+        .expect("voice part");
     assert_eq!(
-        voice["value"],
-        format!("<#{VOICE_CH}>에서 너를 기다리는 중")
+        voice,
+        format!("### 🎙️ 음성\n<#{VOICE_CH}>에서 너를 기다리는 중")
     );
     call.hub.stop();
 }

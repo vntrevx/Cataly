@@ -868,7 +868,19 @@ impl Rest {
         &self,
         channel: Snowflake,
         message: Snowflake,
+        body: Value,
+    ) -> Result<(), RestError> {
+        self.edit_with(channel, message, body, &[]).await
+    }
+
+    /// [`Rest::edit`] with files attached (`multipart/form-data`): they replace the message's
+    /// attachments, and a component or embed shows one with `attachment://<name>`.
+    pub(crate) async fn edit_with(
+        &self,
+        channel: Snowflake,
+        message: Snowflake,
         mut body: Value,
+        files: &[Upload<'_>],
     ) -> Result<(), RestError> {
         if body
             .get("content")
@@ -883,8 +895,13 @@ impl Rest {
             });
         }
         put(&mut body, "allowed_mentions", json!({ "parse": [] }));
+        let body = if files.is_empty() {
+            Body::Json(body)
+        } else {
+            form(&body, files)
+        };
         let v = self
-            .call(
+            .call_with(
                 "PATCH channels/messages",
                 Method::PATCH,
                 &format!("/channels/{channel}/messages/{message}"),

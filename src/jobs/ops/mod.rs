@@ -1,9 +1,10 @@
 //! The ops room (`[ops]`): one live panel message and a few alerts, in the owner's language.
 //!
 //! Events routed to the ops destination are not posted as lines: the router hands them here. The
-//! panel is the board post rule applied to an embed (created once with its banner and thumbnail,
+//! panel is the board post rule applied to a Components V2 message (created once with its banner,
 //! pinned when the bot may, edited in place only on change and at most once a minute, never
-//! recreated after an uncertain create). Alerts are separate small embeds for what is worth a ping:
+//! recreated after an uncertain create; a panel an older Cataly posted as an embed becomes V2 on
+//! its next edit). Alerts are separate small embeds for what is worth a ping:
 //! the host over the alert level for five minutes, a usage level reached, a job failing twice in a
 //! row, a refused backup, GitHub news and new mail. An alert whose condition clears is edited to
 //! show it resolved. Each alert kind posts at most once an hour; the owner's mute silences new
@@ -68,6 +69,8 @@ pub(crate) struct Ops {
     trouble: Mutex<Option<String>>,
     /// Whether the panel is pinned, for this hub run.
     pin: Mutex<PinTrack>,
+    /// The panel message known to be a Components V2 message, for this hub run.
+    v2: Mutex<Option<Snowflake>>,
 }
 
 impl Ops {
@@ -549,27 +552,75 @@ async fn muted_until(store: &Store, now: i64) -> Option<i64> {
     }
 }
 
-/// The panel's messenger: embeds on Discord, the images uploaded with a create.
-pub(crate) struct Embeds {
-    pub(crate) rest: Arc<Rest>,
+/// The ops room's messenger on Discord: the panel (Components V2) and the alerts (embeds), the
+/// images uploaded with a create, and again when a panel posted as an embed by an older Cataly
+/// becomes a Components V2 message.
+struct Messages<'a> {
+    rest: Arc<Rest>,
     /// The update time put on the panel.
-    pub(crate) now: i64,
+    now: i64,
+    /// The panel message known to be a Components V2 message, for this hub run.
+    v2: &'a Mutex<Option<Snowflake>>,
 }
 
-impl Embeds {
+impl Messages<'_> {
     fn body(&self, text: &str) -> Result<Value, String> {
         let mut body: Value =
             serde_json::from_str(text).map_err(|e| format!("not a message body: {e}"))?;
         render::stamp(&mut body, self.now);
         Ok(body)
     }
+
+    /// Whether `message` is a Components V2 message: known for this hub run, or read from Discord
+    /// once. `false` when Discord cannot tell.
+    async fn is_v2(&self, channel: Snowflake, message: Snowflake) -> bool {
+        if *self.v2.lock().unwrap_or_else(PoisonError::into_inner) == Some(message) {
+            return true;
+        }
+        let flags = match self.rest.message(channel, message).await {
+            Ok(m) => m.get("flags").and_then(Value::as_u64).unwrap_or(0),
+            Err(_) => return false,
+        };
+        let v2 = flags & render::COMPONENTS_V2 != 0;
+        if v2 {
+            self.v2_known(message);
+        }
+        v2
+    }
+
+    fn v2_known(&self, message: Snowflake) {
+        *self.v2.lock().unwrap_or_else(PoisonError::into_inner) = Some(message);
+    }
+}
+
+/// The images a message body shows, to upload with it.
+fn uploads(text: &str) -> Vec<Upload<'static>> {
+    [
+        (render::BANNER, render::BANNER_BYTES),
+        (render::THUMB, render::THUMB_BYTES),
+    ]
+    .into_iter()
+    .filter(|(name, _)| text.contains(&format!("attachment://{name}")))
+    .map(|(name, bytes)| Upload {
+        name,
+        mime: "image/jpeg",
+        bytes,
+    })
+    .collect()
+}
+
+/// Whether a message body is a Components V2 message.
+fn wants_v2(body: &Value) -> bool {
+    body.get("flags")
+        .and_then(Value::as_u64)
+        .is_some_and(|f| f & render::COMPONENTS_V2 != 0)
 }
 
 fn channel_id(text: &str) -> Result<Snowflake, String> {
     Snowflake::parse(text).ok_or_else(|| format!("'{text}' is not a Discord ID"))
 }
 
-impl Board for Embeds {
+impl Board for Messages<'_> {
     fn board_create<'a>(
         &'a self,
         channel: &'a str,
@@ -581,29 +632,20 @@ impl Board for Embeds {
             let mut body = self.body(text).map_err(|e| (false, e))?;
             // Apart from the lanes' board nonces in the same channel.
             render::set(&mut body, "nonce", json!(nonce(&format!("ops:{seed}"), 0)));
-            let mut files = Vec::new();
-            for (name, bytes) in [
-                (render::BANNER, render::BANNER_BYTES),
-                (render::THUMB, render::THUMB_BYTES),
-            ] {
-                if text.contains(&format!("attachment://{name}")) {
-                    files.push(Upload {
-                        name,
-                        mime: "image/jpeg",
-                        bytes,
-                    });
-                }
-            }
+            let v2 = wants_v2(&body);
             let created = self
                 .rest
-                .create_with(channel, body, &files)
+                .create_with(channel, body, &uploads(text))
                 .await
                 .map_err(|e| (e.uncertain, e.why))?;
-            created
+            let id = created
                 .get("id")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or((true, "no message ID".to_string()))
+                .ok_or((true, "no message ID".to_string()))?;
+            if v2 && let Some(m) = Snowflake::parse(id) {
+                self.v2_known(m);
+            }
+            Ok(id.to_string())
         })
     }
 
@@ -615,11 +657,25 @@ impl Board for Embeds {
     ) -> BoxFut<'a, Result<(), String>> {
         Box::pin(async move {
             let (channel, message) = (channel_id(channel)?, channel_id(message)?);
-            // Without `attachments` the edit keeps the uploaded images.
+            let mut body = self.body(text)?;
+            if !wants_v2(&body) || self.is_v2(channel, message).await {
+                // Without `attachments` the edit keeps the uploaded images.
+                return self
+                    .rest
+                    .edit(channel, message, body)
+                    .await
+                    .map_err(|e| e.why);
+            }
+            // A panel posted as an embed becomes Components V2: content and embeds are emptied,
+            // and the images, which went with the embed, are uploaded again.
+            render::set(&mut body, "content", Value::Null);
+            render::set(&mut body, "embeds", json!([]));
             self.rest
-                .edit(channel, message, self.body(text)?)
+                .edit_with(channel, message, body, &uploads(text))
                 .await
-                .map_err(|e| e.why)
+                .map_err(|e| e.why)?;
+            self.v2_known(message);
+            Ok(())
         })
     }
 
@@ -709,7 +765,11 @@ async fn pass(ctx: &Arc<Ctx>) {
         }
     };
     let (panel, extra) = gather(ctx, &config, &jobs).await;
-    let board = Embeds { rest, now };
+    let board = Messages {
+        rest,
+        now,
+        v2: &ctx.ops.v2,
+    };
     let channel = channel.to_string();
     let turn = Turn {
         store: &ctx.store,

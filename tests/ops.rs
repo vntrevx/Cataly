@@ -1,6 +1,6 @@
-//! The ops room through the real hub and a fake Discord: the panel is one embed message created
-//! with its banner and thumbnail and pinned; its buttons answer the owner only; events routed to
-//! the room are never posted as plain lines.
+//! The ops room through the real hub and a fake Discord: the panel is one Components V2 message
+//! created with its banner and pinned; its buttons answer the owner only; events routed to the
+//! room are never posted as plain lines.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,6 +22,8 @@ const OTHER: &str = "400000000000000002";
 const CH: &str = "600000000000000001";
 const OPS: &str = "600000000000000002";
 const WAIT: Duration = Duration::from_secs(30);
+/// The message flag of a Components V2 message.
+const COMPONENTS_V2: u64 = 1 << 15;
 
 fn hub(fake: &FakeDiscord, language: &str) -> TestHub {
     let hub = TestHub::new("");
@@ -66,22 +68,30 @@ fn press(fake: &FakeDiscord, user: &str, message: &str, id: &str) -> Value {
 }
 
 #[test]
-fn the_panel_is_one_pinned_embed_with_owner_only_buttons() {
+fn the_panel_is_one_pinned_message_with_owner_only_buttons() {
     let fake = FakeDiscord::start();
     let mut hub = hub(&fake, "ko");
     hub.start();
     let created = panel(&fake);
     let names: Vec<&str> = created.files.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["panel-banner.jpg", "panel-thumb.jpg"]);
+    assert_eq!(names, ["panel-banner.jpg"]);
     assert!(created.files.iter().all(|(_, size)| *size > 1000));
-    let embed = &created.body["embeds"][0];
-    assert_eq!(embed["title"], "Cataly 상황판");
-    assert_eq!(embed["image"]["url"], "attachment://panel-banner.jpg");
-    assert_eq!(embed["thumbnail"]["url"], "attachment://panel-thumb.jpg");
-    assert!(embed["timestamp"].is_string(), "the update time");
+    assert_eq!(created.body["flags"], COMPONENTS_V2);
+    assert!(created.body["embeds"].is_null() && created.body["content"].is_null());
+    let container = &created.body["components"][0];
+    assert_eq!(container["type"], 17);
     assert_eq!(
-        created.body["attachments"][1]["filename"],
-        "panel-thumb.jpg"
+        container["components"][0]["items"][0]["media"]["url"],
+        "attachment://panel-banner.jpg"
+    );
+    let header = container["components"][1]["content"].as_str().unwrap();
+    assert!(
+        header.starts_with("-# Cataly 상황판 · 🕒 갱신 <t:"),
+        "the update time: {header}"
+    );
+    assert_eq!(
+        created.body["attachments"][0]["filename"],
+        "panel-banner.jpg"
     );
     assert_eq!(created.body["enforce_nonce"], true);
     let message = fake
@@ -108,8 +118,13 @@ fn the_panel_is_one_pinned_embed_with_owner_only_buttons() {
     );
     // The owner's presses: the usage table, a refresh too soon, the mute.
     let usage = press(&fake, OWNER, &message, "ops:usage");
-    assert_eq!(usage["data"]["flags"], 64);
-    assert_eq!(usage["data"]["embeds"][0]["title"], "📊 사용량 자세히");
+    assert_eq!(usage["data"]["flags"], 64 | COMPONENTS_V2);
+    assert!(
+        usage["data"]["components"][0]["components"][0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("## 📊 사용량 자세히")
+    );
     let soon = press(&fake, OWNER, &message, "ops:refresh");
     assert!(
         soon["data"]["content"]
@@ -149,21 +164,37 @@ fn the_panel_speaks_english_when_asked() {
     let mut hub = hub(&fake, "en");
     hub.start();
     let created = panel(&fake);
-    let embed = &created.body["embeds"][0];
-    assert_eq!(embed["title"], "Cataly status");
-    let labels: Vec<&str> = created.body["components"][0]["components"]
+    let parts = created.body["components"][0]["components"]
+        .as_array()
+        .unwrap();
+    assert!(
+        parts[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("-# Cataly status · 🕒 updated ")
+    );
+    // The details button beside the usage, then the row of actions.
+    let usage = parts.iter().find(|p| p["type"] == 9).unwrap();
+    assert_eq!(usage["accessory"]["label"], "Details");
+    assert_eq!(usage["accessory"]["custom_id"], "ops:usage");
+    let row = parts.iter().find(|p| p["type"] == 1).unwrap();
+    let labels: Vec<(&str, &str)> = row["components"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|b| b["label"].as_str().unwrap())
+        .map(|b| {
+            (
+                b["label"].as_str().unwrap(),
+                b["custom_id"].as_str().unwrap(),
+            )
+        })
         .collect();
     assert_eq!(
         labels,
         [
-            "Refresh",
-            "Usage details",
-            "Mute 1 hour",
-            "Watched channels"
+            ("Refresh", "ops:refresh"),
+            ("Mute 1 hour", "ops:mute"),
+            ("Watched channels", "ops:watch")
         ]
     );
     assert!(hub.stop().success());

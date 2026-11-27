@@ -174,7 +174,7 @@ fn panel_with(load: f64, state: HostState) -> Panel {
     p
 }
 
-/// The panel is created once with both images and pinned, then edited in place on change and at
+/// The panel is created once with its banner and pinned, then edited in place on change and at
 /// most once a minute.
 #[tokio::test]
 async fn panel_created_once_then_edited_at_most_once_a_minute() {
@@ -186,7 +186,7 @@ async fn panel_created_once_then_edited_at_most_once_a_minute() {
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(calls[0].0.starts_with("create"));
     assert!(calls[0].1.contains("attachment://panel-banner.jpg"));
-    assert!(calls[0].1.contains("attachment://panel-thumb.jpg"));
+    assert!(!calls[0].1.contains("attachment://panel-thumb.jpg"));
     assert!(calls[0].1.contains("Cataly 상황판"));
     assert!(calls[1].0.starts_with("pin"), "pinned after the create");
     let id = calls[0].0.trim_start_matches("create ").to_string();
@@ -204,7 +204,7 @@ async fn panel_created_once_then_edited_at_most_once_a_minute() {
     assert_eq!(room.fake.count("create"), 1);
 }
 
-/// A pin refused for lack of the permission is noted once in the footer and logged once, tried
+/// A pin refused for lack of the permission is noted once in the last line and logged once, tried
 /// again at most once an hour, and pinned once when the permission arrives.
 #[tokio::test]
 async fn refused_pin_is_retried_hourly_until_it_works() {
@@ -423,6 +423,140 @@ async fn job_failing_twice_alerts_once_and_resolves() {
     assert!(panel.is_some_and(|(_, t)| t.contains("🔋 Usage")));
 }
 
+/// One request to the HTTP stand-in: method, path, content type and body.
+type Request = (String, String, String, Vec<u8>);
+
+/// A Discord stand-in over HTTP for [`Messages`]: a read of a message answers with `flags`, an edit
+/// with the edited message; every request is recorded.
+async fn discord(flags: u64) -> (Arc<Rest>, Arc<Mutex<Vec<Request>>>) {
+    use http_body_util::{BodyExt as _, Full};
+    use hyper::body::{Bytes, Incoming};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let log = Arc::clone(&log);
+            let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+                let log = Arc::clone(&log);
+                async move {
+                    let (method, path) = (req.method().to_string(), req.uri().path().to_string());
+                    let kind = req
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    let body = req.into_body().collect().await?.to_bytes().to_vec();
+                    log.lock().unwrap().push((method, path.clone(), kind, body));
+                    let id = path.rsplit('/').next().unwrap_or_default();
+                    let reply = json!({ "id": id, "channel_id": "600", "flags": flags });
+                    Ok::<_, hyper::Error>(hyper::Response::new(Full::new(Bytes::from(
+                        reply.to_string(),
+                    ))))
+                }
+            });
+            tokio::spawn(
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service),
+            );
+        }
+    });
+    let base = crate::relay::http::Base::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+    (Arc::new(Rest::new(base, "token", None).unwrap()), seen)
+}
+
+/// A panel posted as an embed by an older Cataly becomes Components V2 on its first edit: content
+/// and embeds emptied, the banner uploaded again. Later edits, and edits of a message already V2,
+/// are plain; alerts stay embeds.
+#[tokio::test]
+async fn an_embed_panel_becomes_components_v2_in_place() {
+    let panel = render::panel(&render::tests::sample(), Language::Korean, "x").to_string();
+    let (rest, seen) = discord(0).await;
+    let v2 = Mutex::new(None);
+    let messages = Messages {
+        rest,
+        now: START,
+        v2: &v2,
+    };
+    messages.board_edit("600", "700", &panel).await.unwrap();
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(&str, &str)> = calls
+        .iter()
+        .map(|(m, p, _, _)| (m.as_str(), p.as_str()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("GET", "/channels/600/messages/700"),
+            ("PATCH", "/channels/600/messages/700")
+        ]
+    );
+    let (_, _, kind, body) = &calls[1];
+    assert!(kind.starts_with("multipart/form-data"), "{kind}");
+    let body = String::from_utf8_lossy(body);
+    assert!(body.contains("filename=\"panel-banner.jpg\""));
+    assert!(!body.contains("panel-thumb.jpg"));
+    let payload = body
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .unwrap();
+    assert_eq!(payload["flags"], render::COMPONENTS_V2);
+    assert_eq!(payload["content"], Value::Null);
+    assert_eq!(payload["embeds"], json!([]));
+    assert_eq!(payload["attachments"][0]["filename"], "panel-banner.jpg");
+    assert!(
+        payload["components"][0]["components"][1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("-# Cataly 상황판 · 🕒 갱신 <t:1800000000:R>\n"),
+        "stamped: {payload}"
+    );
+    assert_eq!(*v2.lock().unwrap(), Snowflake::parse("700"));
+    // Known V2 now: the next edit is one plain JSON request.
+    messages.board_edit("600", "700", &panel).await.unwrap();
+    let calls = seen.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3);
+    let (method, _, kind, body) = &calls[2];
+    assert_eq!(
+        (method.as_str(), kind.as_str()),
+        ("PATCH", "application/json")
+    );
+    let body: Value = serde_json::from_slice(body).unwrap();
+    assert!(body.get("embeds").is_none() && body.get("attachments").is_none());
+    // An alert edit is never read first.
+    let alert = render::alert("t", "d", 0, Level::Watch, Language::Korean).to_string();
+    messages.board_edit("600", "701", &alert).await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 4);
+
+    // A message Discord reports as V2 (posted by this version before a restart): plain edits.
+    let (rest, seen) = discord(render::COMPONENTS_V2).await;
+    let v2 = Mutex::new(None);
+    let messages = Messages {
+        rest,
+        now: START,
+        v2: &v2,
+    };
+    messages.board_edit("600", "700", &panel).await.unwrap();
+    messages.board_edit("600", "700", &panel).await.unwrap();
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(&str, &str)> = calls
+        .iter()
+        .map(|(m, _, k, _)| (m.as_str(), k.as_str()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("GET", ""),
+            ("PATCH", "application/json"),
+            ("PATCH", "application/json")
+        ],
+        "read once per hub run"
+    );
+}
+
 /// The shapes stock OMP 19.2.1 printed on the owner's machine (account fields left out): every
 /// provider shows by the name OMP reports, the extension provider `devin` included.
 const OMP_19_2_1: &str = r#"{"generatedAt":1795660240551,"reports":[
@@ -494,7 +628,7 @@ fn the_live_omp_usage_renders_named_providers_and_green() {
         ),
     ] {
         let body = render::panel(&p, lang, "0.1.4");
-        assert_eq!(body["embeds"][0]["color"], 0x002E_CC71, "green");
+        assert_eq!(body["components"][0]["accent_color"], 0x002E_CC71, "green");
         let text = body.to_string();
         for want in words {
             assert!(text.contains(want), "{want} in {text}");
