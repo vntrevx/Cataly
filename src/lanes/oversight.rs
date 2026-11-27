@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use super::attach;
 use super::evidence::{self, ReportInput};
 use super::record::{Record, State};
 use super::{Lanes, Posted};
@@ -104,7 +105,11 @@ pub(crate) fn decide(w: &super::record::Watch, f: &Facts<'_>, o: &Oversight) -> 
 
 impl<R: Runtime> Lanes<R> {
     /// One report (EVR req. 1-8, 14-22): checked, evidence read, stored, then relayed.
-    pub(super) async fn report(&self, rec: &Record, input: &Value) -> Result<String, String> {
+    pub(super) async fn report(
+        self: &Arc<Self>,
+        rec: &Record,
+        input: &Value,
+    ) -> Result<String, String> {
         let r: ReportInput = p::parse::<ReportInput>(input).map_err(|e| format!("report: {e}"))?;
         evidence::check_report(&r)?;
         let mut items = Vec::new();
@@ -112,7 +117,14 @@ impl<R: Runtime> Lanes<R> {
             items.push(evidence::file_item(Path::new(&rec.cwd), f)?);
         }
         items.extend(evidence::tool_items(&r.calls, r.facts.as_ref())?);
+        let uploads = self.report_attachments(rec, &r.attach).await?;
         let total = items.len();
+        let stored = if uploads.is_empty() {
+            json!({ "files": r.files, "calls": r.calls })
+        } else {
+            json!({ "files": r.files, "calls": r.calls, "attach": uploads })
+        };
+        let stored = serde_json::to_string(&stored).unwrap_or_default();
         let write = LaneWrite::Report {
             key: rec.key.clone(),
             run_id: rec.run_id.clone(),
@@ -123,8 +135,7 @@ impl<R: Runtime> Lanes<R> {
                 r.text.trim().to_string()
             },
             summary: r.summary.clone(),
-            evidence: serde_json::to_string(&json!({ "files": r.files, "calls": r.calls }))
-                .unwrap_or_default(),
+            evidence: stored.clone(),
             items,
             relay: "not posted".into(),
         };
@@ -174,9 +185,17 @@ impl<R: Runtime> Lanes<R> {
             summary: r.summary.clone(),
             new_items,
             relay: "not posted".into(),
+            evidence: stored,
         };
-        if AT_ONCE.contains(&r.kind.as_str()) {
+        let at = row.at_ms;
+        let posts_now = AT_ONCE.contains(&r.kind.as_str());
+        if posts_now && uploads.is_empty() {
             self.relay(rec, &row).await;
+        } else if posts_now {
+            // An upload can outlast the tool's answer deadline: the post goes on its own task and
+            // its outcome lands in the report's relay state (EVR req. 66).
+            let (lanes, rec) = (Arc::clone(self), rec.clone());
+            tokio::spawn(async move { lanes.relay(&rec, &row).await });
         }
         self.nudge.notify_one();
         let attached = match (total, new_items) {
@@ -184,9 +203,13 @@ impl<R: Runtime> Lanes<R> {
             (_, 0) => "all attached items were seen before".to_string(),
             (m, n) => format!("{n} of {m} attached items count as new"),
         };
+        let files = match uploads.len() {
+            0 => String::new(),
+            n => format!("; {n} file(s) attached for the thread post"),
+        };
         Ok(format!(
-            "report {id} recorded at {}; {attached}",
-            crate::jobs::instant_text(row.at_ms)
+            "report {id} recorded at {}; {attached}{files}",
+            crate::jobs::instant_text(at)
         ))
     }
 
@@ -232,12 +255,25 @@ impl<R: Runtime> Lanes<R> {
             row.summary.as_deref().unwrap_or_default()
         };
         let home = std::env::var("HOME").ok();
+        let (files, left_out) = attach::load(&attach::of_evidence(&row.evidence));
         let text = format!(
-            "Lane update: {}",
-            evidence::thread_text(body, home.as_deref())
+            "Lane update: {}{}",
+            evidence::thread_text(body, home.as_deref()),
+            attach::left_out_note(&left_out)
         );
         let seed = format!("lane-report:{}:{}", row.key, row.number);
-        let outcome = self.env.threads.post(thread, &text, &seed).await;
+        // Recorded before the external effect: a restart never posts a report again whose post
+        // may have happened (EVR req. 22, 66).
+        if let Err(e) = self.env.store.lanes(set("posting".into())).await {
+            self.alert(
+                &rec.key,
+                "report not posted",
+                &format!("report {}#{}: {e}", row.key, row.number),
+                false,
+            );
+            return;
+        }
+        let outcome = self.env.threads.post(thread, &text, &seed, &files).await;
         let relay = match &outcome {
             Posted::Confirmed => "posted".to_string(),
             Posted::Rejected(why) => format!("failed: {why}"),

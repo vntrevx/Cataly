@@ -39,6 +39,9 @@ pub(crate) struct ReportRow {
     pub(crate) summary: Option<String>,
     pub(crate) new_items: i64,
     pub(crate) relay: String,
+    /// The stored evidence JSON: files, calls and the attachments the thread post carries.
+    #[serde(skip)]
+    pub(crate) evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -374,7 +377,8 @@ fn lane_row(r: &Row<'_>) -> rusqlite::Result<LaneRow> {
     })
 }
 
-const REPORT_COLUMNS: &str = "key, number, run_id, at_ms, kind, text, summary, new_items, relay";
+const REPORT_COLUMNS: &str =
+    "key, number, run_id, at_ms, kind, text, summary, new_items, relay, evidence";
 
 fn report_row(r: &Row<'_>) -> rusqlite::Result<ReportRow> {
     Ok(ReportRow {
@@ -387,6 +391,7 @@ fn report_row(r: &Row<'_>) -> rusqlite::Result<ReportRow> {
         summary: r.get(6)?,
         new_items: r.get(7)?,
         relay: r.get(8)?,
+        evidence: r.get(9)?,
     })
 }
 

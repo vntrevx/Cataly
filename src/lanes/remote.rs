@@ -420,7 +420,7 @@ impl<R: Runtime> Lanes<R> {
             crate::sys::now_ms()
         );
         if let super::Posted::Rejected(why) | super::Posted::Uncertain(why) =
-            self.env.threads.post(thread, &text, &seed).await
+            self.env.threads.post(thread, &text, &seed, &[]).await
         {
             self.alert(&rec.key, "worker note not posted", &why, false);
         }

@@ -9,8 +9,9 @@ use hyper::Method;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
-use super::{ChannelRef, Rest, Sent, Snowflake};
+use super::{ChannelRef, Rest, Sent, Snowflake, Upload};
 use crate::config::Config;
+use crate::lanes::attach::File;
 use crate::lanes::{BoxFut, Posted, Threads};
 use crate::relay::http::Kind;
 
@@ -47,7 +48,7 @@ impl DiscordThreads {
         Ok(((self.rest)(&config)?, config))
     }
 
-    async fn post_now(&self, thread: &str, text: &str, seed: &str) -> Posted {
+    async fn post_now(&self, thread: &str, text: &str, seed: &str, files: &[File]) -> Posted {
         let (rest, config) = match self.client() {
             Ok(c) => c,
             Err(e) => return Posted::Rejected(e),
@@ -55,8 +56,22 @@ impl DiscordThreads {
         let Ok(thread) = id(thread) else {
             return Posted::Rejected("bad thread ID".into());
         };
+        let uploads: Vec<Upload<'_>> = files
+            .iter()
+            .map(|f| Upload {
+                name: &f.name,
+                mime: f.mime,
+                bytes: &f.bytes,
+            })
+            .collect();
         match rest
-            .post(&ChannelRef::Id(thread), text, seed, &config.outgoing)
+            .post_with(
+                &ChannelRef::Id(thread),
+                text,
+                seed,
+                &config.outgoing,
+                &uploads,
+            )
             .await
             .outcome
         {
@@ -195,8 +210,14 @@ impl DiscordThreads {
 }
 
 impl Threads for DiscordThreads {
-    fn post<'a>(&'a self, thread: &'a str, text: &'a str, seed: &'a str) -> BoxFut<'a, Posted> {
-        Box::pin(self.post_now(thread, text, seed))
+    fn post<'a>(
+        &'a self,
+        thread: &'a str,
+        text: &'a str,
+        seed: &'a str,
+        files: &'a [File],
+    ) -> BoxFut<'a, Posted> {
+        Box::pin(self.post_now(thread, text, seed, files))
     }
 
     fn status<'a>(

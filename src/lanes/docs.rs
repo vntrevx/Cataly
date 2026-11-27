@@ -16,6 +16,7 @@ pub(crate) const VERDICT: &str = "verdict";
 pub(crate) const FILE: &str = "file";
 pub(crate) const RULE: &str = "rule";
 pub(crate) const BOARD: &str = "board";
+pub(crate) const POST: &str = "post";
 
 pub(crate) const MOVED: &str = "busy: the record changed meanwhile; read it again";
 

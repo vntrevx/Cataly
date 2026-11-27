@@ -369,9 +369,11 @@ params! {
     /// Where the item came from.
     SOURCE: "source", Type::Text, "where it came from, such as discord:<room>:<message>", [Lead], false;
     /// The thread or room.
-    THREAD: "thread", Type::Text, "the thread or room it belongs to; question.ask posts in a discord:<id> thread when room is not given", [Lead], false;
-    /// The channel to ask in.
-    ROOM: "room", Type::Text, "the Discord channel ID to post a question in (default the discord:<id> thread, else the home channel)", [Lead], false;
+    THREAD: "thread", Type::Text, "the thread or room it belongs to; question.ask and post use a discord:<id> thread when room is not given", [Lead], false;
+    /// The channel to ask or post in.
+    ROOM: "room", Type::Text, "the Discord channel ID to post a question or files in (default the discord:<id> thread, else the home channel)", [Lead], false;
+    /// Files posted as Discord attachments.
+    ATTACH: "attach", Type::Texts, "files to show as Discord attachments (images inline): at most 10, 24 MiB together; a lane's relative to its working directory", [Lead, Lane], false;
     /// A message ID.
     MESSAGE: "message", Type::Text, "the owner's or the announcing message ID", [Lead], false;
     /// Why.

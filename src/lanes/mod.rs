@@ -7,6 +7,7 @@
 //! lead run lifecycle operations; a lane, through its bridge connection, only reports, records steps,
 //! claims completion and registers worktrees for itself (LANE req. 1, 53; OPC-57).
 
+pub(crate) mod attach;
 pub(crate) mod board;
 pub(crate) mod checks;
 pub(crate) mod docs;
@@ -75,8 +76,15 @@ pub(crate) enum Posted {
 
 /// What lanes need from the relay for their threads (DISC-OUT-11 to 13, EVR-14) and the board.
 pub(crate) trait Threads: board::Board + Send + Sync {
-    /// Posts `text` once (the seed makes the nonce) into a thread.
-    fn post<'a>(&'a self, thread: &'a str, text: &'a str, seed: &'a str) -> BoxFut<'a, Posted>;
+    /// Posts `text` once (the seed makes the nonce) into a thread or channel, with `files` attached
+    /// to its last part.
+    fn post<'a>(
+        &'a self,
+        thread: &'a str,
+        text: &'a str,
+        seed: &'a str,
+        files: &'a [attach::File],
+    ) -> BoxFut<'a, Posted>;
     /// Puts the status word in front of the thread's title, read fresh; archives when asked.
     fn status<'a>(
         &'a self,
@@ -1181,7 +1189,7 @@ impl<R: Runtime> Lanes<R> {
         let home = std::env::var("HOME").ok();
         let body = evidence::thread_text(text, home.as_deref());
         let seed = format!("lane-kickoff:{key}");
-        match self.env.threads.post(id, &body, &seed).await {
+        match self.env.threads.post(id, &body, &seed, &[]).await {
             Posted::Confirmed => {
                 let now = now_ms();
                 self.keep(key, |r| r.watch.thread_post_ms = Some(now)).await;

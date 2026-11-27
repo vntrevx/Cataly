@@ -68,7 +68,10 @@ async fn running(hub: &Hub) -> bool {
 pub(crate) async fn blocks(hub: &Hub, op: &str) -> Option<String> {
     let writes = match op.strip_prefix("lane.") {
         Some(lane_op) => !LANE_READS.contains(&lane_op),
-        None => matches!(op, "question.ask" | "question.choose" | "job.start"),
+        None => matches!(
+            op,
+            "question.ask" | "question.choose" | "post" | "job.start"
+        ),
     };
     (writes && running(hub).await).then(|| {
         format!(

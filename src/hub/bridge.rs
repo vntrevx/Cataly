@@ -82,7 +82,8 @@ fn lane_tool() -> Value {
         // A report hashes evidence files; the bridge waits this long for the answer.
         "timeout_ms": 10_000,
         "description": "Report to Cataly as this lane. op report: kind (progress, stuck, waiting, stopped, finished), \
-    text, summary? (for the owner, at most 500 characters), files? and calls? as evidence. op step: name, result, \
+    text, summary? (for the owner, at most 500 characters), files? and calls? as evidence, attach? (up to 10 files \
+    from your working directory shown in your Discord thread with the post, images inline). op step: name, result, \
     evidence (a link or path), receipts? (push commit, merge link, deploy ID), files?, calls?. op steps: list recorded \
     steps. op claim: evidence (report IDs and shareable receipts). op worktree: path (a worktree you created). \
     op publish: key, path, title?, visibility private|public. op rule-add: text, evidence, scope global|repo; \

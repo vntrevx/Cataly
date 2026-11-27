@@ -17,7 +17,8 @@ use crate::host::Runtime;
 use crate::params as p;
 use crate::sys::now_ms;
 
-const ALLOWED: [&str; 31] = [
+/// The file extensions a file may be published or attached with (EVR req. 26, 50).
+pub(super) const ALLOWED: [&str; 31] = [
     "html", "htm", "css", "js", "mjs", "json", "png", "jpg", "jpeg", "gif", "webp", "svg", "ico",
     "woff", "woff2", "ttf", "otf", "md", "txt", "csv", "pdf", "mp3", "wav", "ogg", "m4a", "mp4",
     "webm", "mov", "avif", "flac", "markdown",
@@ -91,8 +92,8 @@ fn encode(rel: &str) -> String {
     out
 }
 
-/// The parts below the root that refuse a file (EVR req. 26).
-fn part_refused(rel: &Path) -> Option<String> {
+/// The parts below the root that refuse a file (EVR req. 26, 50).
+pub(super) fn part_refused(rel: &Path) -> Option<String> {
     rel.components().find_map(|c| {
         let part = c.as_os_str().to_string_lossy().to_string();
         let low = part.to_ascii_lowercase();
@@ -105,14 +106,15 @@ fn part_refused(rel: &Path) -> Option<String> {
     })
 }
 
-/// The hash and size of a regular file, refused when it changed while hashed.
-fn hash_file(path: &Path) -> Result<(String, u64), String> {
+/// The bytes of a regular file of at most `max` bytes (`limit` names the size), refused when it
+/// changed while read.
+pub(super) fn read_stable(path: &Path, max: u64, limit: &str) -> Result<Vec<u8>, String> {
     let before = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !before.is_file() {
         return Err("not a regular file".into());
     }
-    if before.len() > FILE_MAX {
-        return Err("larger than 512 MiB".into());
+    if before.len() > max {
+        return Err(format!("larger than {limit}"));
     }
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let after = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -120,9 +122,16 @@ fn hash_file(path: &Path) -> Result<(String, u64), String> {
         || after.modified().ok() != before.modified().ok()
         || u64::try_from(bytes.len()).ok() != Some(after.len())
     {
-        return Err("the file changed while it was hashed".into());
+        return Err("the file changed while it was read".into());
     }
-    Ok((crate::config::sha256_hex(&bytes), after.len()))
+    Ok(bytes)
+}
+
+/// The hash and size of a regular file, refused when it changed while hashed.
+fn hash_file(path: &Path) -> Result<(String, u64), String> {
+    let bytes = read_stable(path, FILE_MAX, "512 MiB")?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    Ok((crate::config::sha256_hex(&bytes), size))
 }
 
 /// The canonical file, its canonical root and the root it was named under, with every path rule of
@@ -252,7 +261,11 @@ impl<R: Runtime> Lanes<R> {
     }
 
     /// Refuses a file inside a worktree of another open lane (EVR req. 26).
-    async fn outside_other_worktrees(&self, key: &str, real: &Path) -> Result<(), String> {
+    pub(super) async fn outside_other_worktrees(
+        &self,
+        key: &str,
+        real: &Path,
+    ) -> Result<(), String> {
         let rows = self
             .env
             .store

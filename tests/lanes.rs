@@ -864,6 +864,140 @@ fn reports_reach_the_thread_by_policy() {
     hub.stop();
 }
 
+/// EVR req. 64-66: a report's attachments go with its thread post as Discord files; a refused file
+/// refuses the whole report, nothing stored; a lane without a Discord thread cannot attach.
+#[test]
+fn report_attachments_reach_the_thread() {
+    let (fake, mut hub, work) = question_hub();
+    std::fs::create_dir_all(work.join("mock")).unwrap();
+    std::fs::create_dir_all(work.join(".hidden")).unwrap();
+    std::fs::write(work.join("mock/before.png"), b"\x89PNG before").unwrap();
+    std::fs::write(work.join("mock/a.webp"), b"RIFF a").unwrap();
+    std::fs::write(work.join(".hidden/c.png"), b"x").unwrap();
+    std::fs::write(work.join("mock/run.sh"), b"x").unwrap();
+    open(
+        &hub,
+        "att-1",
+        &json!({ "thread": format!("discord:{THREAD}"), "cwd": work }),
+    );
+    let rec = record(&hub, "att-1");
+    let (mut b, _) = hello(&hub, &rec);
+    let reports = || {
+        lane(&hub, "reports", &json!({ "key": "att-1" }))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    for (n, (path, why)) in [
+        (".hidden/c.png", "path part '.hidden'"),
+        ("mock/run.sh", "extension 'sh'"),
+        ("/etc/hosts", "not inside a directory"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = b.lane_tool(
+            &format!("bad{n}"),
+            &rec["session_id"],
+            json!({ "op": "report", "kind": "waiting", "text": "look", "attach": [path] }),
+        );
+        assert_eq!(refused["error"], true, "{refused}");
+        assert!(refused["text"].as_str().unwrap().contains(why), "{refused}");
+    }
+    assert_eq!(reports(), 0, "a refused attachment stores nothing");
+    let said = b.lane_tool(
+        "ok",
+        &rec["session_id"],
+        json!({ "op": "report", "kind": "waiting", "text": "which mockup?",
+            "attach": ["mock/before.png", format!("{}/mock/a.webp", work.display())] }),
+    );
+    assert_eq!(said["error"], false, "{said}");
+    assert!(
+        said["text"]
+            .as_str()
+            .unwrap()
+            .contains("2 file(s) attached"),
+        "{said}"
+    );
+    let post = fake.wait(WAIT, |f| {
+        f.calls("POST", &format!("/channels/{THREAD}/messages"))
+            .into_iter()
+            .find(|s| !s.files.is_empty())
+    });
+    assert_eq!(
+        post.files,
+        vec![("before.png".to_string(), 11), ("a.webp".to_string(), 6)]
+    );
+    let content = post.body["content"].as_str().unwrap();
+    assert!(
+        content.starts_with("Lane update: which mockup?"),
+        "{content}"
+    );
+    assert_eq!(post.body["attachments"][1]["filename"], "a.webp");
+    hub.until(WAIT, || {
+        let rows = lane(&hub, "reports", &json!({ "key": "att-1" })).unwrap();
+        (rows[0]["relay"] == "posted").then_some(())
+    });
+    assert_eq!(fake.bot_messages(THREAD).len(), 1);
+    open(&hub, "att-2", &json!({ "cwd": work }));
+    let bare = record(&hub, "att-2");
+    let (mut b2, _) = hello(&hub, &bare);
+    let refused = b2.lane_tool(
+        "no-thread",
+        &bare["session_id"],
+        json!({ "op": "report", "kind": "waiting", "text": "x", "attach": ["mock/a.webp"] }),
+    );
+    assert_eq!(refused["error"], true, "{refused}");
+    assert!(
+        refused["text"].as_str().unwrap().contains("Discord thread"),
+        "{refused}"
+    );
+    drop((b, b2));
+    hub.stop();
+}
+
+/// EVR req. 67-69: the lead posts text with files once into the home channel; the same post again
+/// is not sent, Telegram and Slack destinations are refused, and files outside its directories are.
+#[test]
+fn lead_posts_files_once() {
+    let (fake, mut hub, work) = question_hub();
+    std::fs::write(work.join("shot.png"), b"\x89PNG shot").unwrap();
+    let (mut b, meta) = lead_bridge(&hub);
+    let s = meta["session"].clone();
+    let input = json!({ "op": "post", "text": "the mockups", "attach": ["shot.png"] });
+    let (said, err) = lead_tool(&mut b, &s, "p1", input.clone());
+    assert!(!err && said.contains("posted with 1 file(s)"), "{said}");
+    let posts = fake.calls("POST", &format!("/channels/{CH}/messages"));
+    let with_files: Vec<_> = posts.iter().filter(|p| !p.files.is_empty()).collect();
+    assert_eq!(with_files.len(), 1, "{posts:?}");
+    assert_eq!(with_files[0].files, vec![("shot.png".to_string(), 9)]);
+    assert_eq!(with_files[0].body["content"], "the mockups");
+    let (said, err) = lead_tool(&mut b, &s, "p2", input);
+    assert!(!err && said.contains("not posted again"), "{said}");
+    for (n, (extra, why)) in [
+        (json!({ "thread": "telegram:5" }), "Telegram and Slack"),
+        (
+            json!({ "attach": ["/etc/hosts"] }),
+            "not inside a directory",
+        ),
+        (json!({ "attach": [] }), "name 1 to 10 files"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut bad = json!({ "op": "post", "text": "x", "attach": ["shot.png"] });
+        for (k, v) in extra.as_object().unwrap() {
+            bad[k] = v.clone();
+        }
+        let (why_said, err) = lead_tool(&mut b, &s, &format!("bad{n}"), bad);
+        assert!(err && why_said.contains(why), "{why_said}");
+    }
+    assert_eq!(fake.bot_messages(CH).len(), 1, "one post in all");
+    drop(b);
+    hub.stop();
+}
+
 /// Check 10 (decision 9): three running lanes, two with active goals and one paused by the lead, are
 /// restarted on their exact files after a hub restart; the two get `goal resume`, the paused one
 /// stays paused, the lead receives the recap.

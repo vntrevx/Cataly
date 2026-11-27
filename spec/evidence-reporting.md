@@ -61,6 +61,7 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 | EVR-39 | Pull-request policy check (commit identity, fixes need tests) | lanes | MERGE into EVR-32 | An optional signal kind; drop the UI test loop heuristic. |
 | EVR-40 | Thread title "finished" mark and last-lane-in-thread election | lifecycle | MERGE into LANE-16 | Thread binding owns it. |
 | EVR-41 | File locks with owner records, stale takeover, readback nonces, torn-line repair, stat caches | all records | DROP | One daemon writer and one embedded store make all of it unnecessary. |
+| EVR-42 | Files posted as Discord attachments with a report or a lead post | lanes, lead, owner | NEW | Mockups and screenshots belong in the thread; a published file only gets a link. |
 
 ## Requirements
 
@@ -134,7 +135,8 @@ lane lifecycle area consumes the completion checker, the step records and the pu
     the lead is told once. A post whose outcome is uncertain is never retried; the lead is told once.
 23. When the lead itself replies in the thread through the daemon and names a report ID, the daemon marks that
     report relayed, links the outbound reply receipt (outbound area), and stops any pending automatic post for it.
-24. Each report shows one relay state: not posted, held (reason), posted, posted by the lead with receipt, failed.
+24. Each report shows one relay state: not posted, held (reason), posting (pinned before the request; a restart
+    never posts it again), posted, posted by the lead with receipt, failed, uncertain.
 
 ### Published files (EVR-17)
 
@@ -283,6 +285,29 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 63. Notices from the lifecycle area (claim recorded, objection) use the same path without waiting; a refused or
     unconfirmed notice is reported to the lead once.
 
+### Files posted as attachments (EVR-42)
+
+64. A lane's report may name files to attach (`attach`, relative to its working directory or absolute). They go
+    with the report's thread post, as Discord attachments on its last part (images show inline). A lane without a
+    Discord thread is refused. A held report posts no files.
+65. Each file is checked when named, all or nothing (one refused file refuses the report, nothing stored): at most
+    10 files, each a regular file of at most 20 MiB and all together at most 24 MiB; inside a directory the session
+    may post from (a lane: its working directory and worktrees, never another open lane's worktree; the lead: its
+    working directory and the open lanes' working directories and worktrees) before and after resolving symlinks;
+    no path part below that directory refused by requirement 26; an extension on the requirement 26 allow list;
+    text kinds (web page, style, script, JSON, SVG, Markdown, text, CSV) free of secret-shaped strings. The report
+    stores each file's canonical path, posted name (non-ASCII-safe characters replaced), SHA-256 and size.
+66. At post time each file is read again; one that went away or whose SHA-256 changed is left out and named under
+    the text. The report's relay state is set to posting before the request, which carries an enforced
+    deterministic nonce; a report with files that posts at once answers when stored and posts on its own task.
+67. The lead posts text (1 to 4000 characters) with 1 to 10 files (requirement 65) into the Discord channel it
+    names, else its `discord:<id>` thread, else the home channel. Telegram and Slack destinations are refused:
+    Telegram has no upload here and a Slack upload completion in doubt cannot be repeated safely.
+68. A lead post is recorded (destination, files with hashes, state) before it is sent, keyed by its destination,
+    text and file hashes. The same post again is answered "posted before" when it was posted, refused when its
+    outcome is pending or uncertain, and sent again only after a definite rejection.
+69. Onboarding refuses the lead's post like any other messenger write.
+
 ## Third-party interfaces used
 
 - OMP extension API: tool registration for the lane main agent; `tool_execution_start`, `tool_execution_update`
@@ -291,8 +316,8 @@ lane lifecycle area consumes the completion checker, the step records and the pu
   and sending a message that either starts a turn or waits for the next one.
 - OMP rpc-ui protocol: submit a prompt to a headless session and read its acceptance answer.
 - GitHub through `gh api` (read only): pull request, its commits and files, single commit, issue state.
-- Discord REST: create message, edit message, with allowed mentions empty. Telegram Bot API: sendMessage,
-  editMessageText with chat and topic IDs.
+- Discord REST: create message (with files as `multipart/form-data`), edit message, with allowed mentions empty.
+  Telegram Bot API: sendMessage, editMessageText with chat and topic IDs.
 - Plain HTTP GET for web signals.
 
 ## State that must survive a restart
@@ -304,6 +329,7 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 - The owner question ledger, the request log and the learned rules, with full history.
 - Per status-message destination: message ID, last body, and the create-pending or in-doubt mark.
 - Pending thread posts with their retry count.
+- Each report's attachments (in its evidence) and each lead post with files, with its state.
 
 ## Problems in the old approach, and better ideas
 

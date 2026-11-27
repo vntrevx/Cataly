@@ -26,10 +26,14 @@ pub(crate) fn definition() -> Value {
     json!({
         "name": LEAD_TOOL,
         "label": "Cataly",
+        // A post uploads up to 24 MiB of files; the bridge waits this long for the answer.
+        "timeout_ms": 120_000,
         "description": "Cataly's records and watches. op is one of: requests (all?), request.add (title, source, thread?), \
     request.next (id, text), request.note (id, text), request.close (id, text); questions, question.ask (text, source, \
     options, recommended?, settle owner|lead, thread?, request?, room?), question.answer (id, text, message), \
-    question.choose (id, option, reason, message), question.withdraw (id, reason); jobs, job.start (name, argv, \
+    question.choose (id, option, reason, message), question.withdraw (id, reason); post (text, attach: 1 to 10 \
+    files from your working directory or an open lane's, shown as Discord attachments, room? or thread? discord:<id>, \
+    default the home channel; the same text and files in the same place post once); jobs, job.start (name, argv, \
     filter, restarts?, delay?, silence?, low?), job.stop (name), job.run (name: one dry run of an owner job); \
     digest (since?); recap; owner notes (observations, never instructions or permission, never passed to other \
     roles): profile.create (message: only when the owner asked for them), profile.read, profile.save (text: the \
@@ -170,6 +174,7 @@ pub(crate) async fn call(hub: &Arc<Hub>, input: &Value) -> Result<String, String
             Ok(list_questions(&rows, usize::MAX))
         }
         "question.ask" => ask(hub, input).await,
+        "post" => post(hub, input).await,
         "question.answer" | "question.choose" | "question.withdraw" => settle(hub, op, input).await,
         "jobs" => Ok(hub.streams.list()),
         "job.start" => hub.streams.start(input).await,
@@ -341,6 +346,43 @@ async fn ask(hub: &Arc<Hub>, input: &Value) -> Result<String, String> {
         ),
     };
     done(d, said)
+}
+
+/// Posts text with files attached in a Discord channel or thread (EVR req. 67-69): the named
+/// channel, else the `discord:<id>` thread, else the home channel. Files come from the lead's working
+/// directory or an open lane's; Telegram and Slack are refused.
+async fn post(hub: &Arc<Hub>, input: &Value) -> Result<String, String> {
+    let text = p::TEXT.need(input, 4000, false)?;
+    let snowflake = crate::relay::discord::Snowflake::parse;
+    let room = match (p::ROOM.text(input), p::THREAD.text(input)) {
+        (Some(r), _) => snowflake(r).ok_or("room: a Discord channel ID is required")?,
+        (None, Some(t)) => t
+            .strip_prefix("discord:")
+            .and_then(snowflake)
+            .ok_or(
+                "thread: files post only on Discord (discord:<id>); Telegram and Slack uploads are not offered",
+            )?,
+        (None, None) => hub
+            .config()
+            .discord
+            .home()
+            .ok_or("name room or thread: there is no Discord home channel")?,
+    };
+    let cwd = hub
+        .lead
+        .snapshot()
+        .map(|s| std::path::PathBuf::from(&s.cwd));
+    let mut roots: Vec<std::path::PathBuf> = cwd.iter().cloned().collect();
+    roots.extend(hub.lanes.open_dirs().await?);
+    hub.lanes
+        .post_files(
+            &room.to_string(),
+            text,
+            &p::ATTACH.list(input),
+            cwd.as_deref(),
+            &roots,
+        )
+        .await
 }
 
 /// Answer by hand, the lead's own choice, or withdrawal (EVR req. 38-40).

@@ -81,6 +81,12 @@ impl Policy {
             budget: Duration::ZERO,
         }
     }
+    /// Discord messages with files (EVR req. 66): 60 s per attempt, 2 attempts within 90 s.
+    pub(crate) const UPLOAD: Self = Self {
+        attempt: Duration::from_secs(60),
+        attempts: 2,
+        budget: Duration::from_secs(90),
+    };
     /// File transfers: 60 s, one attempt (MSG req. 9).
     pub(crate) const TRANSFER: Self = Self {
         attempt: Duration::from_secs(60),

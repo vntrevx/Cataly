@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.7 (Unreleased)
+
+- Lanes and the lead can show files in Discord. A lane's report takes `attach` (up to 10 files
+  from its working directory or worktrees, 24 MiB together): they go with the report's thread
+  post as Discord attachments, images inline. The lead's new `post` op sends text with files into
+  a Discord channel, its `discord:<id>` thread or the home channel, from its working directory or
+  an open lane's. Files follow the publish rules (no dot folders, secret, token, credential or
+  private names, dependency folders; the publish extension list) and text kinds with a
+  token-shaped string are refused. A file that changed between the report and the post is left
+  out and named. Each post is recorded before it is sent and carries an enforced nonce, so a
+  restart never posts it twice: a report shows `posting` until its outcome is known, and the same
+  lead post again is answered "posted before" or, when in doubt, refused. Telegram and Slack
+  destinations are refused; lane threads are Discord threads. The lead's tool now waits up to
+  120 s for an answer (5 s before) so an upload can finish.
+  Before, a lane could only register a file with `publish`, which uploads nothing, so mockups
+  never reached the thread.
+
 ## 0.2.6 (2026-11-27)
 
 - The npm/Bun `cataly` launcher now takes signals before it starts the binary. On a busy machine a

@@ -325,6 +325,14 @@ turn the request started, read from the session file after `prompt_result`, tabl
 the outbox part by part, and posted as a linked reply, or into the thread started from the request
 (DISC-OUT req. 25). The stop gate (EXT-24) remains as the rare fallback.
 
+**Files.** A lane's report and the lead's `post` operation may attach files, posted with the message as
+Discord attachments on its last part (EVR-42, EVR req. 64-69): at most 10, 24 MiB together, each checked
+when named (inside the session's directories, the publish path and extension rules, no secret-shaped text)
+and read again when posted. A report's post is pinned `posting` before the request and a lead post is
+recorded before it, so neither is sent again after a restart; both carry an enforced deterministic nonce.
+Telegram and Slack take no attachments this way: lane threads are Discord threads, and the lead's `post`
+refuses other destinations (Slack's upload is the owner's `cataly lead slack upload`).
+
 ### 5.2 Voice is a separate module
 
 Voice (VOICE-01 to VOICE-24) is the `cataly-voice` crate behind a Cargo feature, so a build without it carries
@@ -562,10 +570,11 @@ path. The values come from the specs; the main ones:
 | `omp session lease`, `omp usage --json` | 10 s / 15 s, 1 MiB |
 | rpc frame | 1 MiB per line; 64 MiB reassembled on v2 |
 | Discord REST / Gateway | 5 s connect, 10 s total, 2 MiB / connect 10 s, HELLO 10 s, READY 20 s, frame write 3 s, frame 1 MiB |
+| Discord message with files | 60 s per attempt, 2 attempts within 90 s; 10 files, 24 MiB together, 20 MiB each |
 | Telegram long poll / Slack calls | 25 s wait + 10 s / 15 s |
 | `gh` / git local / git push | 60 s (GitHub reads in done checks 120 s) / 60 s / 300 s |
 | Job commands / event commands | per job (default 30 s, max 1 day) / 30 s, 4 at a time |
-| Bridge: connect / report tool / job tool / shell veto / stop gate | 1 s / 10 s / 5 s / 2 s / 1 s |
+| Bridge: connect / report tool / lead tool / shell veto / stop gate | 1 s / 10 s / 120 s / 2 s / 1 s |
 | Session file reads | header 64 KiB (1 MiB for reopen), in-doubt search last 8 MiB and 2 s, file ≤ 64 MiB |
 | Release check / install downloads | 15 s, 1 MiB / connect 10 s, 120 s per asset, binary ≤ 128 MiB |
 

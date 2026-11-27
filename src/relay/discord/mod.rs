@@ -310,6 +310,7 @@ impl Rest {
         } else {
             Vec::new()
         };
+        let files = matches!(body, Some(Body::Form(..)));
         let bytes = match body {
             None => None,
             Some(Body::Json(v)) => Some(v.to_string().into_bytes()),
@@ -325,7 +326,8 @@ impl Rest {
             json: bytes,
             kind,
         };
-        http::call(&self.base, &req, Policy::RELAY, |resp| {
+        let policy = if files { Policy::UPLOAD } else { Policy::RELAY };
+        http::call(&self.base, &req, policy, |resp| {
             self.observe(route, resp);
         })
         .await
@@ -433,6 +435,18 @@ impl Rest {
         seed: &str,
         checks: &Checks,
     ) -> Posted {
+        self.post_with(dest, text, seed, checks, &[]).await
+    }
+
+    /// [`Rest::post`] with `files` attached to the last part (EVR req. 66).
+    pub(crate) async fn post_with(
+        &self,
+        dest: &ChannelRef,
+        text: &str,
+        seed: &str,
+        checks: &Checks,
+        files: &[Upload<'_>],
+    ) -> Posted {
         let refuse = |channel, why: String| Posted {
             channel,
             ids: Vec::new(),
@@ -480,13 +494,19 @@ impl Rest {
                 "nonce": nonce(seed, index),
                 "enforce_nonce": true,
             });
+            let body = if index + 1 == parts.len() && !files.is_empty() {
+                form(&body, files)
+            } else {
+                Body::Json(body)
+            };
             let outcome = self
-                .request(
+                .request_as(
                     "POST channels/messages",
                     Method::POST,
                     &path,
                     Some(body),
                     Kind::Idempotent,
+                    true,
                 )
                 .await;
             let result = match outcome {

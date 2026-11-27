@@ -37,6 +37,8 @@ pub(crate) struct ReportInput {
     pub(crate) summary: Option<String>,
     pub(crate) files: Vec<String>,
     pub(crate) calls: Vec<String>,
+    /// Files the thread post carries as attachments (EVR req. 64).
+    pub(crate) attach: Vec<String>,
     /// The bridge's facts about the calls the report names (EXT req. 21-22).
     pub(crate) facts: Option<Value>,
 }
