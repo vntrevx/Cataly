@@ -7,6 +7,13 @@
   `cataly stats` (`*_wake_latency`) and left its read time in the hub's memory for good. The
   round now waits for the arrival, and no read time outlives its message, also when the message
   leaves the queue without a hand-off (a reset, a channel leaving scope).
+- The lead's `cataly_lead` tool schema now declares the lane fields. Before, it listed only the
+  request, question, job and onboarding fields, so a model passed `worktree` and `checks` as JSON
+  strings and `lane.open` refused them (`invalid type: string ..., expected struct Worktree`,
+  `the done checks must be a list of signals`): the lead could not open a lane at all. `checks`,
+  `worktree`, `ceilings`, `after`, the flags (`look_only`, `preview`, `steer`, `dry_run`) and the
+  numbers (`priority`, `count`, `expires_hours`) now carry their real types, and the text fields
+  of the lane operations are named.
 
 ## 0.2.4 (2026-11-27)
 

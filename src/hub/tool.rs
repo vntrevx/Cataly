@@ -23,7 +23,7 @@ pub(crate) const LEAD_TOOL: &str = "cataly_lead";
 pub(crate) fn definition() -> Value {
     let text = |d: &str| json!({ "type": "string", "description": d });
     let int = |d: &str| json!({ "type": "integer", "description": d });
-    json!({
+    let mut def = json!({
         "name": LEAD_TOOL,
         "label": "Cataly",
         "description": "Cataly's records and watches. op is one of: requests (all?), request.add (title, source, thread?), \
@@ -80,12 +80,104 @@ pub(crate) fn definition() -> Value {
                 "since": text("ISO instant the digest starts at"),
                 "all": { "type": "boolean" },
                 "calls": { "type": "array", "items": { "type": "string" } },
-                "answer": text("onboarding: yes|no for consent, allowed|declined for a tool"),
+                "answer": text("onboarding: yes|no for consent, allowed|declined for a tool; lane.answer: the answer"),
                 "reads": text("onboarding: what the tool would read and why"),
                 "reopen": { "type": "boolean", "description": "onboarding.start after the owner raised it again" }
             },
             "required": ["op"]
         }
+    });
+    if let Some(properties) = def
+        .pointer_mut("/parameters/properties")
+        .and_then(Value::as_object_mut)
+    {
+        for part in [lane_open_properties(), lane_properties()] {
+            if let Value::Object(map) = part {
+                properties.extend(map);
+            }
+        }
+    }
+    def
+}
+
+/// The `lane.open` fields with their real types, so a model sends objects and arrays, not strings.
+fn lane_open_properties() -> Value {
+    let text = |d: &str| json!({ "type": "string", "description": d });
+    let check = json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["pr_merged", "issue_closed", "command", "file", "web", "pr_policy"] },
+            "repo": { "type": "string" },
+            "number": { "type": "integer" },
+            "argv": { "type": "array", "items": { "type": "string" } },
+            "pattern": { "type": "string" },
+            "path": { "type": "string" },
+            "sha256": { "type": "string" },
+            "field": { "type": "string" },
+            "value": {},
+            "url": { "type": "string" },
+            "status": { "type": "integer" }
+        },
+        "required": ["kind"]
+    });
+    let ceilings = json!({
+        "type": "object",
+        "properties": {
+            "minutes": { "type": "number" },
+            "tokens": { "type": "number" },
+            "cost": { "type": "number" }
+        }
+    });
+    let worktree = json!({
+        "type": "object",
+        "description": "the lane works there",
+        "properties": {
+            "path": { "type": "string" },
+            "branch": { "type": "string" },
+            "base": { "type": "string" }
+        },
+        "required": ["path", "branch", "base"]
+    });
+    json!({
+        "key": text("lane key"),
+        "brief": text("lane brief"),
+        "brief_file": text("absolute path of a file holding the lane brief"),
+        "checks": { "type": "array", "description": "signals that prove the lane done", "items": check },
+        "thread_from": text("discord:<room>/<message> a new lane thread starts from"),
+        "kickoff": text("one line posted first in the new thread (with thread_from)"),
+        "cwd": text("working directory"),
+        "model": text("provider/id"),
+        "origin": text("where the lane came from"),
+        "look_only": { "type": "boolean" },
+        "ceilings": ceilings,
+        "worktree": worktree,
+        "priority": { "type": "integer", "description": "1-9" },
+        "after": { "type": "array", "items": { "type": "string" }, "description": "predecessor lane keys" },
+        "expires_hours": { "type": "number" },
+        "preview": { "type": "boolean" }
+    })
+}
+
+/// The fields of the other lane operations.
+fn lane_properties() -> Value {
+    let text = |d: &str| json!({ "type": "string", "description": d });
+    json!({
+        "note": text("note"),
+        "lesson": text("lesson"),
+        "condition": text("condition"),
+        "steer": { "type": "boolean" },
+        "count": { "type": "integer", "description": "how many" },
+        "dialog": text("dialog ID"),
+        "rule": text("rule"),
+        "pr": text("owner/name#N"),
+        "dry_run": { "type": "boolean" },
+        "path": text("file path"),
+        "visibility": text("private or public"),
+        "evidence": text("evidence"),
+        "scope": text("global or repo"),
+        "destination": text("destination"),
+        "repo": text("owner/name"),
+        "label": text("label")
     })
 }
 
