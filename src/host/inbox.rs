@@ -3,9 +3,10 @@
 //!
 //! A message is stored first, then delivered when its target can read: idle gets a wake (`prompt`),
 //! working gets a follow-up, anything else waits. Quiet notes never wake a session; they go out with
-//! the next wake. Several pending messages go out as one numbered batch. Every batch is a delivery
-//! whose text starts with the marker `[cataly:<id>]`; it is delivered only when a user entry carrying
-//! the marker is found in the target session file. While a written batch is unconfirmed nothing else
+//! the next wake. Pending messages go out in arrival-ordered batches of at most 256 KiB, including
+//! the envelope. Every batch is a delivery whose text starts with the marker `[cataly:<id>]`; it is
+//! delivered only when a user entry carrying the marker is found in the target session file.
+//! While a written batch is unconfirmed nothing else
 //! is sent to that target. After 30 s without the entry, with the same OMP process still running, the
 //! batch is in doubt: never resent, the lead told once, the owner alerted. When the process that held
 //! it is gone and the file lacks the entry, it is resent once with the same ID into the same session,
@@ -35,8 +36,10 @@ pub(crate) const HUB_SENDER: &str = "cataly";
 const IN_DOUBT_PREFIX: &str = "in-doubt:";
 /// Identity prefix of notes that may reach a quota-blocked lead.
 pub(crate) const QUOTA_PREFIX: &str = "quota-blocked:";
-/// Largest message text.
+/// Largest delivered text, including its envelope.
 const TEXT_MAX: usize = 256 * 1024;
+/// A single message's envelope without its sender. Both random and early-wake IDs are 16 hex digits.
+const SINGLE_ENVELOPE_LEN: usize = "[cataly:0000000000000000] from \n".len();
 
 /// A message for a target's inbox.
 #[derive(Clone, Debug)]
@@ -181,6 +184,33 @@ pub(crate) fn batch_text(delivery_id: &str, parts: &[(&str, i64, &str)]) -> Stri
             text
         }
     }
+}
+
+/// The longest arrival-ordered prefix that fits, counting the envelope without copying bodies.
+/// An oversized first row from an older hub goes alone, so its size refusal can end it as failed.
+fn batch_prefix(delivery_id: &str, parts: &[(&str, i64, &str)]) -> usize {
+    let head = "[cataly:]".len() + delivery_id.len();
+    let mut numbered = 0;
+    for (n, (sender, at_ms, body)) in parts.iter().enumerate() {
+        let count = n + 1;
+        let digits = count.ilog10() as usize + 1;
+        let content = sender.len() + body.len();
+        let clock_len = if jiff::Timestamp::from_millisecond(*at_ms).is_ok() {
+            "00:00 UTC".len()
+        } else {
+            0
+        };
+        numbered += "\n\n. from  at :\n".len() + digits + content + clock_len;
+        let size = if count == 1 {
+            head + " from \n".len() + content
+        } else {
+            head + "  messages arrived while you were busy:".len() + digits + numbered
+        };
+        if size > TEXT_MAX {
+            return n.max(1);
+        }
+    }
+    parts.len()
 }
 
 /// The first 60 characters, escaped, with an ellipsis when longer (COORD req. 21).
@@ -495,8 +525,8 @@ impl Mailbox {
         if req.text.trim().is_empty() {
             return Err("the text is blank".into());
         }
-        if req.text.len() > TEXT_MAX {
-            return Err("the text is over 256 KiB".into());
+        if req.text.len() + req.sender.len() + SINGLE_ENVELOPE_LEN > TEXT_MAX {
+            return Err("the text and its envelope are over 256 KiB".into());
         }
         Ok(Admit {
             target: self.target.clone(),
@@ -933,13 +963,15 @@ impl Mailbox {
             return Ok(None);
         }
         let now = now_ms();
-        let parts: Vec<(&str, i64, &str)> = rows
+        let mut parts: Vec<(&str, i64, &str)> = rows
             .iter()
             .map(|r| (r.sender.as_str(), r.created_ms, r.text.as_str()))
             .chain(extra.map(|m| (m.sender.as_str(), now, m.text.as_str())))
             .collect();
         let early = early.filter(|_| rows.is_empty() && extra.is_some());
         let id = early.map_or_else(|| super::random_hex(8), str::to_string);
+        let count = batch_prefix(&id, &parts);
+        parts.truncate(count);
         let text = batch_text(&id, &parts);
         Ok(Some(Batch {
             delivery: DeliveryRow {
@@ -956,9 +988,9 @@ impl Mailbox {
                 sent_ms: now,
                 detail: None,
             },
-            inbox: rows.iter().map(|r| r.id).collect(),
+            inbox: rows.iter().take(count).map(|r| r.id).collect(),
             timing,
-            extra: extra.is_some(),
+            extra: extra.is_some() && count > rows.len(),
             early: early.is_some(),
         }))
     }
@@ -992,6 +1024,24 @@ impl Mailbox {
                     "delivery refused by the session",
                     &[("target", &self.target), ("reason", &reason)],
                 );
+                if matches!(
+                    reason.as_str(),
+                    "text over 256 KiB" | "over OMP's frame limit"
+                ) {
+                    let owned = id.to_string();
+                    let rows = self
+                        .store
+                        .read(move |r| Ok(r.inbox_rows_of(&owned)?.len()))
+                        .await?;
+                    if rows == 1 {
+                        self.resolve(id, "failed", Some(reason.clone())).await?;
+                        return Ok(Some(Note::Failed {
+                            delivery: id.to_string(),
+                            rows,
+                            reason,
+                        }));
+                    }
+                }
                 self.resolve(id, "superseded", Some(reason)).await?;
                 Ok(None)
             }
@@ -1534,6 +1584,189 @@ mod tests {
             !open.iter().any(|(_, r)| r.text == "note 0"),
             "the oldest went first"
         );
+    }
+
+    #[tokio::test]
+    async fn large_messages_are_delivered_in_separate_batches() {
+        for immediate in [false, true] {
+            let (mailbox, fake, session, _dir) = box_and_session("inbox-batch-size").await;
+            let mut events = session.subscribe();
+            let first = owner(&"a".repeat(140 * 1024), None);
+            let second = owner(&"b".repeat(140 * 1024), None);
+            let (_, first_id) = mailbox.admit(&first).await.unwrap();
+            let (second_id, notes) = if immediate {
+                let (_, id, notes) = mailbox
+                    .deliver(&second, Some(&*session), false)
+                    .await
+                    .unwrap();
+                (id, notes)
+            } else {
+                let (_, id) = mailbox.admit(&second).await.unwrap();
+                (id, mailbox.flush(Some(&*session), false).await.unwrap())
+            };
+            assert!(matches!(notes.as_slice(), [Note::Sent { .. }]), "{notes:?}");
+            assert_eq!(fake.seen("prompt").len(), 1);
+            assert_eq!(
+                mailbox.receipt(None, first_id.unwrap()).await.state,
+                ReceiptState::Sent
+            );
+            assert_eq!(
+                mailbox.receipt(None, second_id.unwrap()).await.state,
+                ReceiptState::Waiting
+            );
+            // The fake completes a turn; wait on its events and state, not the wall clock.
+            while !matches!(
+                events.recv().await.unwrap().1,
+                crate::host::SessionEvent::Quiet
+            ) {}
+            session
+                .states()
+                .wait_for(|s| s.status == Status::Idle && s.turn_started_ms.is_none())
+                .await
+                .unwrap();
+            let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+            assert!(
+                matches!(
+                    notes.as_slice(),
+                    [Note::Confirmed { .. }, Note::Sent { .. }]
+                ),
+                "{notes:?}"
+            );
+            let prompts = fake.seen("prompt");
+            assert_eq!(prompts.len(), 2);
+            for (prompt, message) in prompts.iter().zip([&first, &second]) {
+                let text = prompt["message"].as_str().unwrap();
+                assert!(text.len() <= TEXT_MAX);
+                assert_eq!(text.split_once('\n').unwrap().1, message.text);
+            }
+            mailbox.flush(Some(&*session), false).await.unwrap();
+            for id in [first_id.unwrap(), second_id.unwrap()] {
+                assert_eq!(
+                    mailbox.receipt(None, id).await.state,
+                    ReceiptState::Delivered
+                );
+            }
+            assert!(mailbox.list().await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_reserves_the_single_message_envelope() {
+        let (mailbox, fake, session, _dir) = box_and_session("inbox-admission-size").await;
+        let sender = "보낸이".repeat(32);
+        let envelope = batch_text("0123456789abcdef", &[(&sender, 0, "")]).len();
+        let mut message = Message {
+            sender,
+            ..owner(&"x".repeat(TEXT_MAX - envelope), None)
+        };
+        mailbox.admit(&message).await.unwrap();
+        message.text.push('x');
+        assert!(mailbox.admit(&message).await.is_err());
+        assert!(
+            mailbox
+                .admit(&owner(&"x".repeat(TEXT_MAX), None))
+                .await
+                .is_err()
+        );
+        let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+        assert!(matches!(notes.as_slice(), [Note::Sent { .. }]), "{notes:?}");
+        let prompts = fake.seen("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0]["message"].as_str().unwrap().len(), TEXT_MAX);
+        mailbox.flush(Some(&*session), false).await.unwrap();
+        assert!(mailbox.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn numbered_batch_envelopes_fit_at_the_byte_limit() {
+        let (mailbox, _fake, session, _dir) = box_and_session("inbox-numbered-size").await;
+        for count in [2, 9, 10] {
+            let mut rows: Vec<InboxRow> = (0..count)
+                .map(|n| InboxRow {
+                    id: n + 1,
+                    sender: "보낸이".into(),
+                    text: "x".into(),
+                    urgent: true,
+                    owner: true,
+                    identity: None,
+                    state: "pending".into(),
+                    delivery_id: None,
+                    created_ms: if n == 0 { i64::MAX } else { 0 },
+                })
+                .collect();
+            let parts: Vec<_> = rows
+                .iter()
+                .map(|r| (r.sender.as_str(), r.created_ms, r.text.as_str()))
+                .collect();
+            let size = batch_text("0123456789abcdef", &parts).len();
+            rows.last_mut()
+                .unwrap()
+                .text
+                .push_str(&"x".repeat(TEXT_MAX - size));
+            let batch = mailbox
+                .batch(&*session, false, None, None, Some(rows.clone()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(batch.inbox.len(), rows.len());
+            assert_eq!(batch.delivery.text.len(), TEXT_MAX);
+            rows.last_mut().unwrap().text.push('x');
+            let batch = mailbox
+                .batch(&*session, false, None, None, Some(rows))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(batch.inbox.len(), usize::try_from(count - 1).unwrap());
+            assert!(batch.delivery.text.len() <= TEXT_MAX);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_stored_message_fails_without_blocking_later_rows() {
+        let (mailbox, fake, session, _dir) = box_and_session("inbox-legacy-size").await;
+        // A row admitted by an older hub, before admission reserved its envelope.
+        let done = mailbox
+            .store
+            .host(HostWrite::Admit(Admit {
+                target: LEAD.into(),
+                request_id: None,
+                digest: digest("prompt", &"x".repeat(TEXT_MAX)),
+                sender: "owner".into(),
+                text: "x".repeat(TEXT_MAX),
+                urgent: true,
+                owner: true,
+                identity: None,
+            }))
+            .await
+            .unwrap();
+        let HostDone::Admitted(Admitted::Stored(old_id)) = done else {
+            panic!("{done:?}");
+        };
+        let (_, next_id) = mailbox.admit(&owner("next", None)).await.unwrap();
+        let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+        assert!(
+            matches!(notes.as_slice(), [Note::Failed { rows: 1, reason, .. }] if reason == "text over 256 KiB"),
+            "{notes:?}"
+        );
+        assert_eq!(
+            mailbox.receipt(None, old_id).await.state,
+            ReceiptState::Failed
+        );
+        assert_eq!(
+            mailbox.receipt(None, next_id.unwrap()).await.state,
+            ReceiptState::Waiting
+        );
+        assert_eq!(fake.seen("prompt").len(), 0);
+        mailbox.flush(Some(&*session), false).await.unwrap();
+        let prompts = fake.seen("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0]["message"].as_str().unwrap().ends_with("\nnext"));
+        mailbox.flush(Some(&*session), false).await.unwrap();
+        assert_eq!(
+            mailbox.receipt(None, next_id.unwrap()).await.state,
+            ReceiptState::Delivered
+        );
+        assert!(mailbox.list().await.unwrap().is_empty());
     }
 
     impl Message {

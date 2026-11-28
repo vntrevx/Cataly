@@ -2,6 +2,9 @@
 
 ## 0.2.9 (Unreleased)
 
+- Large queued messages could leave an inbox stuck retrying a batch over 256 KiB. Batches now
+  include their envelope in that limit, new messages leave room for it, and an older oversized
+  message fails alone instead of blocking later messages.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

@@ -212,8 +212,9 @@ duplicated-control problem of the old design. The bridge stays the control path 
 where no rpc channel exists. One `Runtime` trait (section 4) hides the difference from every caller.
 
 Consequence for delivery: rpc has no "next turn without starting one" message. Quiet events and passive
-notes therefore wait in the hub's inbox and go out with the next wake as one batch (COORD-10 rules 15-18),
-instead of being sent as OMP next-turn messages. This also gives one batching rule for both runtimes.
+notes therefore wait in the hub's inbox and go out with the next wake in arrival-ordered batches of at most
+256 KiB including the envelope (COORD-10 rules 15-18), instead of being sent as OMP next-turn messages.
+This also gives one batching rule for both runtimes.
 
 ## 4. Runtimes
 

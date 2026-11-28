@@ -139,7 +139,10 @@ client) plus the lead's OMP session, and every record has one writer.
 16. When an agent turn ends (OMP's turn-end event), the daemon delivers that session's pending messages within
     1 s. No periodic flush is needed; the 5-minute sweep retries anything left.
 17. Batching: one pending message is delivered as its text. Several are delivered as one prompt that starts with
-    how many arrived while the agent was busy, then each numbered, with its sender, in arrival order.
+    how many arrived while the agent was busy, then each numbered, with its sender, in arrival order. A batch
+    stays within 256 KiB including its delivery envelope; excess rows wait for later batches in the same order.
+    Admission reserves the single-message envelope, including the sender. An older oversized row is attempted
+    alone and ends as failed if the session refuses its size, rather than blocking later rows.
 18. On confirmed delivery the batch leaves the mailbox. Messages that arrived during delivery stay for the next
     turn end.
 19. Once-only: a message with a stable identity is added to a mailbox only if no message with that identity is
