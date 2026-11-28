@@ -22,6 +22,10 @@
   intake now cancels its timer; a restarted intake uses the new waiting time.
 - Relay answers and later turns could post credential-shaped strings unchanged. They are now
   masked before the reply parts are stored, so retries keep them masked too.
+- The board post cleans each lane's latest report as a thread post is cleaned, as EVR req. 51
+  says: the home directory shows as `~`, other local paths as `[path removed]`, and links lose
+  their query. It only flattened the text, so paths and URL queries (tokens among them) from a
+  report reached every board destination as written.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
