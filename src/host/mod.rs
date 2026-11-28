@@ -275,6 +275,10 @@ pub(crate) struct Snapshot {
     pub(crate) model: Option<String>,
     pub(crate) requested_model: String,
     pub(crate) turn_started_ms: Option<i64>,
+    /// When the last turn was seen over. Delivery confirmation times a follow-up, which waited
+    /// behind the running turn, from there (`host::inbox`).
+    #[serde(skip)]
+    pub(crate) turn_ended_ms: Option<i64>,
     /// Fault or hold reason.
     pub(crate) reason: Option<String>,
     pub(crate) quota_blocked: Option<String>,

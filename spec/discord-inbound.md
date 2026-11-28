@@ -224,7 +224,8 @@ operator who configures the daemon (in practice the same person).
     file and the target OMP process. One attempt per message, ever.
 48. The hand-off is confirmed only when the target session file contains a user entry carrying
     that channel and message ID. A returned RPC call alone is not confirmation. The daemon waits
-    up to 30 s for the entry to appear; after that the attempt is in doubt and req. 50 applies
+    up to 30 s for the entry to appear, counted as PATCH-01 rule 10 says (a busy session holds the
+    count until it is idle, at most 6 h); after that the attempt is in doubt and req. 50 applies
     without waiting for a restart.
 49. On confirmation, in one transaction: the attempt is marked delivered, the read position moves
     to the message, and the queue item is removed. A hand-off to a thread session's inbox uses

@@ -2,6 +2,13 @@
 
 ## 0.2.9 (Unreleased)
 
+- A message to a busy lead or lane (in a long tool call, waiting on a subagent, or in a dialog) is
+  no longer in doubt after 30 s. OMP writes a follow-up into the session file only when the running
+  tool call is over, so the hub declared normal queueing in doubt, told the lead "[in-doubt
+  delivery]", and held the owner's Discord room until `cataly discord release`. While the session
+  works the delivery now waits; the 30 s run once it is idle, from the end of the turn it waited
+  behind, and a session busy for 6 h without the entry still ends it in doubt. A lane now checks
+  an unconfirmed message every 5 s, as the lead does, instead of only when its turn ends.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

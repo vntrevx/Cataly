@@ -71,7 +71,7 @@ it by kind. These rules extend the extension's delivery rules in the extension s
    fork, tree move, clear, compaction with handoff). It keeps one queue per session for deliveries and session
    changes together. A session change is not issued while a delivery for that session is in state "sent", and no
    delivery is sent while a session change for that session is pending. A sent delivery that has not resolved
-   within 30 s is moved to "in doubt" so the queue is not blocked longer than that.
+   in the time rule 10 gives it is moved to "in doubt" so the queue is not blocked longer than that.
 5. Headless sessions do not switch to another session inside a running OMP process. When the product needs a
    different session for a lane, it ends the process and starts a new one on that session file. This also makes
    PATCH-02's kernel bug unreachable for headless lanes.
@@ -88,9 +88,12 @@ it by kind. These rules extend the extension's delivery rules in the extension s
    different session's file, the record becomes "misdelivered". The daemon does not resend it, writes one log line
    with both session IDs (not the text), and tells the owner once through the usual alert channel, because text from
    one conversation reached another.
-10. When a "sent" record has no receipt within 30 s, it becomes "in doubt". The daemon then searches the target
-    session file for the delivery ID (bounded to the last 8 MiB of the file and a 2 s budget). Found: delivered.
-    Not found: handled by rule 11 (same session still current) or rule 13 (it is not).
+10. When a "sent" record has no receipt within 30 s of its session being idle, it becomes "in doubt". A busy
+    session (in a turn or a dialog) writes a follow-up's entry only when its running tool call or dialog is
+    over, so while the same process is busy the record waits, for at most 6 h; the 30 s run from the end of the
+    turn a follow-up waited behind, and from the write of a wake. The daemon then searches the target session
+    file for the delivery ID (bounded to the last 8 MiB of the file and a 2 s budget). Found: delivered. Not
+    found: handled by rule 11 (same session still current) or rule 13 (it is not).
 11. Resend policy for an unconfirmed record whose target is still the current session: resend once with the same
     delivery ID (the extension's per-ID memory makes a duplicate call a no-op). A second failure marks the record
     "failed" and alerts the owner for wakes that carry human messages; passive notices are only logged.

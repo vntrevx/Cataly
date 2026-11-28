@@ -468,6 +468,8 @@ struct State {
     dialogs: Vec<Dialog>,
     ring: VecDeque<Entry>,
     turn_started_ms: Option<i64>,
+    /// When a readback last showed a turn over.
+    turn_ended_ms: Option<i64>,
     /// A turn completed since the last idle readback (HOST req. 25).
     turn_done: bool,
     quota_blocked: Option<String>,
@@ -954,6 +956,7 @@ fn placeholder(spec: &StartSpec, now: i64) -> Snapshot {
         model: None,
         requested_model: spec.model.clone(),
         turn_started_ms: None,
+        turn_ended_ms: None,
         reason: None,
         quota_blocked: None,
         dialogs: Vec::new(),
@@ -1010,6 +1013,7 @@ impl Inner {
             model: latest.and_then(|s| s.model.clone()),
             requested_model: self.requested_model.clone(),
             turn_started_ms: st.turn_started_ms,
+            turn_ended_ms: st.turn_ended_ms,
             reason: st.fault.clone().or_else(|| st.held.clone()),
             quota_blocked: st.quota_blocked.clone(),
             dialogs: st.dialogs.clone(),
@@ -1114,8 +1118,8 @@ impl Inner {
             {
                 fault = Some("the transcript is missing after a completed turn".into());
             }
-            if state.idle() {
-                st.turn_started_ms = None;
+            if state.idle() && st.turn_started_ms.take().is_some() {
+                st.turn_ended_ms = Some(now_ms());
             }
             let previous = st.latest.as_ref().and_then(|s| s.model.clone());
             st.latest = Some(state);

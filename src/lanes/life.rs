@@ -22,6 +22,8 @@ use crate::sys::now_ms;
 const TURN_END_WAIT: Duration = Duration::from_secs(15);
 /// How soon a tern hold asks again after OMP refused the pause "busy".
 const PAUSE_RETRY: Duration = Duration::from_millis(200);
+/// How often a lane's unconfirmed batch is checked against its session file.
+const CONFIRM_BEAT: Duration = Duration::from_secs(5);
 
 /// Goal states that count as stopped for a hold (LANE req. 44).
 const STOPPED: [GoalStatus; 4] = [
@@ -764,11 +766,25 @@ impl<R: Runtime> Lanes<R> {
     }
 
     /// Follows one lane session: lost on an exit not asked for (LANE req. 67), the held-lane turn
-    /// notice once per active stretch (LANE req. 47), inbox flushes at turn end, oversight wakes.
+    /// notice once per active stretch (LANE req. 47), inbox flushes at turn end and on a beat while
+    /// a written batch is unconfirmed, oversight wakes.
     pub(super) async fn watch(self: Arc<Self>, key: String, session: Arc<R::Session>) {
         let mut events = session.subscribe();
+        // A batch behind a busy turn waits past its turn end (PATCH-01 rule 10) with no event to
+        // come; the beat finds its entry, or its doubt, in time.
+        let mut beat = tokio::time::interval(CONFIRM_BEAT);
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            let event = match events.recv().await {
+            let got = tokio::select! {
+                got = events.recv() => got,
+                _ = beat.tick() => {
+                    if self.mailbox(&key).unconfirmed().await {
+                        self.flush_inbox(&key, &session, false).await;
+                    }
+                    continue;
+                }
+            };
+            let event = match got {
                 Ok((_, e)) => e,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

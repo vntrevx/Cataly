@@ -576,6 +576,10 @@ path, including remote workers and shared MCP/LSP brokers. This credential isola
 - Hub notices in doubt are never resent; the lead is told once and may confirm or release (COORD-13).
   Lead-to-lane messages in doubt fence the lane's inbox until the lead releases it (EVR req. 62).
 - A message found in another session's file is "misdelivered": never resent, owner told once.
+- A delivery into a busy session (in a turn or a dialog) is not in doubt while it works: OMP writes a
+  follow-up's entry only when the running tool call is over. The 30 s for its entry run once the session is
+  idle, from the end of the turn it waited behind; a session busy for 6 h without it ends it in doubt
+  (PATCH-01 rule 10). The lead and each lane check an unconfirmed batch every 5 s.
 - **Early wake (decision 15).** An owner request from a relay that goes to the lead alone is written before its
   records commit, under a delivery marker derived from its request ID; on Discord, whose Gateway never
   replays a message to a new session, a live message is also handed off while its arrival commits (the

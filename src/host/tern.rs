@@ -326,6 +326,8 @@ struct State {
     forms: HashSet<String>,
     ring: VecDeque<Entry>,
     turn_started_ms: Option<i64>,
+    /// When the bridge last reported a turn over.
+    turn_ended_ms: Option<i64>,
     /// `agent_start` events seen, so a wake's reply can tell whether its turn already began.
     turns: u64,
     wake_written: Option<std::time::Instant>,
@@ -437,6 +439,7 @@ impl Port {
                 model: None,
                 requested_model: spec.model.clone(),
                 turn_started_ms: None,
+                turn_ended_ms: None,
                 reason: None,
                 quota_blocked: None,
                 dialogs: Vec::new(),
@@ -509,6 +512,7 @@ impl Port {
             model: st.model.clone(),
             requested_model: self.requested_model.clone(),
             turn_started_ms: st.turn_started_ms,
+            turn_ended_ms: st.turn_ended_ms,
             reason: st.fault.clone().or_else(|| st.held.clone()).or_else(|| {
                 st.lost
                     .then(|| "lost: the bridge was silent for 45 s".to_string())
@@ -669,6 +673,10 @@ impl Port {
         if let Some(idle) = v.get("idle").and_then(Value::as_bool) {
             st.idle = idle;
             st.known = true;
+            // A turn whose end the bridge did not report (it ended while the link was down).
+            if idle && st.turn_started_ms.take().is_some() {
+                st.turn_ended_ms = Some(now_ms());
+            }
         }
         if let Some(model) = text_of(v, "model") {
             st.model = Some(model.to_string());
@@ -787,6 +795,7 @@ impl Port {
                     params.get("will_continue").and_then(Value::as_bool) == Some(true);
                 st.idle = !will_continue;
                 st.turn_started_ms = None;
+                st.turn_ended_ms = Some(now_ms());
                 self.emit(&mut st, SessionEvent::TurnEnded { will_continue });
                 if !will_continue {
                     self.emit(&mut st, SessionEvent::Quiet);
@@ -1115,8 +1124,15 @@ impl Control for Session {
     }
 
     async fn refresh(&self) -> Result<(), String> {
-        let reply = self.port.command("state", json!({})).await?;
+        let turns = self.port.lock().turns;
+        let mut reply = self.port.command("state", json!({})).await?;
         let mut st = self.port.lock();
+        // A turn that started after the bridge answered makes the answer's `idle` stale.
+        if st.turns != turns
+            && let Some(fields) = reply.as_object_mut()
+        {
+            fields.remove("idle");
+        }
         Port::read_facts(&mut st, &reply);
         if let (Some(id), Some(file)) = (text_of(&reply, "session"), text_of(&reply, "file")) {
             st.current = Some((id.to_string(), file.to_string()));

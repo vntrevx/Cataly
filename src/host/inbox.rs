@@ -6,18 +6,20 @@
 //! the next wake. Several pending messages go out as one numbered batch. Every batch is a delivery
 //! whose text starts with the marker `[cataly:<id>]`; it is delivered only when a user entry carrying
 //! the marker is found in the target session file. While a written batch is unconfirmed nothing else
-//! is sent to that target. After 30 s without the entry, with the same OMP process still running, the
-//! batch is in doubt: never resent, the lead told once, the owner alerted. When the process that held
-//! it is gone and the file lacks the entry, it is resent once with the same ID into the same session,
-//! except on a worker: there the process ends with the connection, out of the hub's sight, so the
-//! batch is in doubt (docs/design/workers.md 2.4).
+//! is sent to that target. With the same OMP process still running, a busy session (in a turn or a
+//! dialog) writes a follow-up's entry only when its tool call or dialog is over, so the batch waits
+//! (at most 6 h); once the session is idle, 30 s without the entry (counted from the end of the turn
+//! the batch waited behind) make the batch in doubt: never resent, the lead told once, the owner
+//! alerted. When the process that held it is gone and the file lacks the entry, it is resent once
+//! with the same ID into the same session, except on a worker: there the process ends with the
+//! connection, out of the hub's sight, so the batch is in doubt (docs/design/workers.md 2.4).
 
 use std::fmt::Write as _;
 use std::time::Instant;
 
 use serde::Serialize;
 
-use super::{Control, DeliverOutcome, Delivery, Status, Timing};
+use super::{Control, DeliverOutcome, Delivery, Snapshot, Status, Timing};
 use crate::omp::transcript::{self, Found};
 use crate::store::host::{Admit, Admitted, DeliveryRow, HostDone, HostWrite, InboxRow};
 use crate::store::{Store, StoreError};
@@ -25,8 +27,11 @@ use crate::sys::now_ms;
 
 /// The lead's mailbox.
 pub(crate) const LEAD: &str = "lead";
-/// A written batch without its entry is in doubt after this long (PATCH-01 rules 4 and 10).
+/// A written batch without its entry is in doubt after this long with its session idle (PATCH-01
+/// rules 4 and 10).
 pub(crate) const CONFIRM_WITHIN_MS: i64 = 30_000;
+/// A written batch without its entry is in doubt after this long even while its session stays busy.
+const BUSY_KEEP_MS: i64 = 6 * 60 * 60 * 1000;
 /// A record whose session the user left waits this long for it to be current again (PATCH-01 rule 13).
 const LEFT_KEEP_MS: i64 = 24 * 60 * 60 * 1000;
 /// Sender label of the hub's own notices.
@@ -235,6 +240,43 @@ enum Check {
     Failed(String),
     /// Found in the file of this other session.
     Misdelivered(String),
+}
+
+/// Whether the session is in a turn or waits on a dialog: OMP writes a follow-up's entry only once
+/// the running tool call or the dialog is over, however long that takes. A faulted session is not
+/// busy, nor is a turn start the state read back as idle since.
+fn busy(s: &Snapshot) -> bool {
+    s.status != Status::Error
+        && (s.busy().is_some() || (s.turn_started_ms.is_some() && s.status != Status::Idle))
+}
+
+/// A written batch with no entry in the file of the same process (PATCH-01 rules 4 and 10). While
+/// the session is busy it waits, up to [`BUSY_KEEP_MS`] after it was written. Once the session is
+/// idle it has [`CONFIRM_WITHIN_MS`]: a follow-up, which waited behind the running turn, from the
+/// end of the last turn (`turn_ended_ms`), a wake from its write.
+fn unconfirmed(
+    sent_ms: i64,
+    follow_up: bool,
+    now: i64,
+    busy: bool,
+    turn_ended_ms: Option<i64>,
+) -> Check {
+    if busy {
+        return if now - sent_ms < BUSY_KEEP_MS {
+            Check::Wait
+        } else {
+            Check::InDoubt("no entry in the session file within 6 h of a busy session".into())
+        };
+    }
+    let since = match turn_ended_ms {
+        Some(ended) if follow_up => ended.max(sent_ms),
+        _ => sent_ms,
+    };
+    if now - since < CONFIRM_WITHIN_MS {
+        Check::Wait
+    } else {
+        Check::InDoubt("no entry in the session file within 30 s".into())
+    }
 }
 
 /// One target's inbox over the store.
@@ -747,7 +789,8 @@ impl Mailbox {
     /// bound again in a new process, which a resume admits only after the old one let go of it.
     /// Anything less (a partial, unreadable or unsearched file) keeps the batch in doubt.
     async fn check<S: Control>(&self, d: &DeliveryRow, session: Option<&S>) -> Check {
-        let age = now_ms() - d.sent_ms;
+        let now = now_ms();
+        let age = now - d.sent_ms;
         let found = transcript::search(d.session_file.clone().into(), marker(&d.id)).await;
         if found == Ok(Found::Yes) {
             return Check::Delivered(age);
@@ -761,22 +804,19 @@ impl Mailbox {
         {
             return Check::Misdelivered(id.clone());
         }
-        let same_process = snapshot
+        if let Some(s) = snapshot
             .as_ref()
-            .is_some_and(|s| s.handle == d.handle && s.stop.is_none());
-        if same_process {
+            .filter(|s| s.handle == d.handle && s.stop.is_none())
+        {
             // PATCH-01 rule 13: the user left the target session; the record waits for it.
-            let left = snapshot
-                .as_ref()
-                .is_some_and(|s| s.session_id.as_ref().is_some_and(|id| *id != d.session_id));
+            let left = s.session_id.as_ref().is_some_and(|id| *id != d.session_id);
             return if left && age < LEFT_KEEP_MS {
                 Check::Wait
             } else if left {
                 Check::Failed("its session was not current again within 24 h".into())
-            } else if age < CONFIRM_WITHIN_MS {
-                Check::Wait
             } else {
-                Check::InDoubt("no entry in the session file within 30 s".into())
+                let follow_up = d.kind == "follow_up";
+                unconfirmed(d.sent_ms, follow_up, now, busy(s), s.turn_ended_ms)
             };
         }
         // The process that held the batch is gone, so its file is final. On a worker it ended with
@@ -1289,6 +1329,11 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // The wake's turn is over: an idle session, not a busy one.
+        fake.wait_for(&session, |s| {
+            s.turn_started_ms.is_none() && s.status == Status::Idle
+        })
+        .await;
         mailbox
             .store
             .host(HostWrite::Age {
@@ -1314,6 +1359,111 @@ mod tests {
             2,
             "released entries go out again"
         );
+    }
+
+    /// PATCH-01 rules 4 and 10 with a busy session: no doubt while it works, up to 6 h; once it is
+    /// idle, 30 s, for a follow-up counted from the end of the turn it waited behind.
+    #[test]
+    fn a_busy_session_holds_off_doubt_until_its_turn_ends() {
+        const SENT: i64 = 1_000_000;
+        const ENDED: i64 = SENT + 600_000;
+        const WITHIN: i64 = CONFIRM_WITHIN_MS;
+        // (follow-up, now, busy, last turn end, in doubt)
+        let cases = [
+            // Busy: waits long past 30 s, in doubt at the cap.
+            (true, ENDED, true, None, false),
+            (false, SENT + BUSY_KEEP_MS - 1, true, Some(SENT - 5), false),
+            (true, SENT + BUSY_KEEP_MS, true, None, true),
+            // Idle with no turn since: 30 s from the write, as before.
+            (true, SENT + WITHIN - 1, false, None, false),
+            (true, SENT + WITHIN, false, None, true),
+            // A follow-up behind a turn that ended 10 min after it: 30 s from that end.
+            (true, ENDED + WITHIN - 1, false, Some(ENDED), false),
+            (true, ENDED + WITHIN, false, Some(ENDED), true),
+            // A turn that ended before the write gives nothing more.
+            (true, SENT + WITHIN, false, Some(SENT - 1), true),
+            // A wake's entry comes as its own turn starts: 30 s from the write.
+            (false, ENDED + 1, false, Some(ENDED), true),
+        ];
+        for (n, (follow_up, now, busy, ended, doubt)) in cases.into_iter().enumerate() {
+            let check = unconfirmed(SENT, follow_up, now, busy, ended);
+            let found = match check {
+                Check::InDoubt(_) => true,
+                Check::Wait => false,
+                _ => panic!("case {n}: neither waiting nor in doubt"),
+            };
+            assert_eq!(found, doubt, "case {n}");
+        }
+    }
+
+    /// The owner writes while the lead is in a long tool call: OMP queues the follow-up and writes
+    /// its entry only when the call is over. Past 30 s it is not in doubt (which would hold the
+    /// owner's room); the turn's end starts the 30 s, and the entry then confirms it. With the
+    /// session busy for 6 h and no entry, it is in doubt.
+    #[tokio::test]
+    async fn a_follow_up_to_a_busy_session_waits_for_its_turn() {
+        for (tag, cap) in [("inbox-busy", false), ("inbox-busy-cap", true)] {
+            let (mailbox, fake, session, _dir) = box_and_session(tag).await;
+            std::fs::write(fake.file(), "{\"type\":\"session\"}\n").unwrap();
+            fake.set(|s| s.streaming = true);
+            fake.push(serde_json::json!({"type": "agent_start"}));
+            fake.wait_for(&session, |s| s.turn_started_ms.is_some())
+                .await;
+            session.refresh().await.unwrap();
+            let age = |by_ms| {
+                mailbox.store.host(HostWrite::Age {
+                    target: LEAD.into(),
+                    by_ms,
+                })
+            };
+            let state = |id| mailbox.receipt(None, id);
+            let (_, id, notes) = mailbox
+                .deliver(&owner("while busy", None), Some(&*session), false)
+                .await
+                .unwrap();
+            let id = id.unwrap();
+            assert!(matches!(notes.as_slice(), [Note::Sent { .. }]), "{notes:?}");
+            let text = fake.wait_seen("follow_up", 1).await["message"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            if cap {
+                age(BUSY_KEEP_MS).await.unwrap();
+                let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+                assert!(
+                    matches!(notes.as_slice(), [Note::InDoubt { notify: true, .. }]),
+                    "{notes:?}"
+                );
+                assert_eq!(state(id).await.state, ReceiptState::InDoubt);
+                continue;
+            }
+            age(CONFIRM_WITHIN_MS + 1).await.unwrap();
+            let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+            assert_eq!(state(id).await.state, ReceiptState::Sent);
+            // The turn ends with the entry not yet in the file: the 30 s start now.
+            fake.set(|s| s.streaming = false);
+            fake.push(serde_json::json!({"type": "agent_end", "isTerminal": true}));
+            fake.wait_for(&session, |s| {
+                s.turn_started_ms.is_none() && s.status == Status::Idle
+            })
+            .await;
+            let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+            assert_eq!(state(id).await.state, ReceiptState::Sent);
+            let entry = serde_json::json!({"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(fake.file())
+                .unwrap();
+            std::io::Write::write_all(&mut file, format!("{entry}\n").as_bytes()).unwrap();
+            let notes = mailbox.flush(Some(&*session), false).await.unwrap();
+            assert!(
+                matches!(notes.as_slice(), [Note::Confirmed { .. }]),
+                "{notes:?}"
+            );
+            assert_eq!(state(id).await.state, ReceiptState::Delivered);
+        }
     }
 
     /// The session's file after its process ended: a complete header, plus `tail` as written.
