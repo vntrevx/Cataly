@@ -332,12 +332,15 @@ pub(super) fn answer(
                             .collect();
                         if *multi {
                             Value::Array(picked)
+                        } else if let Some(one) = picked.into_iter().next() {
+                            one
                         } else {
-                            picked.into_iter().next().unwrap_or(Value::Null)
+                            continue;
                         }
                     }
                     (Item::Choice { multi: true, .. }, _) => json!([]),
-                    (Item::Choice { .. }, _) => Value::Null,
+                    // An unselected single choice is left out, as OMP does; `null` is refused.
+                    (Item::Choice { .. }, _) => continue,
                     (Item::Text { .. }, Val::Text(t)) => json!(t),
                     (Item::Text { .. }, _) => json!(""),
                 };
@@ -500,5 +503,65 @@ impl super::Cards {
             .open
             .get(dialog)
             .map_or_default(|c| c.draft.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::form::Choice;
+    use super::*;
+    use crate::config::Language;
+    use crate::host::dialogs::{Dialog, DialogKind, answer_frame};
+
+    #[test]
+    fn an_unselected_optional_choice_is_left_out_and_the_answer_is_accepted() {
+        let fields = vec![
+            Field {
+                name: "env".into(),
+                label: "Env".into(),
+                kind: FieldKind::One,
+                choices: ["dev", "prod"]
+                    .map(|v| Choice {
+                        value: v.into(),
+                        label: v.into(),
+                        selected: false,
+                    })
+                    .to_vec(),
+                value: String::new(),
+                required: false,
+                limits: Limits::default(),
+            },
+            Field {
+                name: "note".into(),
+                label: "Note".into(),
+                kind: FieldKind::Text,
+                choices: Vec::new(),
+                value: String::new(),
+                required: false,
+                limits: Limits::default(),
+            },
+        ];
+        let items = of_fields(&fields).unwrap();
+        let kind = Kind::Fields {
+            fields,
+            hidden: Map::new(),
+        };
+        let words = typed::words(Language::English);
+        for env in [Val::Unset, Val::Picks(Vec::new())] {
+            let draft = [env, Val::Text("hi".into())];
+            let answer = answer(&kind, &items, &draft, &words).unwrap();
+            assert_eq!(answer, json!({ "data": { "note": "hi" } }));
+            let dialog = Dialog {
+                id: "d1".into(),
+                title: None,
+                message: None,
+                kind: DialogKind::Form,
+                options: None,
+                secret: false,
+                questions: None,
+                html: None,
+            };
+            assert!(answer_frame(&dialog, &answer).is_some(), "{answer}");
+        }
     }
 }

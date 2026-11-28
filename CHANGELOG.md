@@ -6,6 +6,9 @@
   label to OMP. Only options without a value attribute use their label as the value.
 - Discord: disabled select options could be offered as buttons or recommended defaults, then refused
   by OMP. They are now left out of form choices, defaults and answers.
+- Discord: a form with an optional radio group or select left unanswered was refused, its card
+  closed and posted again, so the choice had to be made. The unselected field is now left out of
+  the answer, as OMP does, and the form is submitted.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
