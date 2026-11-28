@@ -235,6 +235,13 @@ impl Config {
             .collect()
     }
 
+    /// The lead takes the owner's messages in lanes' threads too (`[lead] lane_threads = "lead"`).
+    pub(crate) fn lead_takes_lane_threads(&self) -> bool {
+        self.lead
+            .as_ref()
+            .is_some_and(|l| l.lane_threads == session::LaneThreads::Lead)
+    }
+
     /// A destination by name; [`HOME_DESTINATION`] is the owner's home room when a relay has one.
     pub(crate) fn destination(&self, name: &str) -> Option<Destination> {
         if name != HOME_DESTINATION {

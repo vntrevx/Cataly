@@ -838,6 +838,145 @@ fn a_lane_thread_keeps_the_leads_answer_in_the_channel() {
     assert!(hub.stop().success());
 }
 
+/// With `[lead] lane_threads = "lead"` the owner's messages in a lane's thread go to the lead, not
+/// the lane: the request names the lane, the lead's answer is posted in the thread as the reply,
+/// and a reply or a press answering the lead's question there is the lead's too.
+#[test]
+fn with_lane_threads_to_the_lead_the_lead_takes_a_lane_thread() {
+    let fake = FakeDiscord::start();
+    let source = "800000000000000195";
+    let (mut hub, file, asked) = lane_thread_to_lead(&fake, source);
+    let in_lane = |text: &str| {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    fake.say(FakeDiscord::message(
+        source,
+        asked,
+        OWNER,
+        "how far is the work?",
+    ));
+    let request = hub.until(WAIT, || {
+        requests(&hub)
+            .into_iter()
+            .find(|r| r.contains("how far is the work?"))
+    });
+    assert!(
+        request.contains(&format!(
+            "[discord {source}/{asked}] request from the owner"
+        )) && request.contains("[lane] This room is the thread of lane w-3"),
+        "{request}"
+    );
+    // The lead's answer is the reply, in the thread; the owed reply settles.
+    let answer = fake.wait(WAIT, |f| {
+        f.bot_messages(source)
+            .into_iter()
+            .find(|m| m["content"] == "lead answer")
+    });
+    assert_eq!(answer["message_reference"]["message_id"], asked.to_string());
+    let s = settled(&hub);
+    assert_eq!(s["counts"]["owed_open"], 0, "{s}");
+    assert_eq!(s["counts"]["owed_settled"], 1, "{s}");
+    assert!(!in_lane("how far is the work?"), "the lane does not get it");
+    // The lead's question in the thread: a reply answers it and reaches the lead only.
+    let mut lead = ToolBridge::connect(&hub);
+    let question = json!({ "op": "question.ask", "text": "Which?", "options": ["a", "b"],
+        "source": format!("discord:{source}/{asked}"), "room": source });
+    let ask = |lead: &mut ToolBridge| {
+        let (said, error) = lead.tool(&question);
+        assert!(
+            !error && said.contains(&format!("posted in {source}")),
+            "{said}"
+        );
+        let id = said.split_whitespace().nth(1).unwrap().to_string();
+        let message = said.split_whitespace().last().unwrap().to_string();
+        (id, message)
+    };
+    let (id, message) = ask(&mut lead);
+    let mut reply = FakeDiscord::message(source, asked + 1, OWNER, "2");
+    reply["message_reference"] = json!({ "message_id": message, "channel_id": source });
+    fake.say(reply);
+    let request = hub.until(WAIT, || {
+        requests(&hub)
+            .into_iter()
+            .find(|r| r.contains(&format!("{source}/{}]", asked + 1)))
+    });
+    assert!(
+        request.contains(&format!("this message answers question {id}")),
+        "{request}"
+    );
+    assert_eq!(ledger(&hub, &id).0, "answered");
+    // A press on the next one answers it and tells the lead only.
+    let (id, message) = ask(&mut lead);
+    fake.press(OWNER, source, &message, &format!("cy:{id}:0"));
+    hub.until(WAIT, || {
+        let text = std::fs::read_to_string(session_file(&hub)).unwrap_or_default();
+        text.contains(&format!("question {id}: option 1 (a)"))
+            .then_some(())
+    });
+    assert_eq!(ledger(&hub, &id).0, "answered");
+    assert!(
+        !in_lane("answers question") && !in_lane(&format!("question {id}")),
+        "the lane gets no answer"
+    );
+    drop(lead);
+    assert!(hub.stop().success());
+}
+
+/// A started hub with `[lead] lane_threads = "lead"` and lane `w-3` open on the thread started
+/// from `source` in `CH`: the hub, the lane's session file, and an ID for the thread's first owner
+/// message (a thread that appears while the hub runs is read from the hub's start on, so its
+/// messages are made now).
+fn lane_thread_to_lead(fake: &FakeDiscord, source: &str) -> (TestHub, String, u64) {
+    let mut hub = relay_hub(fake, &[], "");
+    let work = hub.root.join("work");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{}[lanes]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        config.replace("[lead]\n", "[lead]\nlane_threads = \"lead\"\n"),
+        work.display()
+    ));
+    hub.fixture(
+        "omp",
+        "answer.json",
+        Some(&json!("lead answer").to_string()),
+    );
+    hub.start();
+    ready(&hub);
+    let started = FakeDiscord::message(CH, source.parse().unwrap(), OWNER, "start the work");
+    fake.put(started);
+    fake.start_thread(CH, source, BOT);
+    let params = json!({
+        "key": "w-3",
+        "title": "Work w-3",
+        "brief": "Do the work.",
+        "checks": [{ "kind": "command", "argv": ["true"] }],
+        "thread": format!("discord:{source}"),
+        "cwd": work,
+    });
+    let out = hub.cli(&["lane", "open", "--json", "--params", &params.to_string()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lanes = hub.json(&["lane", "list", "--json", "--params", "{\"all\":true}"]);
+    let file = lanes[0]["session_file"].as_str().unwrap().to_string();
+    hub.until(WAIT, || {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains("Lane instructions")
+            .then_some(())
+    });
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let now = u64::try_from(since_epoch).unwrap() - 1_420_070_400_000;
+    (hub, file, (now << 22) + 1)
+}
+
 /// With `follow_threads = false` the hub reads no threads, so the answer stays in the channel and
 /// the source message is not even read.
 #[test]

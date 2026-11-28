@@ -200,7 +200,10 @@ operator who configures the daemon (in practice the same person).
 41. A conversation is owned by a thread session when exactly one open session record names that
     conversation, and no other open record shares its session. If two records claim it, the
     message is held, not sent to the lead. A reply to a lead question is the lead's even in an
-    owned conversation (item 40 (a2)).
+    owned conversation (item 40 (a2)). With `[lead] lane_threads = "lead"` no conversation is
+    owned: step (b) is skipped, nothing is held for two claimants, and the lead gets the message
+    with one line naming the lane (or the claimants) whose thread it is; the lead passes the
+    lane its part with `lane.send`.
 42. Delivery to an owning session: if the session is running, the message is added to its inbox
     keyed by (session, channel, message), so a repeat is a no-op, and the session is woken. If the
     session is closing, or its identity cannot be verified, the message is held. If the session is

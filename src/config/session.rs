@@ -127,6 +127,30 @@ pub(crate) struct LeadSettings {
     /// How long the lead must be fully idle before the hub stops its OMP and keeps its session;
     /// `None` (`0s`) never.
     pub(crate) idle_sleep: Option<Duration>,
+    /// Who takes the owner's messages in a lane's thread.
+    pub(crate) lane_threads: LaneThreads,
+}
+
+/// `[lead] lane_threads`: who takes the owner's messages in a lane's thread.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum LaneThreads {
+    /// The lane that names the thread (DISC-IN req. 41-42).
+    #[default]
+    Lane,
+    /// The lead, told whose thread it is; it passes the lane its part with `lane.send`.
+    Lead,
+}
+
+/// `[lead] lane_threads`: `lane` (the default) or `lead`.
+fn lane_threads(errors: &mut Vec<ConfigError>, l: &mut Section<'_>) -> LaneThreads {
+    match l.string(errors, "lane_threads") {
+        None | Some("lane") => LaneThreads::Lane,
+        Some("lead") => LaneThreads::Lead,
+        Some(_) => {
+            errors.push(l.error("lane_threads", "expected lane or lead"));
+            LaneThreads::Lane
+        }
+    }
 }
 
 /// `[fallback]`: carried into the overlay only when set (DESIGN 9.2).
@@ -281,6 +305,7 @@ pub(super) fn parse(
             .map(str::to_string);
         let autostart = l.bool(errors, "autostart").unwrap_or(true);
         let idle_sleep = idle_sleep(errors, &mut l);
+        let lane_threads = lane_threads(errors, &mut l);
         l.finish(errors);
         if let Some(model) = model.filter(|m| model_selector(m)) {
             *lead = Some(LeadSettings {
@@ -291,6 +316,7 @@ pub(super) fn parse(
                 instructions,
                 autostart,
                 idle_sleep,
+                lane_threads,
             });
         }
     }
@@ -360,6 +386,16 @@ mod tests {
         assert_eq!(config.sessions.spend_phrases, ["top up"]);
         assert_eq!(config.lead.as_ref().unwrap().model, "p/m");
         assert_eq!(config.fallback.chains["default"], ["p/n"]);
+        assert_eq!(
+            config.lead.as_ref().unwrap().lane_threads,
+            LaneThreads::Lane
+        );
+        let lead =
+            crate::config::parse("[lead]\nmodel = \"p/m\"\nlane_threads = \"lead\"\n").unwrap();
+        assert_eq!(lead.lead.unwrap().lane_threads, LaneThreads::Lead);
+        assert!(
+            crate::config::parse("[lead]\nmodel = \"p/m\"\nlane_threads = \"both\"\n").is_err()
+        );
         let errors = crate::config::parse(
             "[sessions]\ncap = 99\ncredentials = [\"CATALY_X\"]\n[lead]\nmodel = \"bad\"\n\
              [fallback]\non = \"never\"\n[fallback.chains]\ndefault = [\"x\"]\n",
