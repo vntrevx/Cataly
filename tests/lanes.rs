@@ -366,6 +366,87 @@ fn reports_need_the_current_run_and_novelty_counts_only_new_evidence() {
     hub.stop();
 }
 
+/// EVR req. 31: repeating a recorded step does not reopen its file evidence or alter the record.
+#[test]
+fn repeated_step_with_removed_file_is_unchanged() {
+    let (mut hub, work) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "step-file", &json!({}));
+    let rec = record(&hub, "step-file");
+    let (mut b, _) = hello(&hub, &rec);
+    std::fs::write(work.join("out.txt"), "result").unwrap();
+    let input = json!({
+        "op": "step", "name": "build", "result": "built", "evidence": "out.txt",
+        "receipts": ["build-1"], "files": ["out.txt"]
+    });
+    let first = b.lane_tool("first", &rec["session_id"], input.clone());
+    assert_eq!(first["text"], "step 'build' recorded", "{first}");
+    let before = b.lane_tool("before", &rec["session_id"], json!({ "op": "steps" }));
+
+    std::fs::remove_file(work.join("out.txt")).unwrap();
+    let again = b.lane_tool("again", &rec["session_id"], input.clone());
+    assert_eq!(again["error"], false, "{again}");
+    assert_eq!(again["text"], "step 'build' unchanged (recorded before)");
+    let after = b.lane_tool("after", &rec["session_id"], json!({ "op": "steps" }));
+    assert_eq!(after, before, "the original step stays intact");
+
+    for (field, value) in [
+        ("result", json!("different")),
+        ("evidence", json!("elsewhere.txt")),
+        ("receipts", json!(["build-2"])),
+    ] {
+        let mut changed = input.clone();
+        changed[field] = value;
+        let refused = b.lane_tool(field, &rec["session_id"], changed);
+        assert_eq!(refused["error"], true, "{refused}");
+        assert_eq!(
+            refused["text"],
+            "step 'build' is recorded with other content"
+        );
+    }
+    let mut fresh = input;
+    fresh["name"] = json!("another");
+    let refused = b.lane_tool("fresh", &rec["session_id"], fresh);
+    assert_eq!(refused["error"], true, "{refused}");
+    assert_eq!(refused["text"], "out.txt: missing");
+    hub.stop();
+}
+
+/// The unchanged reply also survives the bridge no longer having a tool's evidence facts.
+#[test]
+fn repeated_step_without_tool_facts_is_unchanged() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "step-tool", &json!({}));
+    let rec = record(&hub, "step-tool");
+    let (mut b, _) = hello(&hub, &rec);
+    let input = json!({
+        "op": "step", "name": "build", "result": "built", "evidence": "write-1",
+        "calls": ["write-1"]
+    });
+    let first = b.call(
+        "bridge.tool",
+        json!({
+            "call": "first", "tool": "cataly_lane", "session": rec["session_id"],
+            "input": input,
+            "facts": [{ "call": "write-1", "tool": "write", "seen": true, "fingerprint": "result" }]
+        }),
+    );
+    assert_eq!(first["text"], "step 'build' recorded", "{first}");
+    let again = b.lane_tool("again", &rec["session_id"], input.clone());
+    assert_eq!(again["error"], false, "{again}");
+    assert_eq!(again["text"], "step 'build' unchanged (recorded before)");
+    let mut fresh = input;
+    fresh["name"] = json!("another");
+    let refused = b.lane_tool("fresh", &rec["session_id"], fresh);
+    assert_eq!(refused["error"], true, "{refused}");
+    assert_eq!(
+        refused["text"],
+        "no tool facts from the bridge; nothing was recorded"
+    );
+    hub.stop();
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let ok = Command::new("git")
         .args(args)
@@ -888,6 +969,36 @@ fn oversight_reminds_alerts_once_and_holds_at_the_ceiling() {
     assert_eq!(held["held_by"], "oversight");
     assert!(held["reason"].as_str().unwrap().contains("ceiling reached"));
     assert_eq!(goal(&hub, &r2["session_id"]), "paused");
+    hub.stop();
+}
+
+/// A step with new evidence starts a new round (COORD req. 7): after one stall alert, a lane that
+/// moves on only through steps is alerted again when it stalls again.
+#[test]
+fn a_step_with_new_evidence_starts_a_new_round() {
+    let (mut hub, work) = lane_hub(
+        "[lanes.oversight]\nfirst_reminder = \"1s\"\nsecond_reminder = \"2s\"\nstall = \"3s\"\nsweep = \"1s\"\n",
+    );
+    start(&mut hub);
+    open(&hub, "s-1", &json!({}));
+    let rec = record(&hub, "s-1");
+    let stalls = |hub: &TestHub| {
+        events_of(hub, "lane.alert")
+            .into_iter()
+            .filter(|e| e["text"].as_str().unwrap().contains(" stall: "))
+            .count()
+    };
+    hub.until(WAIT, || (stalls(&hub) == 1).then_some(()));
+    std::fs::write(work.join("built.txt"), "result").unwrap();
+    let (mut b, _) = hello(&hub, &rec);
+    let step = b.lane_tool(
+        "c1",
+        &rec["session_id"],
+        json!({ "op": "step", "name": "build", "result": "built", "evidence": "built.txt",
+                "files": ["built.txt"] }),
+    );
+    assert_eq!(step["text"], "step 'build' recorded", "{step}");
+    hub.until(WAIT, || (stalls(&hub) == 2).then_some(()));
     hub.stop();
 }
 

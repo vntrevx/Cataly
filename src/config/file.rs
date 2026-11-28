@@ -92,12 +92,15 @@ pub(crate) fn set_key(text: &str, section: &str, key: &str, value: &str) -> Stri
     set_rendered(text, section, key, &toml_string(value))
 }
 
-/// [`set_key`] with a value already written as TOML.
+/// [`set_key`] with a value already written as TOML. A table header's trailing comment is kept,
+/// not treated as part of its name (as in [`remove_section`]).
 pub(crate) fn set_rendered(text: &str, section: &str, key: &str, rendered: &str) -> String {
     let line = format!("{key} = {rendered}");
     let header = format!("[{section}]");
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let start = lines.iter().position(|l| l.trim() == header);
+    let start = lines
+        .iter()
+        .position(|l| l.split('#').next().unwrap_or_default().trim() == header);
     let Some(start) = start else {
         let mut out = text.trim_end().to_string();
         if !out.is_empty() {
@@ -456,10 +459,34 @@ mod tests {
     }
 
     #[test]
+    fn set_key_reuses_table_headers_with_comments() {
+        for header in [
+            "[lead] # main",
+            " \t[lead]\t# main  ",
+            "[lead]#main",
+            "[lead]\t ",
+        ] {
+            for model in ["model = \"a\"\n", ""] {
+                let text = format!("# mine\n{header}\n{model}\n[omp] # next\npath = \"omp\"\n");
+                let out = set_key(&text, "lead", "model", "b");
+                let parsed: toml::Value = toml::from_str(&out).unwrap();
+                assert_eq!(
+                    parsed.get("lead").unwrap().get("model").unwrap().as_str(),
+                    Some("b")
+                );
+                assert_eq!(out.matches("[lead]").count(), 1);
+                assert_eq!(
+                    out,
+                    format!("# mine\n{header}\nmodel = \"b\"\n\n[omp] # next\npath = \"omp\"\n")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_refuses_a_group_readable_file_like_the_hub() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("cataly-setup-perm-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = crate::sys::fs::tests::scratch("setup-perm");
         let path = dir.join("config.toml");
         assert!(std::fs::write(&path, "[hub]\n").is_ok());
         assert!(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).is_ok());
@@ -468,6 +495,5 @@ mod tests {
         assert!(read_private(&path, FILE_MAX).is_err());
         assert!(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).is_ok());
         assert!(snapshot(&path).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
