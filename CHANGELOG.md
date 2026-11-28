@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.9 (Unreleased)
+
+### Shell rule 0
+
+- Rule 0 no longer refuses `cataly` words that are only text. It judges the words in command
+  position (past `if`/`then`/`do`/`!`/`{`, assignments and redirections), every word after a runner
+  (`env`, `sudo`, `xargs`, `find`, `timeout`, shells and the rest), and command substitutions
+  wherever the shell expands them: bare, inside double quotes and in unquoted here-documents. Text
+  is left alone: a commit message in a quoted here-document, a `grep`/`sed` pattern, `git commit -m`,
+  `echo` and `printf` arguments, single-quoted text and comments.
+- Code is still judged as command lines: the phrases, here-documents and piped input of shells,
+  `eval`, `su`, `watch`, `flock`, `parallel`, `ssh`, `docker`/`podman`/`kubectl`, `tmux` and the
+  `python`, `node`, `perl`, `ruby` and `awk` interpreters, so `bash -c "cataly update"`,
+  `bash <<'EOF'`, `… | sh` and `$(cataly update)` stay refused, nested too. Inside such code every
+  phrase still counts, so `sh -c "grep 'cataly update' f"` is refused as before.
+- `--help` or `-h` after any `cataly` verb is allowed: the CLI's own parser reads it as a usage
+  request and runs nothing (`cataly setup --help`). As a flag's value it is not one
+  (`--file --help`), and stays refused.
+- `ssh HOST cataly <verb>` is now refused like the quoted form.
+
 ## 0.2.8 (2026-11-28)
 
 - The upgrade to 0.2.7 could hold the lead as "ambiguous lead binding history" when its working

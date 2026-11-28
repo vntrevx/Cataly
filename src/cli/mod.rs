@@ -1,6 +1,6 @@
 //! `cataly <verb>`: parse, send one request to the hub, print the answer as text or `--json`.
 
-mod args;
+pub(crate) mod args;
 mod client;
 mod home;
 mod install;
