@@ -39,10 +39,11 @@ export interface Deps {
 export async function unixConnect(path: string, onLine: (line: string) => void, onClose: () => void): Promise<Wire> {
 	if (!privateDir(dirname(path), process.getuid?.() ?? -1)) throw new Error("the hub socket's directory is not private");
 	let buf = "";
+	const utf8 = new TextDecoder(); // streaming: a character split across chunks is kept until its last byte
 	let closed = false;
 	const end = () => void (closed || ((closed = true), onClose()));
 	const data = (s: { end(): void }, chunk: Uint8Array) => {
-		buf += chunk.toString();
+		buf += utf8.decode(chunk, { stream: true });
 		if (buf.length > LINE_MAX * 2) return void ((buf = ""), s.end());
 		for (let at = buf.indexOf("\n"); at >= 0; at = buf.indexOf("\n")) {
 			const line = buf.slice(0, at);

@@ -821,7 +821,7 @@ security boundary are described in `docs/design/workers.md`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `destination` | string | required | `user@host`; with `tailscale`, the host is the tailnet IP |
+| `destination` | string | required | `user@host` or `user@[IPv6]`, without the port; with `tailscale`, the host is the tailnet IP |
 | `port` | integer 1-65535 | `22` | The worker's sshd port; a pin on another port is `[host]:port` |
 | `name` | string | the section name | The name shown (the tailnet machine name with `tailscale`) |
 | `tailscale` | bool | `false` | `worker doctor` checks the address again with `tailscale ip` |

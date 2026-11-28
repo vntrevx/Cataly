@@ -80,21 +80,26 @@ async fn a_terminal_close_is_confirmed_only_by_the_process_exit() {
     .unwrap();
     std::fs::set_permissions(&tern, std::fs::Permissions::from_mode(0o700)).unwrap();
     let slow_to_end = "trap 'sleep 0.5; exit 0' TERM; while :; do sleep 0.1; done";
+    // The second process ends by itself once its input closes, which happens only after its
+    // identity is recorded: a timed one could end first on a loaded runner, leaving no identity.
     for (script, grace, closed) in [
         (slow_to_end, Duration::ZERO, true),
-        ("sleep 0.3", Duration::from_secs(5), false),
+        ("read line", Duration::from_secs(5), false),
     ] {
         let _ = std::fs::remove_file(&calls);
         let mut child = std::process::Command::new("sh")
             .args(["-c", script])
+            .stdin(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         let pid = child.id();
+        let input = child.stdin.take();
         std::fs::write(&target, pid.to_string()).unwrap();
         let reaper = std::thread::spawn(move || child.wait());
         let owner = Ownership::prepare(&dir, &format!("terminal-{pid}")).unwrap();
         owner.spawned(Some(pid)).await.unwrap();
         owner.terminal(&tern, "block").unwrap();
+        drop(input);
         assert_eq!(
             owner.close_terminal(grace).await.unwrap(),
             Cleanup::LocalReaped

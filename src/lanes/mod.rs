@@ -1670,7 +1670,10 @@ impl<R: Runtime> Lanes<R> {
     /// lane's: an open lane names it, or a lane being opened (or queued for its worker) created it.
     /// The open journals the creation before it saves the lane record, which waits for the worktree
     /// (on a worker, after a push) or for the worker, so the record alone would let the lead's answer
-    /// into the thread before the kickoff.
+    /// into the thread before the kickoff. Each read sees the store as it is then, and the open can
+    /// save the record between two of them, so they follow the open's own order: the journal, then
+    /// the record it names (none yet: being opened), then the open lanes, which hold a record saved
+    /// since.
     pub(crate) async fn claims_thread(
         &self,
         relay: &str,
@@ -1678,14 +1681,13 @@ impl<R: Runtime> Lanes<R> {
         parent: &str,
         source: &str,
     ) -> bool {
-        if self.route(relay, room).await.is_some() {
+        let origin = format!("{relay}:{parent}/{source}");
+        if let Ok(Some(journal)) = self.env.store.read(move |r| r.journal(&origin)).await
+            && matches!(self.row(&journal.lane).await, Ok(None))
+        {
             return true;
         }
-        let origin = format!("{relay}:{parent}/{source}");
-        let Ok(Some(journal)) = self.env.store.read(move |r| r.journal(&origin)).await else {
-            return false;
-        };
-        matches!(self.row(&journal.lane).await, Ok(None))
+        self.route(relay, room).await.is_some()
     }
 
     /// Hands an owner message from a lane's thread to that lane (DISC-IN req. 42).

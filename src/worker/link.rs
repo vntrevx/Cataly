@@ -1406,8 +1406,8 @@ impl Workers {
     }
 
     /// `worker remove`: refused while lanes live; asks the worker to forget this hub's line when it
-    /// answers; drops the key, the pin and the config section. Returns what the owner still has to
-    /// do on the worker, if anything.
+    /// answers; drops the key and config section, and the pin if no other worker uses it. Returns
+    /// what the owner still has to do on the worker, if anything.
     pub(crate) async fn remove(
         self: &Arc<Self>,
         name: &str,
@@ -1434,7 +1434,7 @@ impl Workers {
         };
         self.disconnect(name).await;
         let dest = Destination::parse(&format!("{}:{}", settings.destination, settings.port))?;
-        remove_files(&self.config_dir, name, &dest)?;
+        remove_files(&self.config_dir, name, &dest, &config)?;
         crate::config::file::edit(config_file, "", |text| {
             Ok(crate::config::file::remove_section(
                 text,
@@ -1460,11 +1460,12 @@ impl Workers {
     }
 }
 
-/// Drops a worker's key pair and its host-key pin.
+/// Drops a worker's key pair and its host-key pin unless another configured worker uses the pin.
 pub(crate) fn remove_files(
     config_dir: &Path,
     name: &str,
     dest: &Destination,
+    config: &Config,
 ) -> Result<(), String> {
     let key = enrol::key_path(config_dir, name);
     for path in [key.clone(), PathBuf::from(format!("{}.pub", key.display()))] {
@@ -1473,6 +1474,15 @@ pub(crate) fn remove_files(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
+    }
+    // Pins identify hosts and ports, not remote users.
+    if config.workers.iter().any(|(other_name, other)| {
+        other_name != name
+            && other.port == dest.port
+            && Destination::parse(&other.destination)
+                .is_ok_and(|other| other.host.eq_ignore_ascii_case(&dest.host))
+    }) {
+        return Ok(());
     }
     let pins = enrol::known_hosts(config_dir);
     if let Ok(text) = std::fs::read_to_string(&pins) {
@@ -1542,6 +1552,101 @@ pub(crate) mod tests {
         }
         assert!(line.ends_with("-- dev@100.101.102.103 cataly-worker-v1"));
         assert!(!line.contains("ProxyJump") && !line.contains("ControlMaster"));
+    }
+
+    #[test]
+    fn removing_workers_keeps_a_shared_host_pin_until_the_last_user() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@box\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@box\"\nport = {port}\n\
+                 [workers.other-port]\ndestination = \"alice@box\"\nport = 2200\n\
+                 [workers.other-host]\ndestination = \"alice@elsewhere\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let dest = Destination::parse(&format!("alice@box:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            let unrelated = format!(
+                "[box]:2200 ssh-ed25519 OTHERPORT\n{} ssh-ed25519 OTHERHOST\n",
+                Destination::parse(&format!("alice@elsewhere:{port}"))
+                    .unwrap()
+                    .pin_name()
+            );
+            let all_pins = enrol::set_pin(&unrelated, &dest.pin_name(), "SHARED");
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+            crate::sys::fs::ensure_private_dir(&dir.join("secrets")).unwrap();
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                std::fs::write(&key, "private").unwrap();
+                std::fs::write(key.with_extension("pub"), "public").unwrap();
+            }
+
+            remove_files(&dir, "alice", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "alice");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                assert!(key.exists() && key.with_extension("pub").exists());
+            }
+
+            let dest = Destination::parse(&format!("bob@box:{port}")).unwrap();
+            remove_files(&dir, "bob", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "bob");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), unrelated);
+        }
+    }
+
+    #[test]
+    fn removing_workers_keeps_a_shared_host_pin_with_mixed_case_hosts() {
+        for port in [22, 2222] {
+            let config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            for (name, destination) in [("alice", "alice@BoX"), ("bob", "bob@bOx")] {
+                let dir = crate::sys::fs::tests::scratch("worker-shared-pin-case");
+                let dest = Destination::parse(&format!("{destination}:{port}")).unwrap();
+                let pins = enrol::known_hosts(&dir);
+                let all_pins = enrol::set_pin("", &dest.pin_name(), "SHARED");
+                crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+                remove_files(&dir, name, &dest, &config).unwrap();
+                assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            }
+        }
+    }
+
+    #[test]
+    fn removing_workers_drops_all_shared_host_pin_case_variants() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin-variants");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let alice = Destination::parse(&format!("alice@BoX:{port}")).unwrap();
+            let bob = Destination::parse(&format!("bob@bOx:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            // Older enrolments can leave one pin for each host-name spelling.
+            let all_pins = format!(
+                "{} ssh-ed25519 SHARED\n{} ssh-ed25519 SHARED\n",
+                alice.pin_name(),
+                bob.pin_name()
+            );
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+            remove_files(&dir, "alice", &alice, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            remove_files(&dir, "bob", &bob, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), "");
+        }
     }
 
     #[test]
