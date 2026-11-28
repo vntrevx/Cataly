@@ -2,6 +2,10 @@
 
 ## 0.2.9 (Unreleased)
 
+- Relay answers are no longer lost when more than 8 MiB of transcript follows their request.
+  The reader searches beyond the tail when needed and remembers request positions and searched
+  prefixes. Missing tags do not repeatedly rescan old entries, and a slow head search does not
+  hold answers already found in the tail.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

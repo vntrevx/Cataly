@@ -259,6 +259,8 @@ pub(crate) struct Pipeline<R: Relay, T: Runtime> {
     lookups: Mutex<HashMap<String, Lookup>>,
     /// The newest answered request's later turns.
     later: Mutex<LaterTurns>,
+    /// Request positions retained only while their answer or later turns are being read.
+    reply_offsets: Arc<Mutex<transcript::ReplyOffsets>>,
     /// A failed seen mark is logged once per run (MSG-04).
     seen_failed: AtomicBool,
     /// A failed done mark is logged once per run (MSG-04).
@@ -300,6 +302,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             targets: Mutex::default(),
             lookups: Mutex::default(),
             later: Mutex::default(),
+            reply_offsets: Arc::default(),
             seen_failed: AtomicBool::new(false),
             done_failed: AtomicBool::new(false),
             marking: Mutex::default(),
@@ -1115,6 +1118,10 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             .map_err(|e| e.to_string())?
             .filter(|h| self.later().ended.as_deref() != Some(h.message.as_str()));
         if open.is_empty() && newest.is_none() {
+            *self
+                .reply_offsets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = transcript::ReplyOffsets::default();
             return Ok(());
         }
         let waiting: Vec<&HandoffRow> = open
@@ -1142,10 +1149,15 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                     .chain(later.as_ref())
                     .map(|h| Self::tag(&h.room, &h.message))
                     .collect();
-                let mut replies =
-                    transcript::read_replies(file.clone(), tags, Self::prefix(), settled)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                let mut replies = transcript::read_replies(
+                    file.clone(),
+                    tags,
+                    Self::prefix(),
+                    settled,
+                    Arc::clone(&self.reply_offsets),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 let later_reply = later.as_ref().and_then(|_| replies.pop());
                 for (h, reply) in waiting.iter().zip(replies) {
                     self.settle_reply(h, reply).await?;
