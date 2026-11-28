@@ -79,13 +79,13 @@ Then the defaults, each applied only where the config says nothing yet:
 | What | Default | Flag |
 |---|---|---|
 | Owner | the application's owner (the team's owner for a team application) | `--owner <id>` |
-| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched | |
+| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched. A `cataly-ops` destination already in the file is kept, and then no `#cataly-ops` is created | |
 | Lead | the model OMP starts with (`omp config get modelRoles`) | `--lead-model provider/id`, `--lead-cwd` |
 | Remote approvals | on: OMP's permission requests get buttons; only your presses count | `--approvals on\|off` |
 | Bot profile | Cataly's avatar and banner on the bot (`PATCH /users/@me`) and the avatar as the application's icon (`PATCH /applications/@me`), each only where there is none or still the one Cataly set; your own images are kept | `--profile` re-applies Cataly's |
 | Home backup | to `<gh login>/cataly-home`, private, created if absent, when `gh` is logged in (see [Home backup](#home-backup)) | `--backup on\|off`, `--backup-repo owner/name` |
 | Jobs | `[jobs.health]` and `[jobs.pressure]` with their defaults, notices to `#cataly-ops`, unless a job of that kind exists | |
-| Service | the user service, enabled and started (see [`cataly service enable`](#cataly-service-enable)); only for an installed release | `--service on\|off` |
+| Service | the user service, enabled and started (see [`cataly service enable`](#cataly-service-enable)); only for an installed release, and not once you turned it off (`[setup] service = false`) | `--service on\|off` |
 | Voice | off. `--voice on` turns on the [Discord voice assistant](#voice-and-transcribe) and fills in every `[voice]` key the file does not set (see below); `--voice off` sets `enabled = false` and keeps the rest | `--voice on\|off`, `--voice-channel <id\|name>`, `--voice-daily-minutes <n>`, `--voice-cap-usd <usd>`, `--voice-key-file <path>` |
 
 Setup then shows one short summary (a `+` marks what this run changes) and asks once; nothing
@@ -174,6 +174,7 @@ What `cataly setup` remembers between runs. You rarely edit it by hand.
 | Key | Type | Default | Allowed | What it does | Setup |
 |---|---|---|---|---|---|
 | `backup` | boolean | `true` | | `false` once you turned the [home backup](#home-backup) off before it existed; a plain re-run then leaves it off instead of offering it again. | `--backup off` writes `false`; `--backup on` (or `--backup-repo`) sets it back to `true` and plans the backup |
+| `service` | boolean | `true` | | `false` once you turned the user service off with setup; a plain re-run then leaves it off instead of enabling it again. `cataly service disable` does not change it. | `--service off` writes `false`; `--service on` sets it back to `true`, and so does `cataly service enable` |
 
 ```toml
 [setup]
@@ -419,10 +420,11 @@ creates the voice channel if one is to be made, checks that voice would start wi
 and asks a running hub to reload.
 
 Before it enables voice (or moves it with `--voice-channel`), setup reads the bot's permissions
-in the chosen voice channel: its roles, then the channel's overwrites. If View Channel, Connect or
-Speak is missing, it stops without enabling voice: for permissions the bot's roles lack it prints
-a fresh invite link (inviting the bot again updates its role's permissions), and for an overwrite
-it names the channel and whose overwrite denies them.
+in the chosen voice channel: its roles, then the channel's overwrites. An overwrite may grant
+permissions absent from the server roles. If View Channel, Connect or Speak is still missing, it
+stops without enabling voice: when an overwrite denies a missing permission, it names the channel
+and whose overwrite denies it; otherwise it prints a fresh invite link (inviting the bot again
+updates its role's permissions).
 
 | Key | Type | Default | Allowed | What it does |
 |---|---|---|---|---|
@@ -821,7 +823,7 @@ security boundary are described in `docs/design/workers.md`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `destination` | string | required | `user@host`; with `tailscale`, the host is the tailnet IP |
+| `destination` | string | required | `user@host` or `user@[IPv6]`, without the port; with `tailscale`, the host is the tailnet IP |
 | `port` | integer 1-65535 | `22` | The worker's sshd port; a pin on another port is `[host]:port` |
 | `name` | string | the section name | The name shown (the tailnet machine name with `tailscale`) |
 | `tailscale` | bool | `false` | `worker doctor` checks the address again with `tailscale ip` |
