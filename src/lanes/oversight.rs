@@ -286,6 +286,26 @@ impl<R: Runtime> Lanes<R> {
         {
             return Err("each receipt holds 1 to 500 characters".into());
         }
+        let key = rec.key.clone();
+        let step_name = name.clone();
+        if let Some(earlier) = self
+            .env
+            .store
+            .read(move |r| r.step(&key, &step_name))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            // Repeated steps do not read evidence again (EVR req. 31). The writer still checks
+            // atomically in case another call records this name after the read.
+            return if earlier.result == result
+                && earlier.evidence == evidence_ref
+                && earlier.receipts == receipts
+            {
+                Ok(format!("step '{name}' unchanged (recorded before)"))
+            } else {
+                Err(format!("step '{name}' is recorded with other content"))
+            };
+        }
         let mut items = Vec::new();
         for f in p::FILES.list(input) {
             items.push(evidence::file_item(Path::new(&rec.cwd), &f)?);

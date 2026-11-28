@@ -29,6 +29,14 @@ cargo test --locked --no-fail-fast --workspace --features voice   # the voice bu
 cd extension && bun install --frozen-lockfile && bun run typecheck && bun test
 ```
 
+Every test works in its own temporary directory: `/tmp/cy-<pid>-<n>` for a hub sandbox from
+`tests/support`, `cataly-unit-<tag>-<pid>-<n>` in the temp folder for a unit test's `scratch`. A
+guard removes it when the test ends, after stopping the processes it started, read-only install
+folders included; a directory it cannot remove fails the test. To keep a failed test's directory
+for debugging, set `CATALY_TEST_KEEP=1`: the test prints the kept path. New tests take their
+directory from `TestHub`, `support::TempRoot` or `scratch`, never from `std::env::temp_dir()`
+directly.
+
 `cargo deny check` checks advisories and dependency licences against `deny.toml`. Every new
 dependency is recorded in `docs/third-party.md` with its licence and source. Read
 `docs/provenance.md` ("How new code stays clean") and `docs/principles.md` before you write code.

@@ -15,6 +15,7 @@ use super::{Card, Kind, State, neutral};
 use crate::host::Runtime;
 use crate::host::dialogs::Question;
 use crate::relay::discord::intake::Intake;
+use crate::sys::secrets;
 
 /// A select holds at most 25 options; a message at most 5 rows; a modal at most 5 inputs.
 const OPTIONS_MAX: usize = 25;
@@ -152,16 +153,17 @@ fn select(stamp: &str, n: usize, item: &Item, mark: &str) -> Value {
         .iter()
         .enumerate()
         .map(|(i, o)| {
+            let shown = secrets::mask(o);
             let shown = if Some(i) == *recommended {
-                super::marked(o, mark, 100)
+                super::marked(&shown, mark, 100)
             } else {
-                cut(o, 100)
+                cut(&shown, 100)
             };
             json!({ "label": shown, "value": i.to_string(), "default": default.contains(&i) })
         })
         .collect();
     json!({ "type": 1, "components": [{
-        "type": 3, "custom_id": format!("cy:{stamp}:s:{n}"), "placeholder": cut(label, 150),
+        "type": 3, "custom_id": format!("cy:{stamp}:s:{n}"), "placeholder": cut(&secrets::mask(label), 150),
         "min_values": i32::from(!*multi), "max_values": if *multi { options.len() } else { 1 },
         "options": opts }] })
 }
@@ -253,7 +255,7 @@ fn modal(stamp: &str, items: &[Item], ids: &[usize], draft: &[Val], words: &Word
             let mut input = Map::new();
             input.insert("type".into(), json!(4));
             input.insert("custom_id".into(), json!(format!("i{n}")));
-            input.insert("label".into(), json!(cut(label, LABEL_MAX)));
+            input.insert("label".into(), json!(cut(&secrets::mask(label), LABEL_MAX)));
             input.insert("style".into(), json!(if limits.long { 2 } else { 1 }));
             input.insert("required".into(), json!(*required));
             input.insert(
@@ -332,12 +334,15 @@ pub(super) fn answer(
                             .collect();
                         if *multi {
                             Value::Array(picked)
+                        } else if let Some(one) = picked.into_iter().next() {
+                            one
                         } else {
-                            picked.into_iter().next().unwrap_or(Value::Null)
+                            continue;
                         }
                     }
                     (Item::Choice { multi: true, .. }, _) => json!([]),
-                    (Item::Choice { .. }, _) => Value::Null,
+                    // An unselected single choice is left out, as OMP does; `null` is refused.
+                    (Item::Choice { .. }, _) => continue,
                     (Item::Text { .. }, Val::Text(t)) => json!(t),
                     (Item::Text { .. }, _) => json!(""),
                 };
@@ -500,5 +505,112 @@ impl super::Cards {
             .open
             .get(dialog)
             .map_or_default(|c| c.draft.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::form::Choice;
+    use super::*;
+    use crate::config::Language;
+    use crate::host::dialogs::{Dialog, DialogKind, answer_frame};
+
+    #[test]
+    fn an_unselected_optional_choice_is_left_out_and_the_answer_is_accepted() {
+        let fields = vec![
+            Field {
+                name: "env".into(),
+                label: "Env".into(),
+                kind: FieldKind::One,
+                choices: ["dev", "prod"]
+                    .map(|v| Choice {
+                        value: v.into(),
+                        label: v.into(),
+                        selected: false,
+                    })
+                    .to_vec(),
+                value: String::new(),
+                required: false,
+                limits: Limits::default(),
+            },
+            Field {
+                name: "note".into(),
+                label: "Note".into(),
+                kind: FieldKind::Text,
+                choices: Vec::new(),
+                value: String::new(),
+                required: false,
+                limits: Limits::default(),
+            },
+        ];
+        let items = of_fields(&fields).unwrap();
+        let kind = Kind::Fields {
+            fields,
+            hidden: Map::new(),
+        };
+        let words = typed::words(Language::English);
+        for env in [Val::Unset, Val::Picks(Vec::new())] {
+            let draft = [env, Val::Text("hi".into())];
+            let answer = answer(&kind, &items, &draft, &words).unwrap();
+            assert_eq!(answer, json!({ "data": { "note": "hi" } }));
+            let dialog = Dialog {
+                id: "d1".into(),
+                title: None,
+                message: None,
+                kind: DialogKind::Form,
+                options: None,
+                secret: false,
+                questions: None,
+                html: None,
+            };
+            assert!(answer_frame(&dialog, &answer).is_some(), "{answer}");
+        }
+    }
+
+    #[test]
+    fn panel_labels_mask_secrets_without_changing_values() {
+        let token = format!("ghp_{}", "a".repeat(36));
+        let prefix = "x".repeat(70);
+        let mut items = [
+            Item::Choice {
+                label: format!("Pick {token}"),
+                options: vec![format!("{prefix} {token}")],
+                multi: false,
+                required: true,
+                default: vec![0],
+                recommended: None,
+            },
+            Item::Text {
+                label: format!("Note for this: {token}"),
+                required: false,
+                limits: Limits::default(),
+                default: token.clone(),
+            },
+        ];
+        for recommendation in [None, Some(0)] {
+            let Item::Choice { recommended, .. } = &mut items[0] else {
+                unreachable!()
+            };
+            *recommended = recommendation;
+            let menu = select("s", 0, &items[0], " (recommended)");
+            let menu = &menu["components"][0];
+            let mark = if recommendation.is_some() {
+                " (recommended)"
+            } else {
+                ""
+            };
+            assert_eq!(menu["placeholder"], "Pick [masked]");
+            assert_eq!(
+                menu["options"][0]["label"],
+                format!("{prefix} [masked]{mark}")
+            );
+            assert_eq!(menu["options"][0]["value"], "0");
+        }
+        let words = typed::words(Language::English);
+        let modal = modal("s", &items, &[1], &draft(&items), &words);
+        let input = &modal["data"]["components"][0]["components"][0];
+        assert_eq!(input["label"], "Note for this: [masked]");
+        assert_eq!(input["value"], token);
+        assert_eq!(input["custom_id"], "i1");
     }
 }

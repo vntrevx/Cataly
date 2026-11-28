@@ -390,6 +390,18 @@ fn report_row(r: &Row<'_>) -> rusqlite::Result<ReportRow> {
     })
 }
 
+fn step_row(r: &Row<'_>) -> rusqlite::Result<StepRow> {
+    let receipts: String = r.get(5)?;
+    Ok(StepRow {
+        name: r.get(0)?,
+        run_id: r.get(1)?,
+        at_ms: r.get(2)?,
+        result: r.get(3)?,
+        evidence: r.get(4)?,
+        receipts: serde_json::from_str(&receipts).unwrap_or_default(),
+    })
+}
+
 impl Reads {
     pub(crate) fn lane(&self, key: &str) -> rusqlite::Result<Option<LaneRow>> {
         self.0
@@ -468,23 +480,23 @@ impl Reads {
         )
     }
 
+    pub(crate) fn step(&self, key: &str, name: &str) -> rusqlite::Result<Option<StepRow>> {
+        self.0
+            .query_row(
+                "SELECT name, run_id, at_ms, result, evidence, receipts FROM steps \
+                 WHERE key = ?1 AND name = ?2",
+                params![key, name],
+                step_row,
+            )
+            .optional()
+    }
+
     pub(crate) fn steps(&self, key: &str) -> rusqlite::Result<Vec<StepRow>> {
         let mut stmt = self.0.prepare(
             "SELECT name, run_id, at_ms, result, evidence, receipts FROM steps WHERE key = ?1 \
              ORDER BY at_ms, name",
         )?;
-        stmt.query_map([key], |r| {
-            let receipts: String = r.get(5)?;
-            Ok(StepRow {
-                name: r.get(0)?,
-                run_id: r.get(1)?,
-                at_ms: r.get(2)?,
-                result: r.get(3)?,
-                evidence: r.get(4)?,
-                receipts: serde_json::from_str(&receipts).unwrap_or_default(),
-            })
-        })?
-        .collect()
+        stmt.query_map([key], step_row)?.collect()
     }
 
     pub(crate) fn journal(&self, source: &str) -> rusqlite::Result<Option<JournalRow>> {
