@@ -15,11 +15,14 @@ pub(crate) mod episode;
 /// admission never refuses for the cap.
 const RECEIPT_CAP: i64 = 512;
 /// Which receipt (alias `r`) may be evicted: its message was delivered (or it stored none, or the
-/// row is gone) and no relay hand-off still reads it again.
+/// row is gone) and no relay hand-off still reads it again. No-inbox receipts stay while their
+/// lane is fenced: they may include the uncertain steering request.
 const SETTLED_RECEIPT: &str = "(r.inbox_id IS NULL OR NOT EXISTS (SELECT 1 FROM inbox i \
      WHERE i.id = r.inbox_id AND i.state <> 'delivered')) \
      AND NOT EXISTS (SELECT 1 FROM handoffs h WHERE h.target = r.target \
-     AND h.request_id = r.request_id AND h.state = 'handed')";
+     AND h.request_id = r.request_id AND h.state = 'handed') \
+     AND (r.inbox_id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM lanes l \
+     WHERE l.key = r.target AND json_extract(l.record, '$.doubt') IS NOT NULL))";
 /// Once-only identities are remembered this long (COORD req. 19).
 const ONCE_KEEP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// Finished inbox rows, deliveries and their receipts are kept this long (DESIGN 7.2).
@@ -208,6 +211,22 @@ pub(crate) enum HostWrite {
     LeadIntent(anchor::Intent),
     Episode(episode::Change),
     Admit(Admit),
+    /// Reserves an ID and the lane's in-doubt fence atomically before steering (LANE req. 33).
+    SteerReceipt {
+        target: String,
+        request_id: String,
+        digest: String,
+        session: String,
+        fence: String,
+    },
+    /// Only a definite result lifts the reserved fence; refusal also forgets the receipt.
+    SettleSteer {
+        target: String,
+        request_id: String,
+        session: String,
+        fence: String,
+        refused: bool,
+    },
     /// Records a delivery as sent and moves its inbox rows to `sent`, before the write to OMP.
     Send {
         delivery: DeliveryRow,
@@ -335,6 +354,20 @@ pub(super) fn write(
         HostWrite::LeadIntent(i) => anchor::intent(tx, *i),
         HostWrite::Episode(change) => episode::write(tx, change, now),
         HostWrite::Admit(a) => admit(tx, a, now).map(HostDone::Admitted),
+        HostWrite::SteerReceipt {
+            target,
+            request_id,
+            digest,
+            session,
+            fence,
+        } => steer_receipt(tx, target, request_id, digest, session, fence, now),
+        HostWrite::SettleSteer {
+            target,
+            request_id,
+            session,
+            fence,
+            refused,
+        } => settle_steer(tx, target, request_id, session, fence, *refused),
         HostWrite::Send { delivery, inbox } => {
             send(tx, delivery, inbox, now)?;
             Ok(HostDone::Done)
@@ -403,6 +436,55 @@ pub(super) fn write(
     }
 }
 
+fn steer_receipt(
+    tx: &Transaction<'_>,
+    target: &str,
+    request_id: &str,
+    digest: &str,
+    session: &str,
+    fence: &str,
+    now: i64,
+) -> rusqlite::Result<HostDone> {
+    tx.execute(
+        "INSERT INTO receipts (target, request_id, digest, inbox_id, created_ms, session) \
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+        params![target, request_id, digest, now, session],
+    )?;
+    trim_receipts(tx, target, session, Some(request_id))?;
+    let changed = tx.execute(
+        "UPDATE lanes SET record = json_set(record, '$.doubt', ?2) \
+         WHERE key = ?1 AND json_extract(record, '$.doubt') IS NULL",
+        params![target, fence],
+    )?;
+    if changed != 1 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(HostDone::Done)
+}
+
+fn settle_steer(
+    tx: &Transaction<'_>,
+    target: &str,
+    request_id: &str,
+    session: &str,
+    fence: &str,
+    refused: bool,
+) -> rusqlite::Result<HostDone> {
+    tx.execute(
+        "UPDATE lanes SET record = json_set(record, '$.doubt', NULL) \
+         WHERE key = ?1 AND json_extract(record, '$.doubt') = ?2",
+        params![target, fence],
+    )?;
+    if refused {
+        tx.execute(
+            "DELETE FROM receipts WHERE target = ?1 AND request_id = ?2 AND inbox_id IS NULL",
+            params![target, request_id],
+        )?;
+    }
+    trim_receipts(tx, target, session, None)?;
+    Ok(HostDone::Done)
+}
+
 fn send(tx: &Transaction<'_>, d: &DeliveryRow, inbox: &[i64], now: i64) -> rusqlite::Result<()> {
     tx.execute(
         &format!(
@@ -443,16 +525,28 @@ fn send_rows(
             params![id, d.handle],
         )?;
     }
+    trim_receipts(tx, &d.target, &d.handle, None)
+}
+
+/// The oldest settled receipts go first. `keep` is a steering reservation not yet fenced in this
+/// transaction; even when all older receipts are open, it must survive until its outcome is known.
+fn trim_receipts(
+    tx: &Transaction<'_>,
+    target: &str,
+    session: &str,
+    keep: Option<&str>,
+) -> rusqlite::Result<()> {
     tx.execute(
         &format!(
             "DELETE FROM receipts WHERE rowid IN (SELECT r.rowid FROM receipts AS r \
              WHERE r.target = ?1 AND r.session = ?2 AND {SETTLED_RECEIPT} \
+             AND (?4 IS NULL OR r.request_id <> ?4) \
              ORDER BY r.created_ms, r.rowid \
              LIMIT max(0, (SELECT COUNT(*) FROM receipts WHERE target = ?1 AND session = ?2) - ?3))"
         ),
-        params![d.target, d.handle, RECEIPT_CAP],
-    )?;
-    Ok(())
+        params![target, session, RECEIPT_CAP, keep],
+    )
+    .map(drop)
 }
 
 fn admit(tx: &Transaction<'_>, a: &Admit, now: i64) -> rusqlite::Result<Admitted> {
@@ -590,7 +684,10 @@ pub(super) fn maintain(tx: &Transaction<'_>, now: i64) -> rusqlite::Result<()> {
         [finished],
     )?;
     tx.execute(
-        "DELETE FROM receipts WHERE created_ms < ?1 AND (inbox_id IS NULL OR inbox_id NOT IN (SELECT id FROM inbox))",
+        &format!(
+            "DELETE FROM receipts AS r WHERE created_ms < ?1 \
+             AND (inbox_id IS NULL OR inbox_id NOT IN (SELECT id FROM inbox)) AND {SETTLED_RECEIPT}"
+        ),
         [finished],
     )?;
     tx.execute(
@@ -659,11 +756,12 @@ impl Reads {
     ) -> rusqlite::Result<Option<StoredReceipt>> {
         self.0
             .query_row(
-                "SELECT inbox_id FROM receipts WHERE target = ?1 AND request_id = ?2",
+                "SELECT inbox_id, digest FROM receipts WHERE target = ?1 AND request_id = ?2",
                 params![target, request_id],
                 |r| {
                     Ok(StoredReceipt {
                         inbox_id: r.get(0)?,
+                        digest: r.get(1)?,
                     })
                 },
             )
@@ -698,10 +796,11 @@ impl Reads {
     }
 }
 
-/// A stored receipt: the inbox row it stored, if it stored one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A stored receipt: its message digest and the inbox row it stored, if it stored one.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredReceipt {
     pub(crate) inbox_id: Option<i64>,
+    pub(crate) digest: String,
 }
 
 impl Reads {
@@ -918,6 +1017,78 @@ mod receipt_cap {
             .collect();
         for t in tasks {
             t.await.unwrap().unwrap();
+        }
+    }
+
+    /// Steering applies the same cap at reservation, without losing its current in-flight ID.
+    #[tokio::test]
+    async fn steering_receipts_are_capped_per_session() {
+        let (store, _writer, _dir) = open_temp("steering-receipt-cap");
+        store
+            .lanes(crate::store::lanes::LaneWrite::Save {
+                key: "lead".into(),
+                state: "running".into(),
+                outcome: None,
+                thread: None,
+                opened_ms: 1,
+                closed_ms: None,
+                record: "{\"doubt\":null}".into(),
+                expect: None,
+                note: None,
+                reopen: false,
+            })
+            .await
+            .unwrap();
+        for (session, total) in [("h1", RECEIPT_CAP + 2), ("h2", 1)] {
+            for n in 0..total {
+                let request_id = format!("{session}-{n}");
+                let fence = format!("steering {request_id}");
+                store
+                    .host(HostWrite::SteerReceipt {
+                        target: "lead".into(),
+                        request_id: request_id.clone(),
+                        digest: "same-text".into(),
+                        session: session.into(),
+                        fence: fence.clone(),
+                    })
+                    .await
+                    .unwrap();
+                if n >= RECEIPT_CAP {
+                    assert_eq!(
+                        store.read(move |r| count(r, session)).await.unwrap(),
+                        RECEIPT_CAP
+                    );
+                }
+                store
+                    .host(HostWrite::SettleSteer {
+                        target: "lead".into(),
+                        request_id,
+                        session: session.into(),
+                        fence,
+                        refused: false,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(store.read(|r| count(r, "h1")).await.unwrap(), RECEIPT_CAP);
+        assert_eq!(store.read(|r| count(r, "h2")).await.unwrap(), 1);
+        for (id, kept) in [
+            ("h1-0", false),
+            ("h1-1", false),
+            ("h1-2", true),
+            ("h1-513", true),
+            ("h2-0", true),
+        ] {
+            assert_eq!(
+                store
+                    .read(move |r| r.receipt("lead", id))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                kept,
+                "{id}"
+            );
         }
     }
 

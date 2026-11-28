@@ -497,8 +497,12 @@ async fn handle(hub: &Hub, name: &str, raw: Value) -> Result<Value, Failure> {
         {
             relay_method(hub, relay, raw).await
         }
-        // The stop begins once this acceptance is written (`socket::connection`).
-        method::HUB_STOP => hub.may_stop().map(|()| Value::Null).map_err(refused),
+        // The stop begins once this acceptance is written (`socket::connection`); the answer says
+        // how long a voice call may keep the hub winding down.
+        method::HUB_STOP => hub
+            .may_stop()
+            .map_err(refused)
+            .and_then(|()| ok(&hub.stopping())),
         voice if voice.starts_with("voice.") => voice_method(hub, voice, raw).await,
         worker if worker.starts_with("worker.") => worker_method(hub, worker, raw).await,
         _ => Err(Failure {
@@ -803,14 +807,34 @@ async fn slack_upload(hub: &Hub, p: proto::DiscordParams) -> Result<Value, Failu
     ok(&serde_json::json!({ "file": id }))
 }
 
-/// `health`: the hub's checks, then the configured lead's line.
+/// `health`: the hub's checks, then the configured lead's line, then each worker PC older than
+/// this hub (a warning when its lanes are held) or of unknown version.
 async fn health(hub: &Hub) -> Result<Value, Failure> {
+    use crate::worker::link::Standing;
     let mut checks = hub.jobs.health().await?;
-    if hub.config().lead.is_some() {
+    let config = hub.config();
+    if config.lead.is_some() {
         let view = hub.lead.view().await;
         checks.push(crate::jobs::owner::health::lead_check(&view));
     }
-    let ignored = hub.config().health.ignore.clone();
+    for view in hub.workers.list() {
+        let Some((standing, note)) =
+            view.standing_note(crate::sys::release::VERSION, config.hub.language)
+        else {
+            continue;
+        };
+        let level = match standing {
+            Standing::Behind { held: true } => "warn",
+            _ => "info",
+        };
+        checks.push(crate::jobs::owner::health::Check {
+            name: format!("worker {}", view.name),
+            level: level.into(),
+            detail: note,
+            next: None,
+        });
+    }
+    let ignored = config.health.ignore.clone();
     let warn = checks
         .iter()
         .any(|c| c.level == "warn" && !ignored.contains(&c.name));

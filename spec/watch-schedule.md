@@ -230,7 +230,7 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 51. The owner (local command line) and the lead (extension tool) may manage jobs. Lanes may not create, change or
     remove jobs. Commands run as the daemon's user.
 52. Cron trigger: five fields plus a required IANA time zone; "?" is not supported; day-of-month and day-of-week
-    combine with OR. Across daylight-saving changes a local time that does not exist does not fire and a repeated
+    combine with OR, or with AND when either field starts with `*` (so `*/2` still restricts its field). Across daylight-saving changes a local time that does not exist does not fire and a repeated
     local time fires once. Invalid cron or zone is refused before anything is saved.
 53. One-shot trigger: an ISO instant with seconds and an explicit offset or Z (never the local zone), in the future
     at creation; a warning is given when it is under two minutes away.
@@ -286,7 +286,8 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 
 71. A stream job runs a long-lived command (argument vector, no shell, the lead's working directory) and turns each
     output line matching its regular expression into an event (urgent unless the job is marked low priority).
-72. A line over 64 KiB is not filtered; it is written to a private file and one event gives its path and size.
+72. A line over 64 KiB is not filtered; it is written to a private file as it arrives (at most its first 4 MiB;
+    the rest is counted, not kept) and one event gives its path and size.
 73. Restart policy: none (exit reported once), or up to N restarts (0 to 100, default 5) with exponential backoff
     from a given delay (default 10 s). A clean exit with "run until success" ends the job. Exhaustion stops the job,
     reported once. An optional silence alert emits one event per quiet spell of at least M minutes; any output
