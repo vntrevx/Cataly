@@ -373,6 +373,9 @@ repos = ["github.com/vntrevx/cataly-core"]   # placement evidence and doctor che
 lanes = 1                             # remote lanes at once, 1-8
 ```
 
+IPv6 destinations retain brackets, for example `destination = "dev@[fd7a::1]"`, with `port` stored
+separately. SSH arguments use the unbracketed `user@host` form and pass the port with `-p`.
+
 - Hub files: `<config>/secrets/worker-<name>` (0600, out of backups like every secret),
   `<config>/known_hosts` (0600). Worker files: `<config>/worker.toml` (`omp` path, `PATH` captured by
   `init`), root `<state>/worker/<hub id>/` with `repos/`, `lanes/`, `sessions/`, `serve.lock`.

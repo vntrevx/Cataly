@@ -61,6 +61,15 @@ impl Destination {
         format!("{}@{}", self.user, self.host)
     }
 
+    /// The config destination, with IPv6 brackets so the separate port can be appended.
+    pub(crate) fn config_target(&self) -> String {
+        if self.host.contains(':') {
+            format!("{}@[{}]", self.user, self.host)
+        } else {
+            self.target()
+        }
+    }
+
     /// The `known_hosts` name: `host`, or `[host]:port` on another port (sshd(8)).
     pub(crate) fn pin_name(&self) -> String {
         if self.port == 22 {
@@ -438,6 +447,28 @@ mod tests {
             "dev@h;rm",
         ] {
             assert!(Destination::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn config_destinations_round_trip_without_changing_ssh_targets() {
+        for (text, config, ssh) in [
+            ("dev@[fd7a::1]:2222", "dev@[fd7a::1]", "dev@fd7a::1"),
+            ("dev@[::1]", "dev@[::1]", "dev@::1"),
+            ("dev@linux-box", "dev@linux-box", "dev@linux-box"),
+            (
+                "dev@100.101.102.103:2222",
+                "dev@100.101.102.103",
+                "dev@100.101.102.103",
+            ),
+        ] {
+            let d = Destination::parse(text).unwrap();
+            assert_eq!(d.target(), ssh, "{text}");
+            let saved = d.config_target();
+            let reloaded = Destination::parse(&format!("{saved}:{}", d.port))
+                .expect("the stored destination and port must parse");
+            assert_eq!(reloaded, d, "{text}");
+            assert_eq!(saved, config, "{text}");
         }
     }
 
