@@ -13,6 +13,12 @@
   episode, so a later exit gets a fresh retry window. No migration: a store with such an open or
   ended episode recovers on its next wake; a lead already held by this message needs one
   `cataly lead start`, as the hold says.
+- A resume that is refused no longer uses up the 300 s recovery window. Before, a wake first
+  opened the window and then checked the conversation a second time; when that check refused,
+  the window stayed open, the wake tried again every 30 s, and after 211 s the lead was held as
+  if 5 minutes of restarts had failed, with nothing tried (the 0.2.7 hold "300 s recovery episode
+  has no startup and cleanup budget remaining"). Now the conversation is checked once, before the
+  window opens, and a refusal holds with its real reason.
 - The lead's hold texts (the hold notice, the update result, `cataly lead status`, `cataly health`)
   no longer quote internal reasons such as "recovery is held (300 s recovery episode has no
   startup and cleanup budget remaining); explicit owner retry required". Each hold reason is told
