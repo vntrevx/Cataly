@@ -200,6 +200,14 @@ fn render(fallback: &FallbackSettings, role: Role) -> (Value, Vec<(&'static str,
         }
     }
     root.insert("retry".into(), Value::Object(retry));
+    // A stream that never yields its first event has no deadline of OMP's own (`-1`): one stuck
+    // request held the lead's serial session for six hours with no log line. Two minutes is far
+    // past a healthy first event and still lets `retry.modelFallback` take over. Every role gets
+    // it: any session's stream can stop before its first event.
+    root.insert(
+        "providers".into(),
+        json!({ "streamFirstEventTimeoutSeconds": 120 }),
+    );
     let env = tools::apply(&mut root, role);
     (Value::Object(root), env)
 }
@@ -276,6 +284,10 @@ mod tests {
         );
         assert_eq!(plain["retry"]["modelFallback"], true);
         assert_eq!(plain["retry"]["fallbackRevertPolicy"], "cooldown-expiry");
+        assert_eq!(
+            plain["providers"]["streamFirstEventTimeoutSeconds"], 120,
+            "a stream without a first event cannot hold the session forever"
+        );
         assert!(plain["retry"].get("fallbackChains").is_none());
         assert!(plain["retry"].get("fallbackOn").is_none());
         let mut chains = std::collections::BTreeMap::new();
@@ -314,6 +326,10 @@ mod tests {
             Role::LookOnly,
         ] {
             let o = overlay(&FallbackSettings::default(), role);
+            assert_eq!(
+                o["providers"]["streamFirstEventTimeoutSeconds"], 120,
+                "every session's stream needs the first-event deadline, {role:?}"
+            );
             assert_eq!(o["eval"], json!({ "py": false, "js": false }), "{role:?}");
             assert_eq!(o["tools"]["approval"]["eval"], "deny", "{role:?}");
             for tool in tools::STOCK
