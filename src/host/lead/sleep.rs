@@ -155,7 +155,7 @@ impl<R: Runtime> Lead<R> {
                         .all(|row| row.state == "pending" && !row.urgent && !row.owner)
                         && r.questions(true)?.is_empty()
                         && r.lanes(true)?.is_empty()
-                        && r.owed_open("discord", since)?
+                        && r.owed_open(since)?
                             .iter()
                             .all(|o| o.reminders >= REMINDERS_MAX)))
                     .await,

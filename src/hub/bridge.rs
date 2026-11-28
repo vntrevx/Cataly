@@ -25,7 +25,8 @@ use crate::jobs::event::{Emit, EventKind, Severity};
 use crate::lanes::shell;
 use crate::log;
 use crate::proto::{Response, code};
-use crate::store::lead::{LeadDone, LeadWrite, REMINDERS_MAX};
+use crate::store::Store;
+use crate::store::lead::{LeadDone, LeadWrite, OwedOpen, REMINDERS_MAX};
 use crate::store::relay::OWED_WINDOW_MS;
 use crate::sys::now_ms;
 
@@ -608,28 +609,28 @@ pub(crate) async fn stop_gate(hub: &Hub, answered: bool) -> Option<String> {
     {
         return None;
     }
-    let since = now_ms() - OWED_WINDOW_MS;
-    let open = hub
-        .store
-        .read(move |r| r.owed_open("discord", since))
-        .await
-        .ok()?;
+    owed_notice(&hub.store, now_ms()).await
+}
+
+/// The stop gate's notice: owed messages on every relay, each taking one of its reminders.
+async fn owed_notice(store: &Store, now: i64) -> Option<String> {
+    let since = now - OWED_WINDOW_MS;
+    let open = store.read(move |r| r.owed_open(since)).await.ok()?;
     let open: Vec<_> = open
         .into_iter()
         .filter(|o| o.reminders < REMINDERS_MAX)
         .collect();
     let mut lines = Vec::new();
     for o in open.iter().take(STOP_LIST) {
-        let took = hub
-            .store
+        let took = store
             .lead(LeadWrite::Remind {
-                relay: "discord".into(),
+                relay: o.relay.clone(),
                 room: o.room.clone(),
                 message: o.message.clone(),
             })
             .await;
         if matches!(took, Ok(LeadDone::Count(1))) {
-            lines.push(owed_line(&o.room, &o.message, o.admitted_ms, &o.text));
+            lines.push(owed_line(o));
         }
     }
     if lines.is_empty() {
@@ -649,11 +650,14 @@ pub(crate) async fn stop_gate(hub: &Hub, answered: bool) -> Option<String> {
 
 /// One owed message in a reminder. It carries the request's tag, so the answer the reminder brings
 /// is captured and posted as the linked reply to that message.
-pub(crate) fn owed_line(room: &str, message: &str, at_ms: i64, text: &str) -> String {
-    let quoted: String = text.chars().take(200).collect();
+pub(crate) fn owed_line(o: &OwedOpen) -> String {
+    let quoted: String = o.text.chars().take(200).collect();
     format!(
-        "- [discord {room}/{message}] at {}: \"{}\"",
-        crate::jobs::instant_text(at_ms),
+        "- [{} {}/{}] at {}: \"{}\"",
+        o.relay,
+        o.room,
+        o.message,
+        crate::jobs::instant_text(o.admitted_ms),
         quoted.replace('\n', " ")
     )
 }
@@ -661,6 +665,42 @@ pub(crate) fn owed_line(room: &str, message: &str, at_ms: i64, text: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An owed Telegram request keeps the lead from stopping, carries its own tag and takes its
+    /// reminder on the Telegram record (OPC req. 8-9 are relay-neutral).
+    #[tokio::test]
+    async fn the_stop_gate_holds_for_an_owed_telegram_request() {
+        use crate::store::relay::RelayWrite;
+        let (store, _w, _dir) = crate::store::tests::open_temp("owed-telegram");
+        store
+            .relay(RelayWrite::Arrive {
+                relay: "telegram".into(),
+                room: "c".into(),
+                message: "12".into(),
+                seq: 12,
+                parent: None,
+                raw: "{}".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .relay(RelayWrite::Handed {
+                relay: "telegram".into(),
+                room: "c".into(),
+                message: "12".into(),
+                seq: 12,
+                target: "lead".into(),
+                request_id: "telegram:c:12".into(),
+                digest: "d".into(),
+                owed: Some("hi".into()),
+            })
+            .await
+            .unwrap();
+        let notice = owed_notice(&store, now_ms() + 120_000).await.unwrap();
+        assert!(notice.contains("- [telegram c/12] at "), "{notice}");
+        let open = store.read(|r| r.owed_open(0)).await.unwrap();
+        assert_eq!((open[0].relay.as_str(), open[0].reminders), ("telegram", 1));
+    }
 
     /// The lead and lanes address the owner as "주인님" in Korean and "Master" in English.
     #[test]

@@ -495,7 +495,7 @@ pub(crate) async fn recap(hub: &Hub) -> String {
     let requests = store.read(|r| r.requests(true)).await;
     let questions = store.read(|r| r.questions(true)).await;
     let since = now_ms() - crate::store::relay::OWED_WINDOW_MS;
-    let owed = store.read(move |r| r.owed_open("discord", since)).await;
+    let owed = store.read(move |r| r.owed_open(since)).await;
     let mut damaged = Vec::new();
     let mut out = String::from(
         "[recap] Cataly's records now (read them before acting on recollection).\nLanes: none (lanes arrive later).\n",

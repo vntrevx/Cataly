@@ -54,6 +54,7 @@ pub(crate) struct OtherRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwedOpen {
+    pub(crate) relay: String,
     pub(crate) room: String,
     pub(crate) message: String,
     pub(crate) admitted_ms: i64,
@@ -478,22 +479,23 @@ impl Reads {
             .optional()
     }
 
-    /// Owed replies still open, admitted since `since_ms`, oldest first.
-    pub(crate) fn owed_open(&self, relay: &str, since_ms: i64) -> rusqlite::Result<Vec<OwedOpen>> {
+    /// Owed replies still open on every relay, admitted since `since_ms`, oldest first.
+    pub(crate) fn owed_open(&self, since_ms: i64) -> rusqlite::Result<Vec<OwedOpen>> {
         let mut stmt = self.0.prepare(
-            "SELECT o.room, o.message, o.admitted_ms, o.text, o.reminders FROM owed_replies o WHERE o.relay = ?1 \
-             AND o.settled_ms IS NULL AND o.admitted_ms >= ?2 AND EXISTS (SELECT 1 FROM handoffs h \
+            "SELECT o.relay, o.room, o.message, o.admitted_ms, o.text, o.reminders FROM owed_replies o \
+             WHERE o.settled_ms IS NULL AND o.admitted_ms >= ?1 AND EXISTS (SELECT 1 FROM handoffs h \
              WHERE h.relay = o.relay AND h.room = o.room AND h.message = o.message \
              AND h.state IN ('handed', 'delivered') AND h.answer = 'waiting') \
              ORDER BY o.admitted_ms LIMIT 200",
         )?;
-        stmt.query_map(params![relay, since_ms], |r| {
+        stmt.query_map(params![since_ms], |r| {
             Ok(OwedOpen {
-                room: r.get(0)?,
-                message: r.get(1)?,
-                admitted_ms: r.get(2)?,
-                text: r.get(3)?,
-                reminders: r.get(4)?,
+                relay: r.get(0)?,
+                room: r.get(1)?,
+                message: r.get(2)?,
+                admitted_ms: r.get(3)?,
+                text: r.get(4)?,
+                reminders: r.get(5)?,
             })
         })?
         .collect()

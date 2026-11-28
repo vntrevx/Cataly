@@ -199,7 +199,7 @@ pub(crate) async fn remind(hub: Arc<Hub>, mut stop: watch::Receiver<bool>) -> Re
         }
         let now = now_ms();
         let since = now - OWED_WINDOW_MS;
-        let Ok(open) = hub.store.read(move |r| r.owed_open("discord", since)).await else {
+        let Ok(open) = hub.store.read(move |r| r.owed_open(since)).await else {
             continue;
         };
         for o in open.into_iter().filter(|o| o.reminders < REMINDERS_MAX) {
@@ -210,7 +210,7 @@ pub(crate) async fn remind(hub: Arc<Hub>, mut stop: watch::Receiver<bool>) -> Re
             let took = hub
                 .store
                 .lead(LeadWrite::Remind {
-                    relay: "discord".into(),
+                    relay: o.relay.clone(),
                     room: o.room.clone(),
                     message: o.message.clone(),
                 })
@@ -218,7 +218,7 @@ pub(crate) async fn remind(hub: Arc<Hub>, mut stop: watch::Receiver<bool>) -> Re
             if !matches!(took, Ok(LeadDone::Count(1))) {
                 continue;
             }
-            let line = super::bridge::owed_line(&o.room, &o.message, o.admitted_ms, &o.text);
+            let line = super::bridge::owed_line(&o);
             let message = Message {
                 sender: HUB_SENDER.into(),
                 text: format!(
@@ -226,7 +226,13 @@ pub(crate) async fn remind(hub: Arc<Hub>, mut stop: watch::Receiver<bool>) -> Re
                 ),
                 urgent: true,
                 owner: false,
-                identity: Some(format!("owed:{}:{}:{}", o.room, o.message, o.reminders + 1)),
+                identity: Some(format!(
+                    "owed:{}:{}:{}:{}",
+                    o.relay,
+                    o.room,
+                    o.message,
+                    o.reminders + 1
+                )),
                 request_id: None,
             };
             if let Err(e) = hub.lead.deliver(message).await {
