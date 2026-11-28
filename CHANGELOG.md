@@ -2,6 +2,8 @@
 
 ## 0.2.9 (Unreleased)
 
+- Starting the lead could exceed the session cap when live lanes already filled it. Lead starts
+  now count live local lanes too and refuse with the session-cap message when no place is free.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

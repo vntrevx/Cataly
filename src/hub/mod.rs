@@ -17,7 +17,7 @@ pub(crate) mod voice;
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio::signal::unix::{SignalKind, signal};
@@ -557,20 +557,7 @@ fn sessions(
     let agent_start = Latency::default();
     let events = hub_events(jobs);
     workers.set_events(Arc::clone(&events));
-    let lead = Lead::new(LeadEnv {
-        config: config.clone(),
-        omp: Arc::clone(omp),
-        bridge_link: Arc::new(crate::omp::extension::check),
-        events: Arc::clone(&events),
-        store: store.clone(),
-        state_dir: paths.state_dir.clone(),
-        make: runtime(paths, &agent_start, links),
-    });
-    {
-        let (lead, stop) = (Arc::clone(&lead), shutdown.clone());
-        supervisor.spawn("lead", move || Arc::clone(&lead).run(stop.clone()));
-    }
-    let lanes = lanes(
+    let (lead, lanes) = lead_and_lanes(
         paths,
         jobs,
         omp,
@@ -579,8 +566,11 @@ fn sessions(
         &agent_start,
         &events,
         links,
-        &lead,
     );
+    {
+        let (lead, stop) = (Arc::clone(&lead), shutdown.clone());
+        supervisor.spawn("lead", move || Arc::clone(&lead).run(stop.clone()));
+    }
     {
         let (lanes, stop) = (Arc::clone(&lanes), shutdown.clone());
         supervisor.spawn("lanes", move || Arc::clone(&lanes).run(stop.clone()));
@@ -733,6 +723,51 @@ fn runtime(
             links: Arc::clone(&links),
         })
     })
+}
+
+/// Wires both hosts' session-cap counts before either supervised loop can start a session.
+#[allow(clippy::too_many_arguments)]
+fn lead_and_lanes(
+    paths: &Paths,
+    jobs: &Jobs,
+    omp: &Arc<Omp>,
+    config: &watch::Receiver<Arc<Config>>,
+    store: &Store,
+    agent_start: &Latency,
+    events: &Events,
+    links: &Arc<crate::host::bridge::Links>,
+) -> (Arc<Lead<Hosted>>, Arc<crate::lanes::Lanes<Hosted>>) {
+    // Lanes hold the lead; a weak link back avoids a cycle.
+    let lanes_link = Arc::new(OnceLock::<Weak<crate::lanes::Lanes<Hosted>>>::new());
+    let live_lanes = Arc::clone(&lanes_link);
+    let lead = Lead::new(LeadEnv {
+        config: config.clone(),
+        omp: Arc::clone(omp),
+        bridge_link: Arc::new(crate::omp::extension::check),
+        lanes_live: Arc::new(move || {
+            live_lanes
+                .get()
+                .and_then(Weak::upgrade)
+                .map_or(0, |lanes| lanes.live_count())
+        }),
+        events: Arc::clone(events),
+        store: store.clone(),
+        state_dir: paths.state_dir.clone(),
+        make: runtime(paths, agent_start, links),
+    });
+    let lanes = lanes(
+        paths,
+        jobs,
+        omp,
+        config,
+        store,
+        agent_start,
+        events,
+        links,
+        &lead,
+    );
+    lanes_link.get_or_init(|| Arc::downgrade(&lanes));
+    (lead, lanes)
 }
 
 /// The lanes (milestone 3a) with their oversight task.

@@ -568,6 +568,46 @@ fn a_delivery_in_doubt_keeps_the_lead_awake() {
     assert!(hub.stop().success());
 }
 
+/// HOST req. 89: the lead cannot start when a live lane already fills the session cap.
+#[test]
+fn a_live_lane_at_the_session_cap_refuses_a_lead_start() {
+    let mut hub = sleepy_hub(
+        &[],
+        "0s",
+        "autostart = false\n",
+        "[sessions]\ncap = 1\n[lanes]\nmodel = \"fake/primary\"\ncwd = \"/tmp\"\n",
+    );
+    hub.start();
+    hub.until(Duration::from_secs(20), || {
+        hub.json(&["status", "--json"])["omp"]
+            .is_object()
+            .then_some(())
+    });
+    let params = serde_json::json!({
+        "key": "at-cap",
+        "title": "Work",
+        "brief": "Do the work.",
+        "checks": [{ "kind": "command", "argv": ["true"] }],
+    })
+    .to_string();
+    let opened = hub.cli(&["lane", "open", "--json", "--params", &params]);
+    assert!(opened.status.success(), "{opened:?}");
+    let lanes = hub.json(&["lane", "list", "--json"]);
+    assert_eq!(lanes.as_array().unwrap().len(), 1, "{lanes}");
+    assert_eq!(lanes[0]["live"], true, "{lanes}");
+    assert!(lead_view(&hub)["session"].is_null());
+    // The fake logs probe processes too; refusing the lead must add no process at all.
+    let starts = omp_starts(&hub);
+
+    let started = hub.cli(&["lead", "start", "--fresh"]);
+    assert!(!started.status.success(), "{started:?}");
+    let error = String::from_utf8_lossy(&started.stderr);
+    assert!(error.contains("the session cap of 1 is reached"), "{error}");
+    assert!(lead_view(&hub)["session"].is_null());
+    assert_eq!(omp_starts(&hub), starts, "the lead must not spawn");
+    assert!(hub.stop().success());
+}
+
 /// An open lane keeps the lead awake, with the lead's inbox empty.
 #[test]
 fn an_open_lane_keeps_the_lead_awake() {

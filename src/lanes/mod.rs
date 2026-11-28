@@ -208,6 +208,11 @@ impl<R: Runtime> Lanes<R> {
         self.live_map().get(key).filter(|s| s.alive()).cloned()
     }
 
+    /// Live local lane sessions, counted toward the hub's session cap (HOST req. 89).
+    pub(crate) fn live_count(&self) -> usize {
+        self.live_map().values().filter(|s| s.alive()).count()
+    }
+
     /// Live lanes that may not be stopped now, with the reason.
     pub(crate) fn busy(&self) -> Vec<(String, &'static str)> {
         self.live_map()
@@ -433,7 +438,7 @@ impl<R: Runtime> Lanes<R> {
             .path()
             .ok_or("the OMP executable was not found")?;
         (self.env.bridge_link)()?;
-        let live = self.live_map().values().filter(|s| s.alive()).count();
+        let live = self.live_count();
         let sessions = live + usize::from((self.env.lead_live)());
         if sessions >= usize::try_from(config.sessions.cap).unwrap_or(usize::MAX) {
             return Err(format!(

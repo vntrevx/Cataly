@@ -66,6 +66,8 @@ pub(crate) struct Env<R: Runtime> {
     pub(crate) omp: Arc<Omp>,
     /// Whether the bridge link in OMP's extension folder is current (DESIGN 4.2, 12.2 C19).
     pub(crate) bridge_link: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    /// Live local lane sessions (they count toward the session cap).
+    pub(crate) lanes_live: Arc<dyn Fn() -> usize + Send + Sync>,
     pub(crate) events: Events,
     pub(crate) store: Store,
     pub(crate) state_dir: PathBuf,
@@ -805,7 +807,7 @@ impl<R: Runtime> Lead<R> {
             .path()
             .ok_or("the OMP executable was not found")?;
         (self.env.bridge_link)()?;
-        let live = usize::from(self.current().is_some_and(|s| s.alive()));
+        let live = (self.env.lanes_live)() + usize::from(self.current().is_some_and(|s| s.alive()));
         if live >= usize::try_from(config.sessions.cap).unwrap_or(usize::MAX) {
             return Err(format!(
                 "the session cap of {} is reached",
