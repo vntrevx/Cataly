@@ -22,7 +22,8 @@
 #                               omp-data/release before its answer;
 #                               omp-data/noentry answers the prompt and writes nothing; with omp-data/ask
 #                               a message containing ASK opens the HTML `form` dialog stock OMP's ask
-#                               tool sends, and the turn ends when it is answered: "picked <choice>";
+#                               tool sends (omp-data/ask.json overrides the dialog frame), and the
+#                               turn ends when it is answered: "picked <choice>";
 #                               with omp-data/approve a message containing APPROVE opens the approval
 #                               select stock OMP sends under always-ask, ended the same way.
 #                               Every prompt, follow-up and steer line is appended to omp-data/prompts.
@@ -125,6 +126,11 @@ turn() {
     echo '{"type":"agent_start"}'
     if [ -f "$dir/ask" ] && printf '%s' "$msg" | grep -q ASK; then
         asked=$2
+        if [ -f "$dir/ask.json" ]; then
+            cat "$dir/ask.json"
+            printf '\n'
+            return
+        fi
         if [ -f "$dir/form2" ]; then
             echo '{"type":"extension_ui_request","id":"d2","method":"form","html":"<form><p>Release</p><fieldset><legend>Pick a color</legend><label><input type=\"radio\" name=\"color\" value=\"Red\"> Red</label><label><input type=\"radio\" name=\"color\" value=\"Blue\" checked> Blue</label></fieldset><label>Note <input type=\"text\" name=\"note\" maxlength=\"4\" required></label></form>"}'
             return

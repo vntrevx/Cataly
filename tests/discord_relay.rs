@@ -1402,6 +1402,105 @@ fn questions_are_answered_by_the_owner_once() {
     assert!(hub.stop().success());
 }
 
+/// DISC-OUT req. 64, 70: confirmations and choice-only questions leave plain owner messages to
+/// normal intake. An explicit reply still answers the question without becoming another request.
+#[test]
+fn plain_owner_messages_do_not_answer_choice_questions() {
+    for mut dialog in [
+        json!({"method": "confirm", "title": "Continue?"}),
+        json!({"method": "select", "title": "Pick a color", "options": ["Red", "Blue"]}),
+        json!({"method": "form", "html": "<form><label>Color <select name=\"color\"><option value=\"Red\">Red</option><option value=\"Blue\">Blue</option></select></label></form>"}),
+    ] {
+        let fake = FakeDiscord::start();
+        let mut hub = relay_hub(&fake, &["ask"], "");
+        dialog["type"] = json!("extension_ui_request");
+        dialog["id"] = json!("d1");
+        hub.fixture("omp", "ask.json", Some(&dialog.to_string()));
+        hub.start();
+        ready(&hub);
+        recap_delivered(&hub);
+        assert!(hub.cli(&["lead", "send", "ASK"]).status.success());
+        let q = question(&fake);
+        let qid = q["id"].as_str().unwrap();
+        let plain = qid.parse::<u64>().unwrap() + 1;
+        let text = "tell me the current status";
+        let plain_id = plain.to_string();
+        fake.say(FakeDiscord::message(CH, plain, OWNER, text));
+        // The lead's inbox accepts the request while its open dialog delays delivery to OMP.
+        // The old path posts a correction instead, so wait for either observable outcome.
+        let inbox = hub.until(WAIT, || {
+            let inbox = hub.json(&["lead", "inbox", "--json"]).to_string();
+            (inbox.contains(&plain_id)
+                || fake
+                    .creates()
+                    .iter()
+                    .any(|c| reference(c).as_deref() == Some(plain_id.as_str())))
+            .then_some(inbox)
+        });
+        assert!(
+            inbox.contains(&plain_id),
+            "plain owner request was consumed as an answer: {dialog}; inbox: {inbox}"
+        );
+        assert_eq!(
+            hub.json(&["lead", "status", "--json"])["session"]["dialogs"][0]["id"],
+            "d1",
+            "the plain message leaves the question open"
+        );
+
+        let reply = plain + 100;
+        fake.say(reply_to(reply, qid, "1"));
+        let forwarded = hub.until(WAIT, || {
+            let forwarded = requests(&hub);
+            (forwarded.iter().any(|r| r.contains(&plain_id))
+                && hub.json(&["lead", "status", "--json"])["session"]["dialogs"] == json!([])
+                && queued(&hub, reply) == 0)
+                .then_some(forwarded)
+        });
+        assert_eq!(forwarded.len(), 1, "the explicit reply is only an answer");
+        assert!(forwarded[0].contains(text), "the plain request reaches OMP");
+        assert!(hub.stop().success());
+    }
+}
+
+/// Ask and single text/textarea forms still take an ordinary owner message as their answer.
+#[test]
+fn plain_owner_messages_still_answer_free_text_questions() {
+    for mut dialog in [
+        json!({"method": "ask", "questions": [{"id": "q1", "question": "Pick a color", "options": [{"label": "Red"}, {"label": "Blue"}]}]}),
+        json!({"method": "form", "html": "<form><label>Note <input type=\"text\" name=\"note\"></label></form>"}),
+        json!({"method": "form", "html": "<form><label>Note <textarea name=\"note\"></textarea></label></form>"}),
+    ] {
+        let fake = FakeDiscord::start();
+        let mut hub = relay_hub(&fake, &["ask"], "");
+        dialog["type"] = json!("extension_ui_request");
+        dialog["id"] = json!("d1");
+        hub.fixture("omp", "ask.json", Some(&dialog.to_string()));
+        hub.start();
+        ready(&hub);
+        recap_delivered(&hub);
+        assert!(hub.cli(&["lead", "send", "ASK"]).status.success());
+        let q = fake.wait(WAIT, |f| {
+            f.bot_messages(CH).into_iter().find(|m| {
+                m["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("Question from the lead"))
+            })
+        });
+        let plain = q["id"].as_str().unwrap().parse::<u64>().unwrap() + 1;
+        fake.say(FakeDiscord::message(CH, plain, OWNER, "a custom answer"));
+        hub.until(WAIT, || {
+            (hub.json(&["lead", "status", "--json"])["session"]["dialogs"] == json!([])
+                && queued(&hub, plain) == 0)
+                .then_some(())
+        });
+        assert!(
+            requests(&hub).is_empty(),
+            "the plain message answers {dialog}"
+        );
+        assert!(hub.stop().success());
+    }
+}
+
 /// Review 6: an approval that stays local (remote approvals off) posts one notice in the request's
 /// room with the command that answers it on the machine; answering it there ends the turn.
 #[test]

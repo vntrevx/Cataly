@@ -1207,7 +1207,8 @@ impl<T: Runtime> Intake<T> {
 
     /// An owner message that answers an open question (DISC-OUT req. 70-73): a reply to the question
     /// (or to one part of it), or a plain message in its channel when exactly one question is open
-    /// there. On a card with several parts it answers one part; the others stay open.
+    /// there and it accepts free text. On a card with several parts a reply answers one part; the
+    /// others stay open.
     pub(super) async fn answer_by_text(&self, row: &QueueRow, inbound: &Inbound) -> bool {
         let words = typed::words(self.language);
         let target = {
@@ -1231,7 +1232,11 @@ impl<T: Runtime> Intake<T> {
             });
             match (replied, here.as_slice()) {
                 (Some((c, part)), _) => Some(((*c).clone(), part, true)),
-                (None, [one]) if inbound.plain && row.seq > one.message.seq() => {
+                (None, [one])
+                    if inbound.plain
+                        && row.seq > one.message.seq()
+                        && matches!(one.kind, Kind::Ask { .. } | Kind::Form { free: true, .. }) =>
+                {
                     Some(((*one).clone(), None, false))
                 }
                 _ => None,

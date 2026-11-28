@@ -2,6 +2,12 @@
 
 ## 0.2.9 (Unreleased)
 
+- An open Discord confirmation or choice-only question no longer consumes ordinary owner messages
+  as answers. They reach the lead; plain messages answer only a single-question Ask card or a
+  single-field free-text form. For a multi-question Ask card, use a Discord reply even for the last
+  remaining free-text part; a plain message becomes a new lead request. In text-only mode, a plain
+  `1` to Confirm or Select also becomes a new request; use a Discord reply to answer.
+  Explicit replies to question cards still work.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
