@@ -17,8 +17,6 @@ use crate::jobs::event::{Emit, EventKind, Severity, one_line};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_CAP: u64 = 8 * 1024 * 1024;
-const PAGE: usize = 100;
-const PAGES_MAX: usize = 30;
 const EXCERPT: usize = 160;
 /// Memory condition of a followed PR (value: start time).
 pub(crate) const FOLLOW: &str = "follow";
@@ -104,29 +102,10 @@ impl Gh<'_, '_> {
         self.json(&super::gh_api(path)).await
     }
 
-    /// Every row of a list endpoint, 100 per page, at most 30 pages (WS req. 46). `key` names the
-    /// array inside an object answer.
+    /// Every row of a list endpoint (WS req. 46); `key` names the array inside an object answer.
     async fn list(&self, path: &str, key: Option<&str>) -> Result<Vec<Value>, String> {
-        let mut rows = Vec::new();
-        for page in 1..=PAGES_MAX {
-            let sep = if path.contains('?') { '&' } else { '?' };
-            let answer = self
-                .api(&format!("{path}{sep}per_page={PAGE}&page={page}"))
-                .await?;
-            let found = match key {
-                Some(k) => answer.get(k).cloned().unwrap_or(Value::Null),
-                None => answer,
-            };
-            let Value::Array(batch) = found else {
-                return Err(format!("{path}: not a list"));
-            };
-            let n = batch.len();
-            rows.extend(batch);
-            if n < PAGE {
-                return Ok(rows);
-            }
-        }
-        Err(format!("{path}: more than {} rows", PAGE * PAGES_MAX))
+        let read = |page: String| async move { self.api(&page).await };
+        Ok(super::gh_list(path, key, None, read).await?.0)
     }
 }
 

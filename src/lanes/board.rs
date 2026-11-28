@@ -193,8 +193,11 @@ pub(crate) async fn publish<B: Board + ?Sized>(
     None
 }
 
-fn cut(text: &str, max: usize) -> String {
-    super::evidence::cut(&super::evidence::display(text), max)
+/// A lane's latest report under its board line (EVR req. 51): cleaned as thread text (EVR req. 20:
+/// home as `~`, other local paths removed, links without query), then cut to `REPORT_MAX`.
+fn report_line(kind: &str, text: &str, home: Option<&str>) -> String {
+    let text = super::evidence::thread_text(text, home);
+    format!("\n  {kind}: {}", super::evidence::cut(&text, REPORT_MAX))
 }
 
 /// The lanes as the ops panel counts them.
@@ -265,6 +268,7 @@ impl<R: Runtime> Lanes<R> {
             .read(|r| r.questions(true))
             .await
             .map_or(0, |q| q.len());
+        let home = std::env::var("HOME").ok();
         let mut lines = Vec::new();
         for row in &rows {
             let Ok(rec) = serde_json::from_str::<Record>(&row.record) else {
@@ -295,7 +299,7 @@ impl<R: Runtime> Lanes<R> {
                 }
             );
             if let Some(r) = last {
-                let _ = write!(line, "\n  {}: {}", r.kind, cut(&r.text, REPORT_MAX));
+                line.push_str(&report_line(&r.kind, &r.text, home.as_deref()));
             }
             lines.push(line);
         }
@@ -554,5 +558,23 @@ mod tests {
             .is_none()
         );
         assert!(fake.calls.lock().unwrap().is_empty());
+    }
+
+    /// The board's report line is cleaned as a thread post is (EVR req. 51, 20): home as `~`,
+    /// other local paths removed, links without their query, then cut.
+    #[test]
+    fn report_lines_are_cleaned_like_thread_posts() {
+        let line = report_line(
+            "stuck",
+            "blocked on /home/me/notes.txt and /srv/x/r.txt, see https://h/r?token=S",
+            Some("/home/me"),
+        );
+        assert_eq!(
+            line,
+            "\n  stuck: blocked on ~/notes.txt and [path removed], see https://h/r"
+        );
+        let long = report_line("progress", &"x".repeat(300), None);
+        assert!(long.ends_with(" (truncated)"), "{long}");
+        assert_eq!(long.matches('x').count(), REPORT_MAX);
     }
 }
