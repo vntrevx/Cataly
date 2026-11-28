@@ -10,7 +10,7 @@ use super::Reads;
 
 /// Reminders per owed reply, shared by the 60 s wake and the stop gate (DESIGN 12.2 C8).
 pub(crate) const REMINDERS_MAX: i64 = 3;
-/// A note longer than this ends the log's notes (EVR req. 44 caps each at 1000).
+/// Maximum UTF-8 bytes of accepted notes, including separators (EVR req. 44).
 const NOTES_MAX: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -189,7 +189,7 @@ pub(crate) fn write(tx: &Transaction<'_>, w: &LeadWrite, now: i64) -> rusqlite::
             )?,
             NOT_OPEN,
         ),
-        LeadWrite::RequestNote { id, text } => changed_or(note(tx, *id, text, now)?, NOT_OPEN),
+        LeadWrite::RequestNote { id, text } => note(tx, *id, text, now)?,
         LeadWrite::RequestClose { id, result } => changed_or(
             tx.execute(
                 "UPDATE requests SET result = ?2, closed_ms = ?3, updated_ms = ?3 \
@@ -298,6 +298,7 @@ fn question_settle(
                 params![id, state, outcome, now],
             )?;
             if let Some(item) = request {
+                // A full or closed request log must not prevent settling its question.
                 note(tx, item, &format!("question {id} {state}: {outcome}"), now)?;
             }
             LeadDone::Done
@@ -305,12 +306,29 @@ fn question_settle(
     })
 }
 
-fn note(tx: &Transaction<'_>, id: i64, text: &str, now: i64) -> rusqlite::Result<usize> {
-    tx.execute(
-        "UPDATE requests SET notes = substr(CASE WHEN notes = '' THEN ?2 ELSE notes || char(10) || ?2 END, \
-         1, ?4), updated_ms = ?3 WHERE id = ?1 AND closed_ms IS NULL",
+fn note(tx: &Transaction<'_>, id: i64, text: &str, now: i64) -> rusqlite::Result<LeadDone> {
+    let n = tx.execute(
+        "UPDATE requests SET notes = CASE WHEN notes = '' THEN ?2 ELSE notes || char(10) || ?2 END, \
+         updated_ms = ?3 WHERE id = ?1 AND closed_ms IS NULL \
+         AND length(CAST(notes AS BLOB)) + length(CAST(?2 AS BLOB)) + (notes <> '') <= ?4",
         params![id, text, now, i64::try_from(NOTES_MAX).unwrap_or(i64::MAX)],
-    )
+    )?;
+    if n != 0 {
+        return Ok(LeadDone::Done);
+    }
+    let open: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM requests WHERE id = ?1 AND closed_ms IS NULL)",
+        [id],
+        |r| r.get(0),
+    )?;
+    Ok(LeadDone::Refused(
+        if open {
+            "request notes would exceed the 16 KiB limit; note not added"
+        } else {
+            NOT_OPEN
+        }
+        .into(),
+    ))
 }
 
 const REQUEST_COLUMNS: &str =
@@ -504,6 +522,175 @@ impl Reads {
 mod tests {
     use super::*;
     use crate::store::tests::open_temp;
+
+    #[tokio::test]
+    async fn request_notes_refuse_overflow_without_losing_history() {
+        let (store, _h, _dir) = open_temp("request-notes-cap");
+        for (i, text) in ["x".repeat(1000), "é".repeat(500), "x\0".repeat(500)]
+            .into_iter()
+            .enumerate()
+        {
+            let LeadDone::Id(id) = store
+                .lead(LeadWrite::RequestAdd {
+                    title: "keep every accepted note".into(),
+                    source: format!("test:{i}"),
+                    thread: None,
+                })
+                .await
+                .unwrap()
+            else {
+                panic!("no id")
+            };
+            let mut kept = String::new();
+            for _ in 0..16 {
+                assert_eq!(
+                    store
+                        .lead(LeadWrite::RequestNote {
+                            id,
+                            text: text.clone(),
+                        })
+                        .await
+                        .unwrap(),
+                    LeadDone::Done
+                );
+                if !kept.is_empty() {
+                    kept.push('\n');
+                }
+                kept.push_str(&text);
+            }
+            let remaining = NOTES_MAX - kept.len() - 1;
+            for text in ["z".repeat(remaining + 1), "late".into()] {
+                let LeadDone::Refused(why) = store
+                    .lead(LeadWrite::RequestNote { id, text })
+                    .await
+                    .unwrap()
+                else {
+                    panic!("a note exceeding the cap was accepted")
+                };
+                assert!(why.contains("16 KiB") && why.contains("note not added"));
+                let rows = store.read(|r| r.requests(true)).await.unwrap();
+                assert_eq!(rows.iter().find(|r| r.id == id).unwrap().notes, kept);
+                if kept.len() < NOTES_MAX {
+                    let last = "z".repeat(remaining);
+                    assert_eq!(
+                        store
+                            .lead(LeadWrite::RequestNote {
+                                id,
+                                text: last.clone(),
+                            })
+                            .await
+                            .unwrap(),
+                        LeadDone::Done
+                    );
+                    kept.push('\n');
+                    kept.push_str(&last);
+                    assert_eq!(kept.len(), NOTES_MAX);
+                }
+            }
+            assert_eq!(
+                store
+                    .lead(LeadWrite::RequestClose {
+                        id,
+                        result: "done".into(),
+                    })
+                    .await
+                    .unwrap(),
+                LeadDone::Done
+            );
+            assert_eq!(
+                store
+                    .lead(LeadWrite::RequestNote {
+                        id,
+                        text: "late".into(),
+                    })
+                    .await
+                    .unwrap(),
+                LeadDone::Refused(NOT_OPEN.into())
+            );
+        }
+        assert_eq!(
+            store
+                .lead(LeadWrite::RequestNote {
+                    id: -1,
+                    text: "missing".into(),
+                })
+                .await
+                .unwrap(),
+            LeadDone::Refused(NOT_OPEN.into())
+        );
+    }
+
+    #[tokio::test]
+    async fn question_settlement_survives_full_request_notes() {
+        let (store, _h, _dir) = open_temp("question-notes-cap");
+        let LeadDone::Id(id) = store
+            .lead(LeadWrite::RequestAdd {
+                title: "keep the question answer".into(),
+                source: "test:question".into(),
+                thread: None,
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("no id")
+        };
+        let mut kept = String::new();
+        while kept.len() < NOTES_MAX {
+            let separator = usize::from(!kept.is_empty());
+            let text = "x".repeat((NOTES_MAX - kept.len() - separator).min(1000));
+            assert_eq!(
+                store
+                    .lead(LeadWrite::RequestNote {
+                        id,
+                        text: text.clone(),
+                    })
+                    .await
+                    .unwrap(),
+                LeadDone::Done
+            );
+            if separator != 0 {
+                kept.push('\n');
+            }
+            kept.push_str(&text);
+        }
+        assert_eq!(
+            store
+                .lead(LeadWrite::QuestionAsk(Box::new(QuestionRow {
+                    id: "full-notes".into(),
+                    text: "Which?".into(),
+                    source: "test:question".into(),
+                    thread: None,
+                    options: vec!["a".into(), "b".into()],
+                    recommended: Some(1),
+                    lead_may: false,
+                    request: Some(id),
+                    room: None,
+                    message: None,
+                    state: "open".into(),
+                    outcome: None,
+                    created_ms: 0,
+                })))
+                .await
+                .unwrap(),
+            LeadDone::Done
+        );
+        assert_eq!(
+            store
+                .lead(LeadWrite::QuestionSettle {
+                    id: "full-notes".into(),
+                    state: "answered".into(),
+                    outcome: "owner chose b".into(),
+                })
+                .await
+                .unwrap(),
+            LeadDone::Done
+        );
+        let rows = store.read(|r| r.requests(true)).await.unwrap();
+        assert_eq!(rows[0].notes, kept);
+        let questions = store.read(|r| r.questions(false)).await.unwrap();
+        assert_eq!(questions[0].state, "answered");
+        assert_eq!(questions[0].outcome.as_deref(), Some("owner chose b"));
+    }
 
     #[tokio::test]
     async fn request_log_and_question_ledger() {

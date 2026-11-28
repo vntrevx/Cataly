@@ -194,8 +194,9 @@ lane lifecycle area consumes the completion checker, the step records and the pu
     reference of the message in the question's own thread that announced the choice. A different thread is refused.
 40. Withdraw takes a reason. The first answer, choice or withdrawal settles a question; later attempts are refused
     with the current state.
-41. Settling a question linked to an open request-log item appends a note to that item. If adding the note fails,
-    the answer stays recorded and the lead is warned.
+41. Settling a question linked to an open request-log item appends a note to that item. If its notes would exceed
+    16 KiB, this automatic note is skipped; the question ledger keeps the full outcome. If adding the note fails
+    otherwise, the answer stays recorded and the lead is warned.
 42. The digest lists open questions, one line each: ID, age in whole hours, lane, who may settle, the question and
     the numbered options with the recommended one marked. When reminding the owner, the lead uses this list rather
     than recalling questions itself.
@@ -205,7 +206,9 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 
 44. The lead adds an item for each owner request: title (one line, 1 to 200), source reference (1 to 400), optional
     thread. It then sets the next step (replaces, 1 to 1000), appends notes (1 to 1000), and closes the item with a
-    result (1 to 1000). Changing a closed item is refused. Listing shows open or all items.
+    result (1 to 1000). Notes, including newline separators, are capped at 16 KiB of UTF-8; an append exceeding
+    that cap is refused without changing the saved notes. Changing a closed item is refused. Listing shows open
+    or all items.
 
 ### Learned rules (EVR-27)
 

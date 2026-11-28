@@ -2,6 +2,8 @@
 
 ## 0.2.9 (Unreleased)
 
+- Request notes that would exceed 16 KiB are refused instead of silently truncated while reporting
+  success. Automatic question notes are skipped when the request's notes are full.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
