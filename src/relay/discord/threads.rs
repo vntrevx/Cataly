@@ -41,6 +41,53 @@ pub(crate) fn titled(current: &str, word: &str) -> Option<String> {
     (!base.trim().is_empty() && title.chars().count() <= TITLE_MAX).then_some(title)
 }
 
+/// Where a lane thread from a message in `room` goes: `None` for a thread on the message itself in a
+/// listed channel, else the listed parent beside the source thread with the sibling thread type
+/// (`None` for a forum or media post).
+async fn beside(
+    rest: &Rest,
+    config: &Config,
+    room: Snowflake,
+) -> Result<Option<(Snowflake, Option<u64>)>, (bool, String)> {
+    // The source channel's type is always looked up, listed or not (DISC-OUT req. 49). A
+    // message inside a thread under a listed channel: Discord nests no threads, so the new
+    // thread starts beside it in that listed channel without a starter message; a forum or
+    // media parent takes a post with a starter message instead.
+    let channel = rest.channel(room).await.map_err(|e| (false, e.why))?;
+    let thread = matches!(channel.get("type").and_then(Value::as_u64), Some(10..=12));
+    if thread {
+        let parent = channel
+            .get("parent_id")
+            .and_then(Value::as_str)
+            .and_then(Snowflake::parse)
+            .filter(|p| config.discord.channels.contains(p))
+            .ok_or((
+                false,
+                "the source message's channel is not in scope".to_string(),
+            ))?;
+        let home = rest.channel(parent).await.map_err(|e| (false, e.why))?;
+        let kind = home.get("type").and_then(Value::as_u64);
+        let forum = matches!(kind, Some(15 | 16));
+        // REQUIRE_TAG (1 << 4): the product never picks a tag itself.
+        if forum && home.get("flags").and_then(Value::as_u64).unwrap_or(0) & (1 << 4) != 0 {
+            return Err((
+                false,
+                "the forum requires a tag on every post; no lane thread was made".into(),
+            ));
+        }
+        // An announcement channel takes announcement threads (10), others public threads (11).
+        let sibling = (!forum).then_some(if kind == Some(5) { 10 } else { 11 });
+        Ok(Some((parent, sibling)))
+    } else if config.discord.channels.contains(&room) {
+        Ok(None)
+    } else {
+        Err((
+            false,
+            "the source message's channel is not in scope".to_string(),
+        ))
+    }
+}
+
 impl DiscordThreads {
     fn client(&self) -> Result<(Arc<Rest>, Arc<Config>), String> {
         let config = Arc::clone(&self.config.borrow());
@@ -117,23 +164,7 @@ impl DiscordThreads {
             .discord
             .owner
             .ok_or((false, "no [discord] owner".to_string()))?;
-        // A message inside a thread under a listed channel: Discord nests no threads, so the new
-        // thread starts in that listed channel without a starter message.
-        let listed = if config.discord.channels.contains(&room) {
-            None
-        } else {
-            let channel = rest.channel(room).await.map_err(|e| (false, e.why))?;
-            let thread = matches!(channel.get("type").and_then(Value::as_u64), Some(11 | 12));
-            let parent = channel
-                .get("parent_id")
-                .and_then(Value::as_str)
-                .and_then(Snowflake::parse)
-                .filter(|p| thread && config.discord.channels.contains(p));
-            Some(parent.ok_or((
-                false,
-                "the source message's channel is not in scope".to_string(),
-            ))?)
-        };
+        let beside = beside(&rest, &config, room).await?;
         // Proof of source (DISC-IN req. 59): the exact message, written by the owner.
         let source = rest
             .message(room, message)
@@ -147,18 +178,26 @@ impl DiscordThreads {
         if author != Some(owner) || bot {
             return Err((false, "the source is not an owner message".into()));
         }
-        let (home, call, path, body) = match listed {
+        let (home, call, path, body) = match beside {
             None => (
                 room,
                 "POST channels/messages/threads",
                 format!("/channels/{room}/messages/{message}/threads"),
                 json!({ "name": title, "auto_archive_duration": 10080 }),
             ),
-            Some(p) => (
+            Some((p, None)) => (
                 p,
                 "POST channels/threads",
                 format!("/channels/{p}/threads"),
-                json!({ "name": title, "auto_archive_duration": 10080, "type": 11 }),
+                json!({ "name": title, "auto_archive_duration": 10080,
+                    "message": { "content": title,
+                    "allowed_mentions": { "parse": [], "replied_user": false } } }),
+            ),
+            Some((p, Some(sibling))) => (
+                p,
+                "POST channels/threads",
+                format!("/channels/{p}/threads"),
+                json!({ "name": title, "auto_archive_duration": 10080, "type": sibling }),
             ),
         };
         let created = rest
@@ -262,6 +301,176 @@ impl crate::lanes::board::Board for DiscordThreads {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    type Seen = Arc<Mutex<Vec<(String, String, Value)>>>;
+
+    /// A loopback Discord answering `GET`/`POST` by path suffix and recording every request.
+    async fn discord(
+        routes: Vec<(&'static str, &'static str, Value)>,
+    ) -> (super::super::Base, Seen) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Seen = Arc::default();
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                let (head, body) = loop {
+                    let n = s.read(&mut chunk).await.unwrap_or(0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let head = text[..end].to_string();
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len || n == 0 {
+                            break (head, buf[end + 4..].to_vec());
+                        }
+                    } else if n == 0 {
+                        break (text, Vec::new());
+                    }
+                };
+                let mut first = head.split(' ');
+                let (method, path) = (
+                    first.next().unwrap_or("").to_string(),
+                    first.next().unwrap_or("").to_string(),
+                );
+                let body = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                log.lock()
+                    .unwrap()
+                    .push((method.clone(), path.clone(), body));
+                let answer = routes
+                    .iter()
+                    .find(|(m, p, _)| *m == method && path.ends_with(p))
+                    .map(|(_, _, v)| v.to_string());
+                let raw = match answer {
+                    Some(v) => format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{v}",
+                        v.len()
+                    ),
+                    None => "HTTP/1.1 404 No\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                        .to_string(),
+                };
+                let _ = s.write_all(raw.as_bytes()).await;
+            }
+        });
+        let base = super::super::Base::parse(&format!("http://127.0.0.1:{port}/api")).unwrap();
+        (base, seen)
+    }
+
+    fn threads(base: super::super::Base, channels: &[&str]) -> DiscordThreads {
+        let mut config = Config::default();
+        config.discord.owner = Snowflake::parse("2");
+        config.discord.channels = channels
+            .iter()
+            .filter_map(|c| Snowflake::parse(c))
+            .collect();
+        config.lanes.thread_member = false;
+        let (_tx, rx) = watch::channel(Arc::new(config));
+        DiscordThreads {
+            config: rx,
+            rest: Arc::new(move |_: &Config| Ok(Arc::new(Rest::new(base.clone(), "t", None)?))),
+        }
+    }
+
+    const OWNER_MSG: &str = r#"{"id":"40","author":{"id":"2"}}"#;
+
+    #[tokio::test]
+    async fn a_lane_thread_from_a_listed_thread_sits_beside_it() {
+        let owner: Value = serde_json::from_str(OWNER_MSG).unwrap();
+        let (base, seen) = discord(vec![
+            (
+                "GET",
+                "/channels/30",
+                json!({ "id": "30", "type": 11, "parent_id": "10" }),
+            ),
+            ("GET", "/channels/10", json!({ "id": "10", "type": 0 })),
+            ("GET", "/channels/30/messages/40", owner),
+            (
+                "POST",
+                "/channels/10/threads",
+                json!({ "id": "50", "parent_id": "10" }),
+            ),
+        ])
+        .await;
+        let made = threads(base, &["10", "30"])
+            .create_now("30", "40", "T")
+            .await;
+        assert_eq!(made, Ok("50".to_string()));
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .all(|(_, p, _)| !p.contains("/messages/40/threads")),
+            "no nested thread"
+        );
+        let post = seen.iter().find(|(m, _, _)| m == "POST").unwrap();
+        assert_eq!(post.2["type"], 11);
+    }
+
+    #[tokio::test]
+    async fn a_lane_thread_in_a_forum_is_a_post_with_a_starter_message() {
+        let owner: Value = serde_json::from_str(OWNER_MSG).unwrap();
+        let (base, seen) = discord(vec![
+            (
+                "GET",
+                "/channels/30",
+                json!({ "id": "30", "type": 11, "parent_id": "15" }),
+            ),
+            (
+                "GET",
+                "/channels/15",
+                json!({ "id": "15", "type": 15, "flags": 0 }),
+            ),
+            ("GET", "/channels/30/messages/40", owner),
+            (
+                "POST",
+                "/channels/15/threads",
+                json!({ "id": "50", "parent_id": "15" }),
+            ),
+        ])
+        .await;
+        let made = threads(base, &["15"]).create_now("30", "40", "T").await;
+        assert_eq!(made, Ok("50".to_string()));
+        let seen = seen.lock().unwrap();
+        let post = seen.iter().find(|(m, _, _)| m == "POST").unwrap();
+        assert_eq!(post.2["message"]["content"], "T");
+        assert_eq!(post.2["message"]["allowed_mentions"]["parse"], json!([]));
+        assert!(post.2.get("type").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_forum_that_requires_tags_is_refused_before_any_write() {
+        let (base, seen) = discord(vec![
+            (
+                "GET",
+                "/channels/30",
+                json!({ "id": "30", "type": 11, "parent_id": "15" }),
+            ),
+            (
+                "GET",
+                "/channels/15",
+                json!({ "id": "15", "type": 15, "flags": 16 }),
+            ),
+        ])
+        .await;
+        let made = threads(base, &["15"]).create_now("30", "40", "T").await;
+        assert!(
+            matches!(&made, Err((false, why)) if why.contains("tag")),
+            "{made:?}"
+        );
+        assert!(seen.lock().unwrap().iter().all(|(m, _, _)| m == "GET"));
+    }
 
     #[test]
     fn status_words_replace_each_other_and_never_overflow() {

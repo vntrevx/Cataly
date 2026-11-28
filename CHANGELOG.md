@@ -2,6 +2,11 @@
 
 ## 0.2.9 (Unreleased)
 
+- Lane threads on Discord: a lane split from a message in a listed thread asked Discord for a
+  nested thread, and a lane under a forum or media channel was sent without its starter message;
+  both failed. The source channel's type is now always looked up: the new thread sits beside the
+  source in its listed parent, a forum gets a post with a starter message, and a forum that
+  requires tags is refused before any write.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
