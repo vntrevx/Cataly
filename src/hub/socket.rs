@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, broadcast};
@@ -16,6 +16,7 @@ use tokio::sync::{Semaphore, broadcast};
 use super::Hub;
 use super::dispatch::{self, Authority};
 use crate::host::Role;
+use crate::lanes::slots::{Place, Slots};
 use crate::log;
 use crate::proto::{self, EventsParams, MAX_LINE, Response, code, method};
 use crate::store::EventRecord;
@@ -38,7 +39,6 @@ async fn slot(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut OwnedWriteHalf,
 ) {
-    use crate::lanes::slots::Place;
     let refuse = |m: String| Response::err(id, code::REFUSED, m);
     let name = params
         .get("name")
@@ -78,35 +78,8 @@ async fn slot(
         Some(p) => slots.hold(&name, &label, p),
         None => slots.request(&name, &label, priority),
     };
-    let mut changes = slots.changes();
-    let mut last = None;
-    let mut probe = [0u8; 1];
-    loop {
-        let place = slots.place(&name, token);
-        if last != Some(place) {
-            let item = match place {
-                Place::Waiting(n) => serde_json::json!({ "state": "waiting", "place": n }),
-                Place::Granted => serde_json::json!({ "state": "granted" }),
-                Place::Gone => serde_json::json!({ "state": "gone" }),
-            };
-            if !send(writer, &Response::item(id, item)).await || place == Place::Gone {
-                slots.client_gone(&name, token);
-                return;
-            }
-            last = Some(place);
-        }
-        if place == Place::Granted {
-            break;
-        }
-        changes.borrow_and_update();
-        tokio::select! {
-            _ = changes.changed() => {}
-            // Input before the grant, or the end of input, withdraws the request.
-            _ = tokio::io::AsyncReadExt::read(reader, &mut probe) => {
-                slots.client_gone(&name, token);
-                return;
-            }
-        }
+    if !await_grant(&slots, &name, token, id, reader, writer).await {
+        return;
     }
     loop {
         match read_line(reader).await {
@@ -122,6 +95,53 @@ async fn slot(
             Line::TooLong | Line::Closed => {
                 slots.client_gone(&name, token);
                 return;
+            }
+        }
+    }
+}
+
+/// Reports a request's place until it is granted (true) or withdrawn (false, the request is gone).
+/// Changes are marked seen before the place is read, so a grant made while an item is being written
+/// still wakes the next look: a granted request has left the queue and is not announced again.
+async fn await_grant<R, W>(
+    slots: &Slots,
+    name: &str,
+    token: u64,
+    id: u64,
+    reader: &mut R,
+    writer: &mut W,
+) -> bool
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut changes = slots.changes();
+    let mut last = None;
+    let mut probe = [0u8; 1];
+    loop {
+        changes.borrow_and_update();
+        let place = slots.place(name, token);
+        if last != Some(place) {
+            let item = match place {
+                Place::Waiting(n) => serde_json::json!({ "state": "waiting", "place": n }),
+                Place::Granted => serde_json::json!({ "state": "granted" }),
+                Place::Gone => serde_json::json!({ "state": "gone" }),
+            };
+            if !send(writer, &Response::item(id, item)).await || place == Place::Gone {
+                slots.client_gone(name, token);
+                return false;
+            }
+            last = Some(place);
+        }
+        if place == Place::Granted {
+            return true;
+        }
+        tokio::select! {
+            _ = changes.changed() => {}
+            // Input before the grant, or the end of input, withdraws the request.
+            _ = tokio::io::AsyncReadExt::read(reader, &mut probe) => {
+                slots.client_gone(name, token);
+                return false;
             }
         }
     }
@@ -210,7 +230,7 @@ pub(super) async fn read_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Line {
     crate::proto::read_line(reader, MAX_LINE).await
 }
 
-async fn send(writer: &mut OwnedWriteHalf, response: &Response) -> bool {
+async fn send<W: AsyncWrite + Unpin>(writer: &mut W, response: &Response) -> bool {
     let line = response.to_line();
     matches!(
         tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(line.as_bytes())).await,
@@ -505,5 +525,44 @@ mod tests {
         let mut began = false;
         assert!(answer(&mut writer, &refused, Some(|| began = true)).await);
         assert!(!began);
+    }
+
+    /// A grant made while the hub still writes the waiting place (an empty slot: the request's own
+    /// change wakes the slots task at once) reaches the client. 0.2.7 marked that grant seen after
+    /// the write, and the client waited until some other slot change: a granted request is not
+    /// announced again.
+    #[tokio::test(start_paused = true)]
+    async fn a_grant_made_while_the_place_is_written_reaches_the_client() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+        let config = tokio::sync::watch::channel(Arc::new(crate::config::Config::default())).1;
+        let started = Instant::now()
+            .checked_sub(crate::lanes::slots::GRACE * 2)
+            .unwrap();
+        let slots = Slots::since_start(started, config);
+        let token = slots.request("build", "local", 5);
+        // A pipe shorter than one item: the hub's write of the place waits for the client to read.
+        let (client, mut hub_out) = tokio::io::duplex(8);
+        let (_input, mut hub_in) = tokio::io::duplex(8);
+        let hub = await_grant(&slots, "build", token, 1, &mut hub_in, &mut hub_out);
+        let client = async {
+            let mut client = BufReader::new(client);
+            let mut first = [0u8; 1];
+            client.read_exact(&mut first).await.unwrap();
+            // The hub has read the place and is writing it: the slots task grants now.
+            assert!(slots.evaluate(true));
+            let mut waiting = String::from(char::from(first[0]));
+            client.read_line(&mut waiting).await.unwrap();
+            let mut granted = String::new();
+            client.read_line(&mut granted).await.unwrap();
+            (waiting, granted)
+        };
+        let (held, (waiting, granted)) = tokio::time::timeout(Duration::from_secs(3600), async {
+            tokio::join!(hub, client)
+        })
+        .await
+        .expect("the grant reaches the client");
+        assert!(held);
+        assert!(waiting.contains(r#""state":"waiting""#), "{waiting}");
+        assert!(granted.contains(r#""state":"granted""#), "{granted}");
     }
 }
