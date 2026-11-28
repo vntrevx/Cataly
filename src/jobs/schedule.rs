@@ -11,7 +11,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use crate::config::{Config, Job, Trigger};
-use crate::store::{JobPatch, JobRegistration, JobRow};
+use crate::store::{EventRecord, JobPatch, JobRegistration, JobRow};
 use crate::sys::now_ms;
 
 use super::cron::Cron;
@@ -19,7 +19,9 @@ use super::event::{Emit, EventKind, Severity, build};
 use super::{Command, Ctx, JobsError, duration_ms, log_failure};
 
 /// An occurrence this late or later is skipped, never replayed.
-const LATE_MS: i64 = 60_000;
+pub(super) const LATE_MS: i64 = 60_000;
+/// The reason a late occurrence is skipped.
+pub(super) const LATE: &str = "60 s or more late";
 /// Most skipped occurrences counted per evaluation.
 const SKIP_COUNT_MAX: u64 = 1000;
 /// Longest single sleep.
@@ -53,7 +55,9 @@ pub(super) fn cron_due(cron: &Cron, tz: &TimeZone, due: i64, now: i64, busy: boo
             .and_then(|t| cron.next_after(tz, t))
             .map(Timestamp::as_millisecond)
     };
-    let mut occurrence = Some(due);
+    // A stored due time that is not an occurrence (computed under an older rule) moves to the first
+    // occurrence at or after it.
+    let mut occurrence = next_after(due.saturating_sub(1));
     while let Some(at) = occurrence.filter(|at| *at <= now) {
         if now - at >= LATE_MS {
             out.late += 1;
@@ -287,16 +291,14 @@ impl Sched {
                 let d = cron_due(cron, zone, due, now, busy);
                 let mut skips = Vec::new();
                 if d.late > 0 {
-                    skips.push((d.late, "60 s or more late"));
+                    skips.push((d.late, LATE));
                 }
                 if d.overlap > 0 {
                     skips.push((d.overlap, "previous run unfinished"));
                 }
                 (d.run, d.next, skips, false)
             }
-            Trigger::Once { .. } if now - due >= LATE_MS => {
-                (None, None, vec![(1, "60 s or more late")], true)
-            }
+            Trigger::Once { .. } if now - due >= LATE_MS => (None, None, vec![(1, LATE)], true),
             Trigger::Once { .. } => (Some(due), None, Vec::new(), true),
             Trigger::Probe { every, .. } | Trigger::Every { every } if busy => (
                 None,
@@ -307,27 +309,6 @@ impl Sched {
             // The next probe or tick is scheduled when this one finishes.
             Trigger::Probe { .. } | Trigger::Every { .. } => (Some(due), None, Vec::new(), false),
         };
-        let skipped: u64 = skips.iter().map(|(n, _)| n).sum();
-        if !skips.is_empty() {
-            let events = skips
-                .iter()
-                .map(|(count, reason)| {
-                    let emit = Emit::new(EventKind::RunSkipped, Severity::Info, false, name)
-                        .with("job", name)
-                        .with("count", count)
-                        .with("reason", reason);
-                    build(
-                        name,
-                        emit,
-                        &job.templates,
-                        job.dry_run,
-                        &job.destinations,
-                        now,
-                    )
-                })
-                .collect();
-            ctx.stream.append(events).await?;
-        }
         let probe = job.trigger.every().is_some();
         if run_at.is_some() && (consume || probe) {
             // Nothing is written here. A one-shot is consumed in the same transaction that records its
@@ -341,12 +322,11 @@ impl Sched {
         } else {
             let patch = JobPatch {
                 next_due_ms: Some(next),
-                add_skipped: i64::try_from(skipped).unwrap_or(i64::MAX),
                 consumed: consume.then_some(true),
                 held: consume.then_some(true),
                 ..JobPatch::default()
             };
-            if let Some(row) = ctx.store.patch_job(name.to_string(), patch).await? {
+            if let (_, Some(row)) = record_skips(ctx, job, &skips, now, patch).await? {
                 self.put(name, Arc::clone(job), row);
             }
         }
@@ -355,6 +335,48 @@ impl Sched {
         }
         Ok(())
     }
+}
+
+/// Records what one evaluation of `job` decided (WS req. 56-57): a `run.skipped` event per reason,
+/// then `patch` counting the skipped occurrences. Also used for a timed run that turned late while
+/// it waited for a command slot.
+pub(super) async fn record_skips(
+    ctx: &Ctx,
+    job: &Job,
+    skips: &[(u64, &str)],
+    now: i64,
+    patch: JobPatch,
+) -> Result<(Vec<EventRecord>, Option<JobRow>), JobsError> {
+    let name = job.name.as_str();
+    let events = if skips.is_empty() {
+        Vec::new()
+    } else {
+        let events = skips
+            .iter()
+            .map(|(count, reason)| {
+                let emit = Emit::new(EventKind::RunSkipped, Severity::Info, false, name)
+                    .with("job", name)
+                    .with("count", count)
+                    .with("reason", reason);
+                build(
+                    name,
+                    emit,
+                    &job.templates,
+                    job.dry_run,
+                    &job.destinations,
+                    now,
+                )
+            })
+            .collect();
+        ctx.stream.append(events).await?
+    };
+    let skipped: u64 = skips.iter().map(|(n, _)| n).sum();
+    let patch = JobPatch {
+        add_skipped: i64::try_from(skipped).unwrap_or(i64::MAX),
+        ..patch
+    };
+    let row = ctx.store.patch_job(name.to_string(), patch).await?;
+    Ok((events, row))
 }
 
 /// Starts a run task; the registry keeps runs of one job from overlapping.
@@ -367,7 +389,7 @@ fn start_run(ctx: &Arc<Ctx>, job: &Arc<Job>, scheduled_ms: i64, consume: bool) {
     tokio::spawn(async move {
         let dry = job.dry_run;
         let probe = job.trigger.every().is_some();
-        if let Err(e) = super::perform(&ctx, &job, scheduled_ms, dry, consume).await {
+        if let Err(e) = super::perform(&ctx, &job, Some(scheduled_ms), dry, consume).await {
             log_failure("job run failed", &job.name, &e);
         }
         ctx.release(&job.name);
@@ -441,6 +463,19 @@ mod tests {
         let d = cron_due(&c, &utc, due, due + 30 * 86_400_000, false);
         assert_eq!(d.late, SKIP_COUNT_MAX);
         assert!(d.next.unwrap() > due + 30 * 86_400_000);
+    }
+
+    #[test]
+    fn cron_stale_due_moves_to_a_valid_day() {
+        // `*/2` in day-of-month: 2 January was due under the old rule but is not an occurrence.
+        let c = parse("0 0 */2 * *").unwrap();
+        let utc = TimeZone::UTC;
+        let stale = ms("2026-01-02T00:00:00Z");
+        let d = cron_due(&c, &utc, stale, stale + 10_000, false);
+        assert_eq!(
+            (d.run, d.late, d.overlap, d.next),
+            (None, 0, 0, Some(ms("2026-01-03T00:00:00Z")))
+        );
     }
 
     #[test]

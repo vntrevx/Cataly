@@ -296,6 +296,19 @@ fn hub_restart_joins_when_owner_is_already_present() {
     call.hub.stop();
 }
 
+/// The orderly stop `cataly update` asks for, during a call: the hub's answer names the call's
+/// wind-down bound, which the update then waits for, and the hub ends within it.
+#[test]
+fn a_stop_during_a_call_names_its_wind_down() {
+    let mut call = Call::start("websocket", Script::default(), 0, "");
+    assert!(call.until(WAIT, |c| c.sessions() == 1));
+    let reply = call
+        .hub
+        .request(r#"{"v":1,"id":2,"method":"hub.stop","params":{}}"#);
+    assert_eq!(reply["ok"], json!({ "voice_wind_down_s": 90 }), "{reply}");
+    assert!(call.hub.wait_exit(Duration::from_secs(100)).success());
+}
+
 #[test]
 fn dropped_voice_reconnects_only_while_owner_remains() {
     let mut call = Call::start("websocket", Script::default(), 0, "");

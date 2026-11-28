@@ -16,9 +16,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::attempt::{AttemptState, QUERY_MAX, Report};
 use super::enrol::{self, Destination};
 use super::mux::{Accepted, Mux, Timing};
-use super::{Hello, LINE_MAX, method};
-use crate::config::Config;
+use super::{Hello, LINE_MAX, PROTOCOL, method};
 use crate::config::workers::WorkerSettings;
+use crate::config::{Config, Language};
 use crate::jobs::event::{Emit, EventKind, Severity};
 use crate::log;
 use crate::proto::{Line, Request, Response};
@@ -84,8 +84,8 @@ pub(crate) enum ConnectError {
     NoForcedCommand,
     /// The worker refused the hub's key.
     Denied,
-    /// Speaks another protocol (design 2.8).
-    Incompatible(String),
+    /// Speaks another protocol (design 2.8); the worker's `hello`, which says what it runs.
+    Incompatible(String, Box<Hello>),
     /// Anything else: the network, the worker's sshd, a timeout.
     Unreachable(String),
 }
@@ -113,7 +113,7 @@ impl std::fmt::Display for ConnectError {
                 "refused: the worker did not accept this hub's key; run the `cataly worker init` \
                  line `worker add` printed on the worker",
             ),
-            Self::Incompatible(why) | Self::Unreachable(why) => f.write_str(why),
+            Self::Incompatible(why, _) | Self::Unreachable(why) => f.write_str(why),
         }
     }
 }
@@ -377,9 +377,9 @@ pub(crate) struct Link {
     pending: AtomicUsize,
     /// Remote lanes running on it; a [`LaneHold`] counts one.
     pub(crate) lanes: AtomicUsize,
-    /// Channels of spawned OMP children the worker opened, with their exit acknowledgements, until
-    /// their `spawn` answer takes them.
-    spawned: Mutex<HashMap<u32, (DuplexStream, oneshot::Receiver<Value>)>>,
+    /// Active spawn waiters, keyed by attempt, and any channel waiting for its answer. Removing a
+    /// waiter drops its channel; a channel arriving without a waiter is dropped by `accept`.
+    spawned: Mutex<HashMap<String, Option<Accepted>>>,
     spawned_ready: tokio::sync::Notify,
 }
 
@@ -479,6 +479,49 @@ impl Drop for LaneHold {
     }
 }
 
+/// One request's hold on the connection, released even when its future is cancelled.
+struct PendingRequest<'a>(&'a Link);
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::AcqRel);
+        self.0.touch();
+    }
+}
+
+/// A spawn owns its unclaimed channel only while its caller still waits for it.
+struct WaitingSpawn<'a> {
+    link: &'a Link,
+    attempt: &'a str,
+}
+
+impl<'a> WaitingSpawn<'a> {
+    fn new(link: &'a Link, attempt: &'a str) -> Result<Self, SpawnError> {
+        let mut spawned = link.spawned.lock().unwrap_or_else(PoisonError::into_inner);
+        match spawned.entry(attempt.to_string()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(None);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(SpawnError::Unanswered(format!(
+                    "a spawn is already waiting for attempt {attempt}"
+                )));
+            }
+        }
+        Ok(Self { link, attempt })
+    }
+}
+
+impl Drop for WaitingSpawn<'_> {
+    fn drop(&mut self) {
+        self.link
+            .spawned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(self.attempt);
+    }
+}
+
 impl Link {
     /// Starts `ssh`, the stream and `hello`. The channels the worker opens arrive on the receiver.
     pub(crate) async fn connect(
@@ -526,7 +569,7 @@ impl Link {
             child
                 .close(Duration::from_secs(2), Duration::from_secs(1))
                 .await;
-            return Err(ConnectError::Incompatible(why));
+            return Err(ConnectError::Incompatible(why, Box::new(hello)));
         }
         Ok((
             Self::assemble(&target.name, hello, mux, client, Some(child)),
@@ -557,16 +600,22 @@ impl Link {
     }
 
     /// Takes a channel the worker opened: a spawned OMP's waits, with its exit acknowledgement, for
-    /// its `spawn` answer; any other is handed back.
+    /// its `spawn` answer, or is dropped if that caller no longer waits; any other is handed back.
     fn accept(&self, channel: Accepted) -> Option<Accepted> {
         if channel.header.get("kind").and_then(Value::as_str) != Some("spawn") {
             return Some(channel);
         }
-        self.spawned
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(channel.channel, (channel.stream, channel.exit));
-        self.spawned_ready.notify_waiters();
+        let mut spawned = self.spawned.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = channel
+            .header
+            .get("attempt")
+            .and_then(Value::as_str)
+            .and_then(|attempt| spawned.get_mut(attempt))
+            && slot.is_none()
+        {
+            *slot = Some(channel);
+            self.spawned_ready.notify_waiters();
+        }
         None
     }
 
@@ -590,10 +639,8 @@ impl Link {
         limit: Duration,
     ) -> Result<Value, CallError> {
         self.pending.fetch_add(1, Ordering::AcqRel);
-        let out = self.client.call(name, params, limit).await;
-        self.pending.fetch_sub(1, Ordering::AcqRel);
-        self.touch();
-        out
+        let _pending = PendingRequest(self);
+        self.client.call(name, params, limit).await
     }
 
     fn touch(&self) {
@@ -673,6 +720,7 @@ impl Link {
         attempt: &str,
         session: Option<&str>,
     ) -> Result<Spawned, SpawnError> {
+        let _waiting = WaitingSpawn::new(self, attempt)?;
         let env: HashMap<&str, &str> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let reply = self
             .request(
@@ -722,20 +770,26 @@ impl Link {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let ready = self.spawned_ready.notified();
-            if let Some((stream, rx)) = self
+            if let Some(opened) = self
                 .spawned
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .remove(&channel)
+                .get_mut(attempt)
+                .and_then(Option::take)
             {
+                if opened.channel != channel {
+                    return Err(SpawnError::Unanswered(
+                        "the spawn answer names a different channel".into(),
+                    ));
+                }
                 self.lanes.fetch_add(1, Ordering::AcqRel);
                 return Ok(Spawned {
                     channel,
-                    stream,
+                    stream: opened.stream,
                     hold: LaneHold(Arc::clone(self)),
                     exit: ExitWait {
                         attempt: attempt.to_string(),
-                        rx,
+                        rx: opened.exit,
                         got: None,
                     },
                 });
@@ -894,6 +948,9 @@ pub(crate) struct View {
     pub(crate) reason: Option<String>,
     #[serde(default)]
     pub(crate) version: Option<String>,
+    /// The worker protocol its last `hello` spoke.
+    #[serde(default)]
+    pub(crate) protocol: Option<u32>,
     #[serde(default)]
     pub(crate) os: Option<String>,
     #[serde(default)]
@@ -907,6 +964,65 @@ pub(crate) struct View {
     #[serde(default)]
     pub(crate) repos: Vec<String>,
     pub(crate) tailscale: bool,
+}
+
+/// A worker PC's Cataly against this hub's, as far as the hub knows it: the last `hello` it got,
+/// also one it refused. Nothing is asked of the worker for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    /// As new as the hub, or newer.
+    Current,
+    /// Older; `held` when it speaks an older worker protocol, whose lanes are held.
+    Behind { held: bool },
+    /// Unreachable, or never reached: its version is not known.
+    Unknown,
+}
+
+impl View {
+    /// This worker against the hub running `hub` (its version).
+    pub(crate) fn standing(&self, hub: &str) -> Standing {
+        if matches!(self.state, State::Offline | State::Refused) {
+            return Standing::Unknown;
+        }
+        let Some(version) = &self.version else {
+            return Standing::Unknown;
+        };
+        let held = self.protocol.is_some_and(|p| p < PROTOCOL);
+        let parse = crate::sys::release::Version::parse;
+        let older = parse(version).zip(parse(hub)).is_some_and(|(w, h)| w < h);
+        if held || older {
+            Standing::Behind { held }
+        } else {
+            Standing::Current
+        }
+    }
+
+    /// What the owner is told about this worker PC against the hub running `hub`, in his
+    /// language; `None` when it is current.
+    pub(crate) fn standing_note(
+        &self,
+        hub: &str,
+        language: Language,
+    ) -> Option<(Standing, String)> {
+        let standing = self.standing(hub);
+        let (name, version) = (&self.display, self.version.as_deref().unwrap_or_default());
+        let note = match (standing, language) {
+            (Standing::Current, _) => return None,
+            (Standing::Behind { .. }, Language::Korean) => format!(
+                "다른 PC {name}는 아직 {version}이에요. 그 PC에서 `cataly update`를 실행하세요."
+            ),
+            (Standing::Behind { .. }, Language::English) => format!(
+                "The other PC {name} is still on {version}. Run `cataly update` on that PC."
+            ),
+            (Standing::Unknown, Language::Korean) => {
+                format!("다른 PC {name}에 연결되지 않아 버전을 알 수 없어요.")
+            }
+            (Standing::Unknown, Language::English) => {
+                format!("The other PC {name} is not connected, so its version is unknown.")
+            }
+        };
+        Some((standing, note))
+    }
 }
 
 /// What a bridge channel a worker opens is handed to: the hub's bridge.
@@ -1198,17 +1314,19 @@ impl Workers {
                 Ok(link)
             }
             Err(e) => {
-                let state = match &e {
-                    ConnectError::Incompatible(_) => State::Incompatible,
-                    e if e.refused() => State::Refused,
-                    _ => State::Offline,
+                let (state, hello) = match &e {
+                    ConnectError::Incompatible(_, hello) => {
+                        (State::Incompatible, Some(Hello::clone(hello)))
+                    }
+                    e if e.refused() => (State::Refused, None),
+                    _ => (State::Offline, None),
                 };
                 let text = e.to_string();
                 log::warn(
                     "worker connection failed",
                     &[("worker", &name), ("reason", &text)],
                 );
-                self.set(name, state, Some(text.clone()), None).await;
+                self.set(name, state, Some(text.clone()), hello).await;
                 Err(format!("{name}: {text}"))
             }
         }
@@ -1292,6 +1410,7 @@ impl Workers {
                     },
                     reason: if link.is_some() { None } else { record.reason },
                     version: hello.as_ref().map(|h| h.version.clone()),
+                    protocol: hello.as_ref().map(|h| h.protocol),
                     os: hello.as_ref().map(|h| h.os.clone()),
                     arch: hello.as_ref().map(|h| h.arch.clone()),
                     omp: hello.as_ref().and_then(|h| h.omp.version.clone()),
@@ -1406,8 +1525,8 @@ impl Workers {
     }
 
     /// `worker remove`: refused while lanes live; asks the worker to forget this hub's line when it
-    /// answers; drops the key, the pin and the config section. Returns what the owner still has to
-    /// do on the worker, if anything.
+    /// answers; drops the key and config section, and the pin if no other worker uses it. Returns
+    /// what the owner still has to do on the worker, if anything.
     pub(crate) async fn remove(
         self: &Arc<Self>,
         name: &str,
@@ -1434,7 +1553,7 @@ impl Workers {
         };
         self.disconnect(name).await;
         let dest = Destination::parse(&format!("{}:{}", settings.destination, settings.port))?;
-        remove_files(&self.config_dir, name, &dest)?;
+        remove_files(&self.config_dir, name, &dest, &config)?;
         crate::config::file::edit(config_file, "", |text| {
             Ok(crate::config::file::remove_section(
                 text,
@@ -1460,11 +1579,12 @@ impl Workers {
     }
 }
 
-/// Drops a worker's key pair and its host-key pin.
+/// Drops a worker's key pair and its host-key pin unless another configured worker uses the pin.
 pub(crate) fn remove_files(
     config_dir: &Path,
     name: &str,
     dest: &Destination,
+    config: &Config,
 ) -> Result<(), String> {
     let key = enrol::key_path(config_dir, name);
     for path in [key.clone(), PathBuf::from(format!("{}.pub", key.display()))] {
@@ -1473,6 +1593,15 @@ pub(crate) fn remove_files(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
+    }
+    // Pins identify hosts and ports, not remote users.
+    if config.workers.iter().any(|(other_name, other)| {
+        other_name != name
+            && other.port == dest.port
+            && Destination::parse(&other.destination)
+                .is_ok_and(|other| other.host.eq_ignore_ascii_case(&dest.host))
+    }) {
+        return Ok(());
     }
     let pins = enrol::known_hosts(config_dir);
     if let Ok(text) = std::fs::read_to_string(&pins) {
@@ -1512,6 +1641,8 @@ impl Check {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::task::{Context, Waker};
+
     use super::*;
 
     #[test]
@@ -1542,6 +1673,101 @@ pub(crate) mod tests {
         }
         assert!(line.ends_with("-- dev@100.101.102.103 cataly-worker-v1"));
         assert!(!line.contains("ProxyJump") && !line.contains("ControlMaster"));
+    }
+
+    #[test]
+    fn removing_workers_keeps_a_shared_host_pin_until_the_last_user() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@box\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@box\"\nport = {port}\n\
+                 [workers.other-port]\ndestination = \"alice@box\"\nport = 2200\n\
+                 [workers.other-host]\ndestination = \"alice@elsewhere\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let dest = Destination::parse(&format!("alice@box:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            let unrelated = format!(
+                "[box]:2200 ssh-ed25519 OTHERPORT\n{} ssh-ed25519 OTHERHOST\n",
+                Destination::parse(&format!("alice@elsewhere:{port}"))
+                    .unwrap()
+                    .pin_name()
+            );
+            let all_pins = enrol::set_pin(&unrelated, &dest.pin_name(), "SHARED");
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+            crate::sys::fs::ensure_private_dir(&dir.join("secrets")).unwrap();
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                std::fs::write(&key, "private").unwrap();
+                std::fs::write(key.with_extension("pub"), "public").unwrap();
+            }
+
+            remove_files(&dir, "alice", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "alice");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                assert!(key.exists() && key.with_extension("pub").exists());
+            }
+
+            let dest = Destination::parse(&format!("bob@box:{port}")).unwrap();
+            remove_files(&dir, "bob", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "bob");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), unrelated);
+        }
+    }
+
+    #[test]
+    fn removing_workers_keeps_a_shared_host_pin_with_mixed_case_hosts() {
+        for port in [22, 2222] {
+            let config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            for (name, destination) in [("alice", "alice@BoX"), ("bob", "bob@bOx")] {
+                let dir = crate::sys::fs::tests::scratch("worker-shared-pin-case");
+                let dest = Destination::parse(&format!("{destination}:{port}")).unwrap();
+                let pins = enrol::known_hosts(&dir);
+                let all_pins = enrol::set_pin("", &dest.pin_name(), "SHARED");
+                crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+                remove_files(&dir, name, &dest, &config).unwrap();
+                assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            }
+        }
+    }
+
+    #[test]
+    fn removing_workers_drops_all_shared_host_pin_case_variants() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin-variants");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let alice = Destination::parse(&format!("alice@BoX:{port}")).unwrap();
+            let bob = Destination::parse(&format!("bob@bOx:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            // Older enrolments can leave one pin for each host-name spelling.
+            let all_pins = format!(
+                "{} ssh-ed25519 SHARED\n{} ssh-ed25519 SHARED\n",
+                alice.pin_name(),
+                bob.pin_name()
+            );
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+            remove_files(&dir, "alice", &alice, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            remove_files(&dir, "bob", &bob, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), "");
+        }
     }
 
     #[test]
@@ -1610,6 +1836,63 @@ pub(crate) mod tests {
         assert!(finished_of(&json!({"exit": {"code": 0}})).is_err());
     }
 
+    /// A worker PC is named when it speaks an older protocol or runs an older version than the
+    /// hub; a current or newer one is not; an unreachable or never-reached one is unknown, not
+    /// outdated, even with an old `hello` on record.
+    #[test]
+    fn older_worker_pcs_are_named_and_unreachable_ones_unknown() {
+        let view = |state: State, version: Option<&str>, protocol: Option<u32>| View {
+            name: "box".into(),
+            display: "box".into(),
+            destination: "dev@box".into(),
+            port: 22,
+            state,
+            reason: None,
+            version: version.map(str::to_string),
+            protocol,
+            os: None,
+            arch: None,
+            omp: None,
+            lanes: 0,
+            lanes_max: 1,
+            seen_ms: None,
+            repos: Vec::new(),
+            tailscale: false,
+        };
+        let ko = Language::Korean;
+        let old = view(State::Incompatible, Some("0.2.6"), Some(1));
+        assert_eq!(old.standing("0.2.8"), Standing::Behind { held: true });
+        assert_eq!(
+            old.standing_note("0.2.8", ko).unwrap().1,
+            "다른 PC box는 아직 0.2.6이에요. 그 PC에서 `cataly update`를 실행하세요."
+        );
+        assert_eq!(
+            old.standing_note("0.2.8", Language::English).unwrap().1,
+            "The other PC box is still on 0.2.6. Run `cataly update` on that PC."
+        );
+        let behind = view(State::Idle, Some("0.2.7"), Some(PROTOCOL));
+        assert_eq!(behind.standing("0.2.8"), Standing::Behind { held: false });
+        for current in [
+            view(State::Online, Some("0.2.8"), Some(PROTOCOL)),
+            view(State::Online, Some("0.2.9"), Some(PROTOCOL)),
+        ] {
+            assert_eq!(current.standing_note("0.2.8", ko), None);
+        }
+        for unknown in [
+            view(State::Offline, Some("0.2.6"), Some(1)),
+            view(State::Refused, None, None),
+            view(State::Idle, None, None),
+        ] {
+            assert_eq!(
+                unknown.standing_note("0.2.8", ko).unwrap(),
+                (
+                    Standing::Unknown,
+                    "다른 PC box에 연결되지 않아 버전을 알 수 없어요.".to_string()
+                )
+            );
+        }
+    }
+
     #[test]
     fn compatibility_needs_both_protocols() {
         let hello = Hello {
@@ -1646,6 +1929,95 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("bridge protocol 2")
         );
+    }
+
+    /// A connected link whose peer leaves requests unanswered.
+    fn unanswered() -> (Arc<Link>, DuplexStream) {
+        let (hub, worker) = tokio::io::duplex(256 * 1024);
+        let (read, write) = tokio::io::split(hub);
+        let (mux, control, _) = Mux::start(read, write, Timing::STANDARD);
+        (
+            Link::assemble("box", Hello::default(), mux, Client::start(control), None),
+            worker,
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_requests_release_the_link() {
+        let (link, _worker) = unanswered();
+        let mut cx = Context::from_waker(Waker::noop());
+        {
+            let request = link.request(method::STATUS, json!({}), Duration::from_secs(30));
+            tokio::pin!(request);
+            assert!(request.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(link.pending.load(Ordering::Acquire), 1);
+            assert!(!link.idle_for(Duration::ZERO));
+        }
+        assert_eq!(link.pending.load(Ordering::Acquire), 0);
+        assert!(link.idle_for(Duration::ZERO));
+        link.mux.close();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_spawns_close_unclaimed_channels() {
+        use tokio::io::AsyncReadExt as _;
+
+        // Cancel before the reply, with the channel already accepted or still to arrive, and
+        // after the reply while waiting for its channel. None may keep the child's input open.
+        for (channel_first, reply_first) in [(false, false), (true, false), (false, true)] {
+            let (link, _worker) = unanswered();
+            let mut cx = Context::from_waker(Waker::noop());
+            let argv = ["omp".to_string()];
+            let (stream, mut input) = tokio::io::duplex(64);
+            let (_exit, exit) = oneshot::channel();
+            let mut channel = Some(Accepted {
+                channel: 1,
+                header: json!({"kind": "spawn", "attempt": "cancelled"}),
+                stream,
+                exit,
+            });
+            {
+                let spawning = link.spawn(&argv, "/", &[], "cancelled", None);
+                tokio::pin!(spawning);
+                assert!(spawning.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(link.pending.load(Ordering::Acquire), 1);
+                if channel_first {
+                    assert!(link.accept(channel.take().unwrap()).is_none());
+                }
+                if reply_first {
+                    // Deliver the fake worker's reply before polling the channel wait.
+                    link.client
+                        .pending
+                        .lock()
+                        .unwrap()
+                        .remove(&1)
+                        .unwrap()
+                        .send(Response::ok(
+                            1,
+                            json!({"channel": 1, "attempt": "cancelled"}),
+                        ))
+                        .unwrap();
+                    assert!(spawning.as_mut().poll(&mut cx).is_pending());
+                    assert_eq!(link.pending.load(Ordering::Acquire), 0);
+                }
+            }
+            if let Some(channel) = channel {
+                assert!(link.accept(channel).is_none());
+            }
+            assert!(link.spawned.lock().unwrap().is_empty());
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), input.read(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0,
+                "channel_first={channel_first}, reply_first={reply_first}"
+            );
+            assert_eq!(link.pending.load(Ordering::Acquire), 0);
+            assert!(link.idle_for(Duration::ZERO));
+            link.mux.close();
+        }
     }
 
     /// The real `serve` in this process over an in-memory stream, with `/bin/sh` as its OMP, and

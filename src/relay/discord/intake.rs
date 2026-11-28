@@ -620,6 +620,7 @@ impl<T: Runtime> Intake<T> {
         mut shutdown: watch::Receiver<bool>,
         mut config: watch::Receiver<Arc<Config>>,
     ) -> Stop {
+        let _cards = self.cards.running();
         let gateway = Gateway {
             url: self.gateway_url.clone(),
             token: self.token_intents.0.clone(),

@@ -263,6 +263,75 @@ fn events_since_and_follow() {
 }
 
 #[test]
+fn events_prints_byte_limit_continuation_without_changing_json_lines() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    let hub = TestHub::new("");
+    let dir = hub.root.join("run/cataly");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let listener = UnixListener::bind(hub.socket()).unwrap();
+    let server = std::thread::spawn(move || {
+        for cut in [true, true, false, false] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "events.since");
+            let mut ok = serde_json::json!({"events": [{
+                "id": 8, "at_ms": 1, "job": "p", "subject": "p", "kind": "run.done",
+                "severity": "info", "text": "latest event", "urgent": false, "dry": false
+            }]});
+            if cut {
+                ok["more"] = serde_json::json!(7);
+            }
+            let response = serde_json::json!({"v": 1, "id": request["id"], "ok": ok});
+            writeln!(stream, "{response}").unwrap();
+        }
+    });
+    for cut in [true, false] {
+        for json in [false, true] {
+            let args: &[&str] = if json {
+                &["events", "--json"]
+            } else {
+                &["events"]
+            };
+            let output = hub.cli(args);
+            assert!(output.status.success(), "{output:?}");
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            if cut {
+                assert!(stderr.contains("event list cut"), "{stderr}");
+                assert!(stderr.contains("cataly events --after 7"), "{stderr}");
+            } else {
+                assert!(stderr.is_empty(), "{stderr}");
+            }
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            if json {
+                let event: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(event["id"], 8);
+                assert!(
+                    event.get("more").is_none(),
+                    "stdout stays event-only JSON lines"
+                );
+            } else {
+                assert!(
+                    stdout.contains("#8") && stdout.contains("latest event"),
+                    "{stdout}"
+                );
+            }
+        }
+    }
+    server.join().unwrap();
+}
+
+#[test]
 fn owner_only_files_and_directories() {
     use std::os::unix::fs::PermissionsExt;
     let mut hub = TestHub::new("");

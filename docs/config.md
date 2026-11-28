@@ -79,13 +79,13 @@ Then the defaults, each applied only where the config says nothing yet:
 | What | Default | Flag |
 |---|---|---|
 | Owner | the application's owner (the team's owner for a team application) | `--owner <id>` |
-| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched | |
+| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched. A `cataly-ops` destination already in the file is kept, and then no `#cataly-ops` is created | |
 | Lead | the model OMP starts with (`omp config get modelRoles`) | `--lead-model provider/id`, `--lead-cwd` |
 | Remote approvals | on: OMP's permission requests get buttons; only your presses count | `--approvals on\|off` |
 | Bot profile | Cataly's avatar and banner on the bot (`PATCH /users/@me`) and the avatar as the application's icon (`PATCH /applications/@me`), each only where there is none or still the one Cataly set; your own images are kept | `--profile` re-applies Cataly's |
 | Home backup | to `<gh login>/cataly-home`, private, created if absent, when `gh` is logged in (see [Home backup](#home-backup)) | `--backup on\|off`, `--backup-repo owner/name` |
 | Jobs | `[jobs.health]` and `[jobs.pressure]` with their defaults, notices to `#cataly-ops`, unless a job of that kind exists | |
-| Service | the user service, enabled and started (see [`cataly service enable`](#cataly-service-enable)); only for an installed release | `--service on\|off` |
+| Service | the user service, enabled and started (see [`cataly service enable`](#cataly-service-enable)); only for an installed release, and not once you turned it off (`[setup] service = false`) | `--service on\|off` |
 | Voice | off. `--voice on` turns on the [Discord voice assistant](#voice-and-transcribe) and fills in every `[voice]` key the file does not set (see below); `--voice off` sets `enabled = false` and keeps the rest | `--voice on\|off`, `--voice-channel <id\|name>`, `--voice-daily-minutes <n>`, `--voice-cap-usd <usd>`, `--voice-key-file <path>` |
 
 Setup then shows one short summary (a `+` marks what this run changes) and asks once; nothing
@@ -137,10 +137,21 @@ does not see your shell's environment, so it:
 - writes one `PATH=` line into the unit, made of the folders where `omp`, `bun`, `gh`, `git` and
   the Tern executable are found now, then `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
   repeats and folders with `:`, `"`, `\` or control characters are left out. The line is printed;
+- keeps absolute `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` values from the current
+  environment in both the systemd unit and launchd agent, so the hub uses the same config, store
+  and program folder. OMP child processes also follow these XDG homes from the shell.
+  Unset, empty and relative values are ignored; explicit service commands refuse absolute non-UTF-8
+  values before writing the definition. Refresh captures these values again;
 - reads provider keys from `secrets/service.env` next to the config file (owner-only, mode `600`).
   A new file gets each `[sessions] credentials` name found in your current environment as
   `NAME=value`, and the others as commented lines to fill in. An existing file is never changed;
   the names it lacks are printed. Restart the service after editing it.
+
+On Linux, a shell-only custom `XDG_CONFIG_HOME` remains unsupported. The shell and systemd user
+manager must agree on the config home: the unit is written below the shell's config home, but the
+manager searches its own. The unit's `Environment=` line cannot change where the manager looks.
+Rolling back to a version without XDG preservation can also remove these settings on refresh.
+Automatic update/rollback still does not pass non-UTF-8 environment values to its refresh subprocess.
 
 ## Value formats
 
@@ -174,6 +185,7 @@ What `cataly setup` remembers between runs. You rarely edit it by hand.
 | Key | Type | Default | Allowed | What it does | Setup |
 |---|---|---|---|---|---|
 | `backup` | boolean | `true` | | `false` once you turned the [home backup](#home-backup) off before it existed; a plain re-run then leaves it off instead of offering it again. | `--backup off` writes `false`; `--backup on` (or `--backup-repo`) sets it back to `true` and plans the backup |
+| `service` | boolean | `true` | | `false` once you turned the user service off with setup; a plain re-run then leaves it off instead of enabling it again. `cataly service disable` does not change it. | `--service off` writes `false`; `--service on` sets it back to `true`, and so does `cataly service enable` |
 
 ```toml
 [setup]
@@ -419,10 +431,11 @@ creates the voice channel if one is to be made, checks that voice would start wi
 and asks a running hub to reload.
 
 Before it enables voice (or moves it with `--voice-channel`), setup reads the bot's permissions
-in the chosen voice channel: its roles, then the channel's overwrites. If View Channel, Connect or
-Speak is missing, it stops without enabling voice: for permissions the bot's roles lack it prints
-a fresh invite link (inviting the bot again updates its role's permissions), and for an overwrite
-it names the channel and whose overwrite denies them.
+in the chosen voice channel: its roles, then the channel's overwrites. An overwrite may grant
+permissions absent from the server roles. If View Channel, Connect or Speak is still missing, it
+stops without enabling voice: when an overwrite denies a missing permission, it names the channel
+and whose overwrite denies it; otherwise it prints a fresh invite link (inviting the bot again
+updates its role's permissions).
 
 | Key | Type | Default | Allowed | What it does |
 |---|---|---|---|---|
@@ -821,7 +834,7 @@ security boundary are described in `docs/design/workers.md`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `destination` | string | required | `user@host`; with `tailscale`, the host is the tailnet IP |
+| `destination` | string | required | `user@host` or `user@[IPv6]`, without the port; with `tailscale`, the host is the tailnet IP |
 | `port` | integer 1-65535 | `22` | The worker's sshd port; a pin on another port is `[host]:port` |
 | `name` | string | the section name | The name shown (the tailnet machine name with `tailscale`) |
 | `tailscale` | bool | `false` | `worker doctor` checks the address again with `tailscale ip` |
@@ -996,6 +1009,11 @@ Stages every change in a git working tree, scans it for secrets (built-in token 
 patterns) and for files over the size limit, and only then commits and pushes. Never force-pushes,
 rewrites history or pulls. A refusal commits nothing and names files and rule, never the matched
 text. The config file and `secrets/` inside the tree are refused unless git ignores them.
+An unchanged tick retries a pending push and also pushes commits missing from the configured backup
+remote and branch, recovering interrupted ticks even when no pending push was recorded. It compares
+HEAD with `refs/remotes/<remote>/<branch>`, which each successful push updates: HEAD equal to or an
+ancestor of it is backed up; a missing ref triggers the push; a repository with no HEAD has nothing
+to push. The working branch's upstream is not used and need not be configured.
 
 | Key | Type | Default | Allowed | What it does |
 |---|---|---|---|---|

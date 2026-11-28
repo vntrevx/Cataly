@@ -230,7 +230,7 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 51. The owner (local command line) and the lead (extension tool) may manage jobs. Lanes may not create, change or
     remove jobs. Commands run as the daemon's user.
 52. Cron trigger: five fields plus a required IANA time zone; "?" is not supported; day-of-month and day-of-week
-    combine with OR. Across daylight-saving changes a local time that does not exist does not fire and a repeated
+    combine with OR, or with AND when either field starts with `*` (so `*/2` still restricts its field). Across daylight-saving changes a local time that does not exist does not fire and a repeated
     local time fires once. Invalid cron or zone is refused before anything is saved.
 53. One-shot trigger: an ISO instant with seconds and an explicit offset or Z (never the local zone), in the future
     at creation; a warning is given when it is under two minutes away.
@@ -239,10 +239,13 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 55. A preview option validates and shows the next five trigger instants (UTC and the job's zone) without saving or
     running anything.
 56. Cron due handling: an occurrence starting less than 60 s late runs; 60 s or more late is counted as skipped (at
-    most 1,000 counted per evaluation) and never replayed. An occurrence due while the previous run or its delivery
-    is unfinished is counted as skipped: runs never overlap.
+    most 1,000 counted per evaluation) and never replayed. For scheduled command jobs, lateness includes waiting
+    for a command slot and is checked again after acquiring it, before recording a run. This post-slot check does
+    not apply to manual dry runs or commands inside owner-kind ticks. An occurrence due while the previous run
+    or its delivery is unfinished is counted as skipped: runs never overlap.
 57. One-shot due handling: the job is consumed (put on hold) atomically before running or skipping; 60 s or more
-    late is skipped. A consumed one-shot cannot be resumed; a new job is needed.
+    late is skipped. Scheduled command jobs include the slot wait in this check, as above. A consumed one-shot
+    cannot be resumed; a new job is needed.
 58. Condition due handling: next probe at the later of finish time and scheduled time, plus the interval. A
     backwards clock step never probes early.
 59. Run: before spawning, durably record a run ID, scheduled instant and start time; spawn with stdin closed and
@@ -286,7 +289,8 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 
 71. A stream job runs a long-lived command (argument vector, no shell, the lead's working directory) and turns each
     output line matching its regular expression into an event (urgent unless the job is marked low priority).
-72. A line over 64 KiB is not filtered; it is written to a private file and one event gives its path and size.
+72. A line over 64 KiB is not filtered; it is written to a private file as it arrives (at most its first 4 MiB;
+    the rest is counted, not kept) and one event gives its path and size.
 73. Restart policy: none (exit reported once), or up to N restarts (0 to 100, default 5) with exponential backoff
     from a given delay (default 10 s). A clean exit with "run until success" ends the job. Exhaustion stops the job,
     reported once. An optional silence alert emits one event per quiet spell of at least M minutes; any output

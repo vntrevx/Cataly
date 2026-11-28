@@ -19,6 +19,7 @@ use crate::log;
 use crate::relay::intake::Health;
 use crate::relay::text::DISCORD_LIMIT;
 use crate::store::lead::{LeadDone, LeadWrite, QuestionRow, UNTOLD_PAGE};
+use crate::sys::secrets;
 
 /// The question as posted: its ID, text, numbered options with the recommended one marked, and how
 /// to answer it.
@@ -48,7 +49,12 @@ pub(crate) fn buttons(id: &str, options: &[String], recommended: Option<i64>) ->
     let labels: Vec<String> = options
         .iter()
         .enumerate()
-        .map(|(n, o)| format!("{}. {o}", n + 1).chars().take(LABEL_MAX).collect())
+        .map(|(n, o)| {
+            format!("{}. {}", n + 1, secrets::mask(o))
+                .chars()
+                .take(LABEL_MAX)
+                .collect()
+        })
         .collect();
     let recommended = recommended
         .and_then(|r| usize::try_from(r).ok())

@@ -89,8 +89,8 @@ pub(crate) fn main() -> ExitCode {
     }
     let parsed = match args::parse(&words) {
         Ok(Invocation::Run(parsed)) => parsed,
-        Ok(Invocation::Help(text)) => {
-            out::text(&text);
+        Ok(Invocation::Help(spec)) => {
+            out::text(&help(spec, help_language()));
             return ExitCode::from(exit::OK);
         }
         Err(refusal) => {
@@ -186,7 +186,7 @@ fn execute(p: &Parsed, paths: &Paths) -> Result<(), Failure> {
             if as_json {
                 out::json(&reply);
             } else {
-                print_status(&decode(reply)?);
+                print_status(&decode(reply)?, owner_language(paths));
             }
         }
         ["stats"] => {
@@ -354,6 +354,11 @@ fn events(p: &Parsed, hub: &mut Client, as_json: bool) -> Result<(), Failure> {
         CALL_TIMEOUT,
     )?;
     let events: Events = decode(reply)?;
+    if let Some(after) = events.more {
+        out::error_line(&format!(
+            "event list cut to fit the reply limit; read omitted events with `cataly events --after {after}`"
+        ));
+    }
     events
         .events
         .into_iter()
@@ -446,7 +451,29 @@ fn duration_text(seconds: i64) -> String {
     }
 }
 
-fn print_status(s: &Status) {
+/// The owner's language from the config file; the default when it is absent or invalid.
+pub(super) fn owner_language(paths: &Paths) -> config::Language {
+    config::load(&paths.config_file)
+        .map_or(config::Config::default().hub.language, |c| c.hub.language)
+}
+
+/// The language of `--help`: the config file's `[hub] language` when one is readable, English
+/// otherwise.
+fn help_language() -> config::Language {
+    Paths::from_env()
+        .ok()
+        .filter(|p| p.config_file.exists())
+        .and_then(|p| config::load(&p.config_file).ok())
+        .map_or(config::Language::English, |c| c.hub.language)
+}
+
+/// Usage for one command, or for all, in `language` where that command has its own text.
+fn help(spec: Option<&args::Spec>, language: config::Language) -> String {
+    spec.and_then(|s| install::help_summary(language, s.path).map(|t| args::usage_saying(s, t)))
+        .unwrap_or_else(|| args::usage(spec))
+}
+
+fn print_status(s: &Status, language: config::Language) {
     out::line(&format!(
         "hub {} running, pid {}, up {}",
         s.version,
@@ -492,6 +519,11 @@ fn print_status(s: &Status) {
     }
     for w in &s.workers {
         out::line(&format!("worker   {}", worker::describe(w)));
+    }
+    for w in &s.workers {
+        if let Some((_, note)) = w.standing_note(&s.version, language) {
+            out::line(&note);
+        }
     }
 }
 
