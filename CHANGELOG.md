@@ -2,6 +2,11 @@
 
 ## 0.2.9 (Unreleased)
 
+- Slack reconnects and retries transient catch-up failures before taking live messages, so a
+  newer message cannot move the saved position past requests missed while disconnected. A
+  room-specific permanent read refusal holds that room with its position preserved until released,
+  without stopping messages in other rooms. Token-wide errors, including expired tokens, and
+  responses without a success field reconnect instead of leaving rooms held.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

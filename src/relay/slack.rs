@@ -11,9 +11,13 @@
 //!   threads the account posted in (thread memory: one room per thread, `<channel>:<root ts>`, whose
 //!   position is the seen timestamp). Every envelope is acknowledged within 3 s, after the event was
 //!   admitted or dropped. After start and every reconnect, remembered threads and DMs are read from
-//!   their positions (200 at most, oldest first). Own and bot messages are dropped; a reply whose
-//!   channel or root disagrees with where it was read stops that read. Only allowlisted senders are
-//!   admitted (owner decision 10: the owner alone by default).
+//!   their positions (200 at most, oldest first). A transient catch-up failure reconnects before
+//!   taking live events, so their hand-off cannot skip unread messages. Token failures and responses
+//!   without a success field also reconnect without holding rooms. A room-specific permanent refusal
+//!   holds only that room until released, preserving its position while other rooms continue.
+//!   Own and bot messages are dropped; a reply whose channel or root disagrees with where it was read
+//!   stops that read. Only allowlisted senders are admitted (owner decision 10: the owner alone by
+//!   default).
 //! - Posts (SLACK req. 45-47): a post answers in the request's thread and records that thread; the
 //!   answer must carry the channel and a `digits.digits` timestamp, else it is uncertain. Uploads
 //!   allocate a ticket whose URL must be https on exactly `files.slack.com` under Slack's upload path
@@ -118,6 +122,25 @@ pub(crate) struct ApiError {
     /// Slack's error code, or a transport reason.
     pub(crate) why: String,
     pub(crate) uncertain: bool,
+}
+
+impl ApiError {
+    /// Connection, response and token failures must not leave individual rooms permanently held.
+    fn reconnect_read(&self) -> bool {
+        self.status
+            .is_none_or(|s| matches!(s, 401 | 408 | 429 | 500..=599))
+            || UNCERTAIN_ERRORS.contains(&self.why.as_str())
+            || matches!(
+                self.why.as_str(),
+                "ratelimited"
+                    | "no success field"
+                    | "invalid_auth"
+                    | "token_expired"
+                    | "token_revoked"
+                    | "account_inactive"
+                    | "not_authed"
+            )
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -1045,11 +1068,7 @@ impl<T: Runtime> Socket<T> {
                                 self.shared.catch_up_latency.record(established.elapsed());
                                 self.shared.set(|h| h.caught_up = true);
                             }
-                            Err(e) => {
-                                log::warn("Slack catch-up read failed", &[("error", &e)]);
-                                self.shared
-                                    .set(|h| h.last_error = Some(format!("catch-up read: {e}")));
-                            }
+                            Err(e) => return Down::Again(format!("catch-up read: {e}")),
                         }
                     }
                 }
@@ -1180,11 +1199,26 @@ impl<T: Runtime> Socket<T> {
                 ),
                 None => continue,
             };
-            let v = self
-                .api
-                .call(method, &args, Kind::Read, false)
-                .await
-                .map_err(|e| e.to_string())?;
+            let v = match self.api.call(method, &args, Kind::Read, false).await {
+                Ok(v) => v,
+                Err(e) if e.reconnect_read() => return Err(e.to_string()),
+                Err(e) => {
+                    let reason = format!("catch-up read: {e}");
+                    log::warn(
+                        "Slack catch-up read refused",
+                        &[("room", &p.room), ("error", &reason)],
+                    );
+                    self.store
+                        .relay(RelayWrite::Hold {
+                            relay: NAME.into(),
+                            room: p.room.clone(),
+                            reason: Some(reason),
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    continue;
+                }
+            };
             let mut messages: Vec<Value> = v
                 .get("messages")
                 .and_then(Value::as_array)
@@ -1244,6 +1278,48 @@ mod tests {
         assert!(socket_url("wss://evil.example/link", false).is_none());
         assert!(socket_url("ws://127.0.0.1:9/link", true).is_some());
         assert!(socket_url("ws://127.0.0.1:9/link", false).is_none());
+    }
+
+    #[test]
+    fn catch_up_errors_distinguish_room_and_connection_failures() {
+        let reconnects = |status, why: &str| {
+            ApiError {
+                status,
+                why: why.into(),
+                uncertain: false,
+            }
+            .reconnect_read()
+        };
+        for status in [None, Some(408), Some(429), Some(500), Some(503)] {
+            assert!(reconnects(status, "transport failure"));
+        }
+        for why in UNCERTAIN_ERRORS
+            .into_iter()
+            .chain(["ratelimited", "no success field"])
+        {
+            assert!(reconnects(Some(200), why), "{why}");
+        }
+        assert!(reconnects(Some(401), "refused"));
+        for why in [
+            "invalid_auth",
+            "token_expired",
+            "token_revoked",
+            "account_inactive",
+            "not_authed",
+        ] {
+            assert!(reconnects(Some(200), why), "{why}");
+        }
+        for why in [
+            "thread_not_found",
+            "channel_not_found",
+            "not_in_channel",
+            "missing_scope",
+        ] {
+            assert!(!reconnects(Some(200), why), "{why}");
+        }
+        for status in [400, 403, 404] {
+            assert!(!reconnects(Some(status), "refused"));
+        }
     }
 
     #[test]

@@ -574,6 +574,178 @@ fn telegram_scope_topics_and_destinations() {
     assert!(hub.stop().success());
 }
 
+/// A failed catch-up must not let live 102 move the DM position past missed 101 (SLACK req. 39).
+#[test]
+fn slack_retries_failed_catch_up_before_handing_off_live_events() {
+    let slack = FakeSlack::start();
+    let mut hub = relay_hub(None, Some(&slack), "");
+    let message = |ts: &str| {
+        json!({"type": "message", "channel": DM, "channel_type": "im",
+            "user": fake_slack::OWNER, "ts": ts, "text": format!("request {ts}")})
+    };
+    hub.start();
+    ready(&hub, &["slack"]);
+    let first = slack.push(message("100.000000"));
+    slack.wait(WAIT, |f| {
+        f.acks().iter().any(|(id, _)| id == &first).then_some(())
+    });
+    hub.until(WAIT, || {
+        let s = status(&hub, "slack");
+        (s["counts"]["owed_settled"] == 1 && s["counts"]["queued"] == 0).then_some(())
+    });
+    assert!(hub.stop().success());
+
+    // The durable DM position is 100. History has 101; 102 is delivered after the next hello,
+    // and redelivered on reconnect until acknowledged. No timing window controls the gap.
+    slack.set_history(DM, vec![message("101.000000")]);
+    slack.fail_history_once();
+    let live = slack.push(message("102.000000"));
+    let connections = slack.connections();
+    hub.start();
+    lead_idle(&hub);
+    let tag = format!("[slack {DM}/");
+    // The host may bundle several requests into one user entry; preserve their order within it.
+    let handoffs = || {
+        requests(&hub, &tag)
+            .iter()
+            .flat_map(|body| body.lines())
+            .filter_map(|line| line.strip_prefix(tag.as_str()))
+            .filter_map(|line| line.split_once(']').map(|(ts, _)| ts.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let handed = hub.until(WAIT, || {
+        let handed = handoffs();
+        (handed.len() >= 2).then_some(handed)
+    });
+    assert_eq!(
+        handed[1], "101.000000",
+        "catch-up 101 must be handed off before live 102: {handed:?}"
+    );
+    let handed = hub.until(WAIT, || {
+        let handed = handoffs();
+        (handed.len() >= 3).then_some(handed)
+    });
+    assert_eq!(handed, ["100.000000", "101.000000", "102.000000"]);
+    slack.wait(WAIT, |f| {
+        f.acks().iter().any(|(id, _)| id == &live).then_some(())
+    });
+    assert_eq!(
+        slack.connections(),
+        connections + 2,
+        "retry on a new socket"
+    );
+    let history = slack.calls("conversations.history");
+    assert_eq!(history.len(), 2, "one failed read, then its retry");
+    assert!(
+        history
+            .iter()
+            .all(|s| s.query.contains("oldest=100.000000")),
+        "{history:?}"
+    );
+    assert!(hub.stop().success());
+}
+
+/// A missing or forbidden room is held without blocking other rooms, including after a restart.
+#[test]
+fn slack_holds_permanent_catch_up_failures_without_blocking_other_rooms() {
+    for (error, thread) in [
+        ("thread_not_found", true),
+        ("channel_not_found", false),
+        ("not_in_channel", true),
+        ("missing_scope", false),
+    ] {
+        permanent_slack_catch_up_failure(error, thread);
+    }
+}
+
+fn permanent_slack_catch_up_failure(error: &str, thread: bool) {
+    let slack = FakeSlack::start();
+    let mut hub = relay_hub(None, Some(&slack), "");
+    hub.start();
+    ready(&hub, &["slack"]);
+    let channel = if thread { GEN } else { "D0BLOCKED" };
+    let root = slack.say(
+        channel,
+        fake_slack::OWNER,
+        &format!("<@{}> remember this room", fake_slack::ACCOUNT),
+        None,
+    );
+    hub.until(WAIT, || {
+        let s = status(&hub, "slack");
+        (s["counts"]["owed_settled"] == 1 && s["counts"]["queued"] == 0).then_some(())
+    });
+    let target = if thread {
+        format!("{channel}:{root}")
+    } else {
+        channel.into()
+    };
+    let position = |s: &Value| {
+        s["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["room"] == target)
+            .unwrap()["position"]
+            .clone()
+    };
+    let before = position(&status(&hub, "slack"));
+    assert!(hub.stop().success());
+    slack.fail_reads(&target, error);
+    let method = if thread {
+        "conversations.replies"
+    } else {
+        "conversations.history"
+    };
+    let channel_query = format!("channel={channel}");
+    let thread_query = format!("ts={root}");
+    let reads = |f: &FakeSlack| {
+        f.calls(method)
+            .iter()
+            .filter(|s| {
+                s.query.contains(&channel_query) && (!thread || s.query.contains(&thread_query))
+            })
+            .count()
+    };
+    let connections = slack.connections();
+    for round in 0..2 {
+        let blocked = slack.say(
+            channel,
+            fake_slack::OWNER,
+            "keep this queued",
+            thread.then_some(root.as_str()),
+        );
+        let live = slack.say(DM, fake_slack::OWNER, "another room still works", None);
+        hub.start();
+        let delivered = slack.wait(WAIT, |f| {
+            let delivered = !slack_posts_in(f, DM, &live).is_empty();
+            (delivered || reads(f) > 1).then_some(delivered)
+        });
+        assert!(
+            delivered,
+            "{error} must not reconnect and block another room"
+        );
+        let s = status(&hub, "slack");
+        assert_eq!(s["counts"]["held"], 1, "{s}");
+        assert!(
+            s["held"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| { p["room"] == target && p["reason"].as_str().unwrap().contains(error) }),
+            "{s}"
+        );
+        assert_eq!(position(&s), before, "the unread room keeps its position");
+        assert_eq!(
+            requests(&hub, &format!("[slack {target}/{blocked}]")),
+            Vec::<String>::new()
+        );
+        assert_eq!(requests(&hub, &format!("[slack {DM}/{live}]")).len(), 1);
+        assert_eq!(reads(&slack), 1, "held rooms are not retried on reconnect");
+        assert_eq!(slack.connections(), connections + round + 1);
+        assert!(hub.stop().success());
+    }
+}
+
 /// Check 4: a stalled relay never delays another relay's intake.
 #[test]
 fn a_hung_relay_never_delays_another() {

@@ -43,6 +43,9 @@ struct State {
     socket: Option<mpsc::UnboundedSender<Value>>,
     sent: HashMap<String, Instant>,
     acks: Vec<(String, Duration)>,
+    pending: Vec<Value>,
+    fail_history_once: bool,
+    read_errors: HashMap<String, String>,
     next_envelope: u64,
 }
 
@@ -142,6 +145,29 @@ impl FakeSlack {
         self.state.lock().unwrap().upload_url = url.into();
     }
 
+    /// Messages available only to catch-up, not sent as live events.
+    pub fn set_history(&self, channel: &str, messages: Vec<Value>) {
+        self.state
+            .lock()
+            .unwrap()
+            .history
+            .insert(channel.into(), messages);
+    }
+
+    /// The next DM history read fails once, before a reconnect can retry it.
+    pub fn fail_history_once(&self) {
+        self.state.lock().unwrap().fail_history_once = true;
+    }
+
+    /// Every catch-up read of this room returns the given Slack error.
+    pub fn fail_reads(&self, room: &str, error: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .read_errors
+            .insert(room.into(), error.into());
+    }
+
     pub fn connections(&self) -> usize {
         self.state.lock().unwrap().connections
     }
@@ -177,7 +203,7 @@ impl FakeSlack {
         ts
     }
 
-    /// Pushes one event in an envelope.
+    /// Pushes one event in an envelope; unacknowledged envelopes replay on reconnect.
     pub fn push(&self, event: Value) -> String {
         let mut s = self.state.lock().unwrap();
         s.next_envelope += 1;
@@ -186,6 +212,7 @@ impl FakeSlack {
         let mut envelope = json!({"envelope_id": id, "type": "events_api",
             "payload": {"type": "event_callback"}});
         envelope["payload"]["event"] = event;
+        s.pending.push(envelope.clone());
         if let Some(tx) = &s.socket {
             let _ = tx.send(envelope);
         }
@@ -243,6 +270,33 @@ fn arg(query: &str, key: &str) -> Option<String> {
         .split('&')
         .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
         .map(|v| v.replace("%2E", ".").replace("%20", " "))
+}
+
+fn history(query: &str, state: &mut State) -> Response<Full<Bytes>> {
+    let channel = arg(query, "channel").unwrap_or_default();
+    let root = arg(query, "ts");
+    let target = root.as_ref().map(|r| format!("{channel}:{r}"));
+    if let Some(error) = state.read_errors.get(target.as_deref().unwrap_or(&channel)) {
+        return reply(200, &json!({"ok": false, "error": error}));
+    }
+    if root.is_none() && std::mem::take(&mut state.fail_history_once) {
+        return reply(200, &json!({"ok": false, "error": "internal_error"}));
+    }
+    let oldest = arg(query, "oldest").unwrap_or_default();
+    let key = |t: &str| t.replace('.', "").parse::<u64>().unwrap_or(0);
+    let messages: Vec<Value> = state
+        .history
+        .get(&channel)
+        .into_iter()
+        .flatten()
+        .filter(|m| key(m["ts"].as_str().unwrap_or("0")) > key(&oldest))
+        .filter(|m| {
+            root.as_deref()
+                .is_none_or(|r| m["thread_ts"].as_str() == Some(r) || m["ts"].as_str() == Some(r))
+        })
+        .cloned()
+        .collect();
+    ok(json!({"messages": messages}))
 }
 
 async fn answer(
@@ -315,26 +369,7 @@ async fn answer(
             "topic": {"value": "the release room"}, "is_im": false}}),
         ),
         "conversations.replies" | "conversations.history" => {
-            let channel = arg(&query, "channel").unwrap_or_default();
-            let root = arg(&query, "ts");
-            let oldest = arg(&query, "oldest").unwrap_or_default();
-            let key = |t: &str| t.replace('.', "").parse::<u64>().unwrap_or(0);
-            let messages: Vec<Value> = state
-                .lock()
-                .unwrap()
-                .history
-                .get(&channel)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|m| key(m["ts"].as_str().unwrap_or("0")) > key(&oldest))
-                .filter(|m| {
-                    root.as_deref().is_none_or(|r| {
-                        m["thread_ts"].as_str() == Some(r) || m["ts"].as_str() == Some(r)
-                    })
-                })
-                .collect();
-            ok(json!({"messages": messages}))
+            history(&query, &mut state.lock().unwrap())
         }
         "files.getUploadURLExternal" => {
             let url = state.lock().unwrap().upload_url.clone();
@@ -354,6 +389,9 @@ async fn socket(stream: tokio::net::TcpStream, state: Arc<Mutex<State>>) {
     {
         let mut s = state.lock().unwrap();
         s.connections += 1;
+        for envelope in &s.pending {
+            tx.send(envelope.clone()).unwrap();
+        }
         s.socket = Some(tx);
     }
     let hello = json!({"type": "hello", "num_connections": 1});
@@ -367,6 +405,7 @@ async fn socket(stream: tokio::net::TcpStream, state: Arc<Mutex<State>>) {
                 let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
                 if let Some(id) = v["envelope_id"].as_str() {
                     let mut s = state.lock().unwrap();
+                    s.pending.retain(|envelope| envelope["envelope_id"] != id);
                     if let Some(at) = s.sent.remove(id) {
                         s.acks.push((id.to_string(), at.elapsed()));
                     }
