@@ -21,8 +21,8 @@ use super::args::Parsed;
 use super::out;
 use super::setup::Terminal;
 use crate::config::file;
-use crate::config::{self, Config, Destination, sha256_hex};
-use crate::relay::discord::{API, ChannelRef, Rest, Snowflake};
+use crate::config::{self, Config, sha256_hex};
+use crate::relay::discord::{API, Rest, Snowflake};
 use crate::relay::http::Base;
 use crate::sys::paths::Paths;
 
@@ -620,18 +620,21 @@ impl Flow<'_> {
 }
 
 impl Discord {
-    /// Creates the channels that are missing (after the owner's yes). No other channel is changed.
-    pub(super) async fn create_missing(&mut self) -> Result<(Snowflake, Snowflake), String> {
+    /// Creates the channels that are missing (after the owner's yes); `#cataly-ops` only when
+    /// `config` has no `cataly-ops` destination yet. No other channel is changed.
+    pub(super) async fn create_missing(
+        &mut self,
+        config: &Config,
+    ) -> Result<(Snowflake, Option<Snowflake>), String> {
         if self.lead.is_none() {
             self.lead = Some(self.create_one(LEAD).await?);
         }
-        if self.ops.is_none() {
+        if self.ops.is_none() && ops_unset(config) {
             self.ops = Some(self.create_one(OPS).await?);
         }
-        match (self.lead, self.ops) {
-            (Some(lead), Some(ops)) => Ok((lead, ops)),
-            _ => Err("the channels could not be settled".into()),
-        }
+        self.lead
+            .map(|lead| (lead, self.ops))
+            .ok_or_else(|| "the channels could not be settled".into())
     }
 
     async fn create_one(&mut self, name: &'static str) -> Result<Snowflake, String> {
@@ -900,14 +903,20 @@ fn read_record(state_dir: &Path, me: &Value) -> serde_json::Map<String, Value> {
         .unwrap_or_default()
 }
 
+/// Whether `config` names no `cataly-ops` destination, so setup may set it (and create the channel).
+pub(super) fn ops_unset(config: &Config) -> bool {
+    !config.destinations.contains_key(OPS)
+}
+
 /// The config with the guild, owner, the lead's channel and the `cataly-ops` destination; a
-/// setting is written only when the file says something else.
+/// setting is written only when the file says something else, the destination only when the file
+/// names none.
 pub(super) fn config_text(
     config: &Config,
     mut text: String,
     d: &Discord,
     lead: Snowflake,
-    ops: Snowflake,
+    ops: Option<Snowflake>,
 ) -> String {
     let c = &config.discord;
     if c.guild != Some(d.guild) {
@@ -924,10 +933,12 @@ pub(super) fn config_text(
             text = file::set_key(&text, "discord", "home", &lead.to_string());
         }
     }
-    let dest = Destination::Discord {
-        channel: ChannelRef::Id(ops),
-    };
-    if config.destinations.get(OPS) != Some(&dest) {
+    ops_text(config, text, ops)
+}
+
+/// The `cataly-ops` destination set to the channel `ops`, only when `config` names none.
+fn ops_text(config: &Config, mut text: String, ops: Option<Snowflake>) -> String {
+    if let Some(ops) = ops.filter(|_| ops_unset(config)) {
         let section = format!("destinations.{OPS}");
         text = file::set_key(&text, &section, "kind", "discord");
         text = file::set_key(&text, &section, "channel", &ops.to_string());
@@ -944,7 +955,7 @@ fn invite_link(app: Option<Snowflake>) -> String {
 /// Why the bot cannot join a voice channel.
 #[derive(Debug, PartialEq, Eq)]
 enum Blocked {
-    /// Its roles lack these permissions server-wide.
+    /// Its roles lack these permissions and no channel overwrite supplies them.
     Server(String),
     /// The channel's overwrites for these holders take these permissions away.
     Overwrite(String, String),
@@ -987,9 +998,6 @@ fn voice_blocked(guild: &Value, member: &Value, bot: &str, overwrites: &Value) -
             .collect();
         list.join(" and ")
     };
-    if lacking(base) != 0 {
-        return Some(Blocked::Server(names(lacking(base))));
-    }
     let list = overwrites.as_array().map_or_default(Vec::as_slice);
     let of = |id: &str| list.iter().find(|o| o["id"] == id);
     // Each step: who it is, its deny, its allow.
@@ -1033,7 +1041,11 @@ fn voice_blocked(guild: &Value, member: &Value, bot: &str, overwrites: &Value) -
         .filter(|(_, deny, _)| deny & missing != 0)
         .map(|(who, _, _)| who.as_str())
         .collect();
-    Some(Blocked::Overwrite(names(missing), by.join(", ")))
+    if by.is_empty() {
+        Some(Blocked::Server(names(missing)))
+    } else {
+        Some(Blocked::Overwrite(names(missing), by.join(", ")))
+    }
 }
 
 /// Whether the application has either Message Content flag.
@@ -1119,6 +1131,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_configured_ops_destination_is_kept() {
+        let ops = Snowflake::parse("222").unwrap();
+        let text = "[destinations.cataly-ops]\nkind = \"discord\"\nchannel = \"111\"\n";
+        let config = config::parse(text).unwrap();
+        assert!(!ops_unset(&config));
+        assert_eq!(ops_text(&config, text.into(), Some(ops)), text);
+        let fresh = Config::default();
+        assert!(ops_unset(&fresh));
+        let written = ops_text(&fresh, String::new(), Some(ops));
+        assert!(written.contains("[destinations.cataly-ops]") && written.contains("222"));
+    }
+
+    #[test]
     fn invite_permissions_are_the_ones_cataly_uses() {
         assert_eq!(PERMISSIONS, 2_252_126_234_414_160);
         assert_eq!(PERMISSIONS & (CONNECT | SPEAK), CONNECT | SPEAK);
@@ -1158,6 +1183,43 @@ mod tests {
         let bot = json!([{ "id": "5", "type": 1, "allow": "0", "deny": SPEAK.to_string() }]);
         assert_eq!(
             voice_blocked(&guild(all), &member, "5", &bot),
+            Some(Blocked::Overwrite("Speak".into(), "the bot".into()))
+        );
+    }
+
+    #[test]
+    fn voice_access_accepts_permissions_granted_only_by_channel_overwrites() {
+        let guild = json!({ "id": "1", "owner_id": "9", "roles": [
+            { "id": "1", "name": "@everyone", "permissions": VIEW_CHANNEL.to_string() },
+            { "id": "2", "name": "Cataly", "permissions": "0" },
+        ]});
+        let member = json!({ "roles": ["2"] });
+        // Each overwrite level can grant Connect and Speak absent from all server roles.
+        for (id, kind) in [("1", 0), ("2", 0), ("5", 1)] {
+            let overwrites = json!([
+                { "id": id, "type": kind, "allow": (CONNECT | SPEAK).to_string(), "deny": "0" },
+            ]);
+            assert_eq!(
+                voice_blocked(&guild, &member, "5", &overwrites),
+                None,
+                "overwrite for {id}"
+            );
+        }
+        // A partial grant reports only what is still missing from the effective permissions.
+        let partial = json!([
+            { "id": "5", "type": 1, "allow": CONNECT.to_string(), "deny": "0" },
+        ]);
+        assert_eq!(
+            voice_blocked(&guild, &member, "5", &partial),
+            Some(Blocked::Server("Speak".into()))
+        );
+        // A later member deny still overrides an earlier channel grant.
+        let denied = json!([
+            { "id": "1", "type": 0, "allow": (CONNECT | SPEAK).to_string(), "deny": "0" },
+            { "id": "5", "type": 1, "allow": "0", "deny": SPEAK.to_string() },
+        ]);
+        assert_eq!(
+            voice_blocked(&guild, &member, "5", &denied),
             Some(Blocked::Overwrite("Speak".into(), "the bot".into()))
         );
     }

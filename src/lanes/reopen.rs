@@ -74,6 +74,8 @@ impl<R: Runtime> Lanes<R> {
         if self.session(key).is_some() {
             return Err("a live session already runs this session".into());
         }
+        let worktree_use = self.worktree_use.lock().await;
+        super::preservation::canonical_path(&rec.place(), &rec.cwd).await?;
         let config = self.cfg();
         let exe = self.admit_restart(&config, &rec).await?;
         reply.begun = true;
@@ -102,6 +104,7 @@ impl<R: Runtime> Lanes<R> {
                 Some("reopen accepted; intent recorded before startup".into()),
             )
             .await?;
+        drop(worktree_use);
         let outcome = self
             .start(
                 rec,

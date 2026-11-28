@@ -372,7 +372,7 @@ fn write_section(e: &Enrolment, config_file: &Path) -> Result<(), Failure> {
     let section = format!("workers.{}", e.name);
     crate::config::file::edit(config_file, "", |text| {
         use crate::config::file::{set_key, set_rendered, string_list};
-        let mut t = set_key(text, &section, "destination", &e.dest.target());
+        let mut t = set_key(text, &section, "destination", &e.dest.config_target());
         t = set_rendered(&t, &section, "port", &e.dest.port.to_string());
         t = set_key(&t, &section, "name", &e.machine);
         let tailscale = if e.tailscale { "true" } else { "false" };

@@ -314,6 +314,163 @@ fn planner_limits_questions_and_merged_items() {
     assert!(hub.stop().success());
 }
 
+/// COORD req. 37: a done item's id added again starts under a fresh lane key, not as a refused
+/// open of its closed lane.
+#[test]
+fn planner_restarts_a_reused_item_id() {
+    let (mut hub, work) = coord_hub("[coord.planner]\nmax_open = 2\nmax_starts = 2\n");
+    let text = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&text.replace(
+        "[coord.planner]",
+        &format!(
+            "[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n[coord.planner]",
+            work.display()
+        ),
+    ));
+    start(&mut hub);
+    let add =
+        json!({ "id": "it-x", "brief": "b", "checks": [{ "kind": "command", "argv": ["true"] }] });
+    lane(&hub, "item-add", &add).unwrap();
+    let first = hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(s)
+    });
+    assert!(first.contains("started: it-x"), "{first}");
+    lane(&hub, "close", &json!({ "key": "it-x", "note": "stop" })).unwrap();
+    hub.until(WAIT, || {
+        (record(&hub, "it-x")["state"] == "closed").then_some(())
+    });
+    let done = plan(&hub);
+    assert!(done.contains("it-x done (lane closed)"), "{done}");
+    lane(&hub, "item-add", &add).unwrap();
+    let again = plan(&hub);
+    assert!(again.contains("started: it-x"), "{again}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let x = items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "it-x")
+        .unwrap()
+        .clone();
+    assert_eq!(x["status"], "running", "{x}");
+    assert_eq!(x["start_failures"], 0, "{x}");
+    assert_eq!(x["question"], Value::Null, "{x}");
+    assert_eq!(x["lane"], "it-x-2", "{x}");
+    assert_eq!(record(&hub, "it-x-2")["state"], "running", "{x}");
+    // Done by a merged PR while lane it-x-2 stays open: added again, it waits for that lane.
+    hub.fixture(
+        "gh",
+        "repos_o_r_pulls_5.json",
+        Some(&json!({ "merged": true }).to_string()),
+    );
+    lane(
+        &hub,
+        "claim",
+        &json!({ "key": "it-x-2", "evidence": "https://github.com/o/r/pull/5" }),
+    )
+    .unwrap();
+    let merged = plan(&hub);
+    assert!(merged.contains("it-x done (o/r#5 merged"), "{merged}");
+    lane(&hub, "item-add", &add).unwrap();
+    let held = plan(&hub);
+    assert!(!held.contains("started:"), "{held}");
+    assert_eq!(record(&hub, "it-x-3"), Value::Null, "{held}");
+    assert!(hub.stop().success());
+}
+
+/// A reused item's next allocation fails before spawn. When requested, a database refusal keeps
+/// the failed lane; otherwise the unused allocation rolls back. Arm the trigger with the hub stopped.
+fn planner_failed_start(retain_lane: bool) -> TestHub {
+    let (mut hub, work) = coord_hub("[coord.planner]\nmax_open = 2\nmax_starts = 2\n");
+    let text = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&text.replace(
+        "[coord.planner]",
+        &format!(
+            "[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n[coord.planner]",
+            work.display()
+        ),
+    ));
+    start(&mut hub);
+    let add = json!({ "id": "it-fail", "brief": "b", "checks": [{ "kind": "command", "argv": ["true"] }] });
+    lane(&hub, "item-add", &add).unwrap();
+    let first = hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(s)
+    });
+    assert!(first.contains("started: it-fail"), "{first}");
+    lane(&hub, "close", &json!({ "key": "it-fail", "note": "stop" })).unwrap();
+    hub.until(WAIT, || {
+        (record(&hub, "it-fail")["state"] == "closed").then_some(())
+    });
+    let done = plan(&hub);
+    assert!(done.contains("it-fail done (lane closed)"), "{done}");
+    lane(&hub, "item-add", &add).unwrap();
+    assert!(hub.stop().success());
+    if retain_lane {
+        let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER keep_failed_planner_lane BEFORE DELETE ON lanes
+             WHEN OLD.key = 'it-fail-2'
+             BEGIN SELECT RAISE(FAIL, 'keep failed planner lane'); END;",
+        )
+        .unwrap();
+    }
+    let blocked = hub.state().join("sessions/lanes/it-fail-2");
+    std::fs::write(&blocked, "not a directory").unwrap();
+    start(&mut hub);
+    hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(())
+    });
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "open", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    std::fs::remove_file(blocked).unwrap();
+    hub
+}
+
+#[test]
+fn planner_failed_start_retains_its_lane_key() {
+    let mut hub = planner_failed_start(true);
+    let failed = record(&hub, "it-fail-2");
+    assert_eq!(failed["state"], "held", "{failed}");
+    assert!(
+        failed["receipt"].to_string().contains("record retained:"),
+        "{failed}"
+    );
+    let next = plan(&hub);
+    assert!(!next.contains("started:"), "{next}");
+    assert_eq!(record(&hub, "it-fail-3"), Value::Null, "{next}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "open", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    assert!(hub.stop().success());
+}
+
+#[test]
+fn planner_failed_start_reuses_rolled_back_key() {
+    let mut hub = planner_failed_start(false);
+    assert_eq!(record(&hub, "it-fail-2"), Value::Null);
+    let next = plan(&hub);
+    assert!(next.contains("started: it-fail"), "{next}");
+    assert_eq!(record(&hub, "it-fail-2")["state"], "running", "{next}");
+    assert_eq!(record(&hub, "it-fail-3"), Value::Null, "{next}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "running", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    assert!(hub.stop().success());
+}
+
 /// Check 4: the merge check refuses without an approving verdict at the current head, with no
 /// checks, or with a check neither passed nor skipped; a dry run stops before merging.
 #[test]
