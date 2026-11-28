@@ -127,7 +127,8 @@ operator who configures the daemon (in practice the same person).
 22. A MESSAGE_CREATE is acted on only after READY, or while a resume is replaying missed events.
     For an in-scope owner message, the daemon writes it to the arrival queue (DISC-IN-06) before
     doing anything else, then wakes the handler. Persisting is synchronous with the event; the
-    heartbeat is never blocked by delivery work.
+    heartbeat is never blocked by delivery work. A conversation recovering from a full queue
+    instead leaves newer live owner messages to history until that read completes (req. 24).
 23. On every READY or RESUMED the daemon durably records that a catch-up read is owed, refreshes
     the thread list (req. 8), then performs the catch-up read (req. 31) for every conversation in
     scope. The flag is cleared only when that read finishes. A crash before then repeats it.
@@ -137,7 +138,17 @@ operator who configures the daemon (in practice the same person).
 24. Each queued item holds the raw owner message (at most 1 MiB), the conversation's read
     position at the moment of queueing, and the parent channel if the message came from a
     followed thread. The whole queue is capped at 256 MiB; when full, a new live event is not
-    queued, a catch-up read is marked owed (req. 23), and that read recovers the message.
+    queued, a catch-up read is marked owed (req. 23), and that read recovers the message. The
+    rejected message's conversation immediately stops advancing past live non-owner messages
+    (req. 29), including while thread discovery fails before the catch-up history read begins.
+    If history itself meets a full queue, that conversation stops before passing later messages.
+    The read remains owed and retries with backoff until capacity returns. Until it completes,
+    newer live owners in that conversation are left to history, even after space returns; already
+    admitted items still drain to free capacity. A deferred owner or new overflow renews that
+    conversation's pending read, even if the current history snapshot missed it or the conversation
+    was already read in the pass. A pending thread is still read if it disappears from the active
+    listing while its parent remains watched; leaving the configured scope or losing read access
+    ends that read.
 25. The queue is keyed by (channel ID, message ID). A second copy of the same key is ignored;
     the first copy wins, including its queue position. A later copy with different content is
     logged once and otherwise ignored; it never halts intake.
@@ -153,7 +164,10 @@ operator who configures the daemon (in practice the same person).
 
 29. Every conversation in scope has a read position: the highest message ID fully handled. It
     never moves backwards. It moves past an owner message only after that message's hand-off is
-    confirmed (req. 48), and past non-owner messages freely.
+    confirmed (req. 48), and past non-owner messages freely once that conversation's catch-up
+    read has finished. While catch-up is owed or retrying, live non-owner and bot messages do not
+    advance the position past owner messages the history read has not reached yet. After overflow,
+    newer live owners likewise wait for history instead of completing past the rejected owner.
 30. First run for a listed channel: the read position is set to its newest message ID (or "empty"
     if it has none), so history is never replayed. If queued messages already exist for a channel
     without a position, the position starts just below the oldest queued message.

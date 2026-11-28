@@ -28,7 +28,7 @@ use crate::relay::pipeline::{Arrival, Pipeline, Step};
 use crate::relay::text::{self, Checks, DISCORD_LIMIT};
 use crate::relay::{Facts, Inbound, PartOutcome, Relay};
 use crate::store::Store;
-use crate::store::relay::{QueueRow, RelayDone, RelayWrite};
+use crate::store::relay::{Arrived, QueueRow, RelayDone, RelayWrite};
 use crate::sys::now_ms;
 
 /// The relay's store key.
@@ -206,9 +206,94 @@ struct Scope {
     lookups: VecDeque<(Snowflake, Option<Snowflake>)>,
     /// The first active-thread listing of this run is done.
     listed_once: bool,
+    /// Live passes must not overtake owner messages still undiscovered by REST.
+    catching_up: HashMap<Snowflake, PendingRoom>,
+    revision: u64,
+}
+
+/// A pending history read survives thread discovery and is renewed by a later overflow.
+#[derive(Clone, Copy)]
+struct PendingRoom {
+    parent: Option<Snowflake>,
+    revision: u64,
+    /// Until history recovers a rejected owner, newer live owners must not finish past it.
+    overflowed: bool,
 }
 
 impl Scope {
+    fn fence(&mut self, room: Snowflake, parent: Option<Snowflake>) {
+        self.revision = self.revision.wrapping_add(1);
+        self.catching_up.insert(
+            room,
+            PendingRoom {
+                parent,
+                revision: self.revision,
+                overflowed: true,
+            },
+        );
+    }
+
+    fn fence_scope(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        let revision = self.revision;
+        for (room, parent) in self
+            .listed
+            .iter()
+            .filter(|(_, l)| !l.forum())
+            .map(|(c, _)| (*c, None))
+            .chain(self.threads.iter().map(|(t, p)| (*t, Some(*p))))
+        {
+            // A reconnect renews the read, but must not forget an earlier overflow.
+            self.catching_up
+                .entry(room)
+                .and_modify(|pending| {
+                    pending.parent = parent;
+                    pending.revision = revision;
+                })
+                .or_insert(PendingRoom {
+                    parent,
+                    revision,
+                    overflowed: false,
+                });
+        }
+    }
+
+    fn pending_rooms(&mut self) -> Vec<(Snowflake, PendingRoom)> {
+        for (room, parent) in self
+            .listed
+            .iter()
+            .filter(|(_, l)| !l.forum())
+            .map(|(c, _)| (*c, None))
+            .chain(self.threads.iter().map(|(t, p)| (*t, Some(*p))))
+        {
+            self.catching_up.entry(room).or_insert(PendingRoom {
+                parent,
+                revision: self.revision,
+                overflowed: false,
+            });
+        }
+        // A missing active-thread listing does not discard a pending read under a watched parent.
+        // A room whose configured watch scope was removed no longer owes a read.
+        self.catching_up.retain(|room, pending| {
+            self.listed.get(room).is_some_and(|l| !l.forum())
+                || pending.parent.is_some_and(|p| self.listed.contains_key(&p))
+        });
+        self.catching_up
+            .iter()
+            .map(|(room, pending)| (*room, *pending))
+            .collect()
+    }
+
+    fn finish_read(&mut self, room: Snowflake, revision: u64) {
+        if self
+            .catching_up
+            .get(&room)
+            .is_some_and(|p| p.revision == revision)
+        {
+            self.catching_up.remove(&room);
+        }
+    }
+
     /// Whether the channel is in scope, and its listed parent when it is a followed thread.
     fn room(&self, channel: Snowflake) -> InScope {
         if self.listed.get(&channel).is_some_and(|l| !l.forum()) {
@@ -299,6 +384,8 @@ pub(crate) struct Intake<T: Runtime> {
     gateway_url: WsUrl,
     token_intents: (String, u64),
     scope: Mutex<Scope>,
+    /// Serializes owner admission and clearing the durable catch-up flag.
+    admission: tokio::sync::Mutex<()>,
     pub(super) wake: Notify,
     started_ms: i64,
     /// When the current connection was established, for the catch-up latency.
@@ -412,6 +499,7 @@ impl<T: Runtime> Intake<T> {
             shared: Arc::clone(shared),
             gateway_url,
             scope: Mutex::new(scope),
+            admission: tokio::sync::Mutex::new(()),
             wake: Notify::new(),
             started_ms: now_ms(),
             established: Mutex::new(None),
@@ -424,28 +512,40 @@ impl<T: Runtime> Intake<T> {
         for (channel, e) in &unreadable {
             intake.unlist(*channel, e);
         }
-        intake.close_left_open().await;
-        if !shared.presses_recovered.swap(true, Ordering::SeqCst) {
-            intake.tell_untold_presses().await;
+        intake.recover().await?;
+        Ok(intake)
+    }
+
+    async fn recover(self: &Arc<Self>) -> Result<(), Stop> {
+        self.close_left_open().await;
+        if !self.shared.presses_recovered.swap(true, Ordering::SeqCst) {
+            self.tell_untold_presses().await;
         }
-        intake.baseline_listed().await?;
+        self.baseline_listed().await?;
         // A queue left from before is drained after a full catch-up read (DISC-IN req. 28).
-        let queued = env
+        let queued = self
             .store
             .read(|r| r.queue(NAME))
             .await
             .map_err(|e| Stop::Retry(e.to_string()))?;
         if !queued.is_empty() {
-            intake.flag(true).await;
+            self.flag(true).await;
         }
-        Ok(intake)
+        Ok(())
     }
 
     fn scope(&self) -> MutexGuard<'_, Scope> {
         self.scope.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn flag(&self, on: bool) {
+    /// Clearing the flag cannot race an admission that renews a room's fence.
+    async fn flag(&self, on: bool) -> bool {
+        let _admission = self.admission.lock().await;
+        if on {
+            self.scope().fence_scope();
+        } else if !self.scope().catching_up.is_empty() {
+            return false;
+        }
         let write = RelayWrite::Flag {
             relay: NAME.into(),
             flag: "catch_up".into(),
@@ -453,7 +553,9 @@ impl<T: Runtime> Intake<T> {
         };
         if let Err(e) = self.store.relay(write).await {
             log::warn("catch-up flag not recorded", &[("error", &e)]);
+            return false;
         }
+        true
     }
 
     async fn write(&self, write: RelayWrite) -> Result<RelayDone, String> {
@@ -592,6 +694,7 @@ impl<T: Runtime> Intake<T> {
                 threads,
                 lookups,
                 listed_once,
+                ..
             } = &mut *scope;
             listed.retain(|c, _| new.channels.contains(c));
             listed.extend(found.listed);
@@ -880,34 +983,28 @@ impl<T: Runtime> Intake<T> {
         }
         let result = async {
             self.refresh_threads().await?;
-            let rooms: Vec<(Snowflake, Option<Snowflake>)> = {
-                let scope = self.scope();
-                let listed = scope
-                    .listed
-                    .iter()
-                    .filter(|(_, l)| !l.forum())
-                    .map(|(c, _)| (*c, None));
-                let threads = scope.threads.iter().map(|(t, p)| (*t, Some(*p)));
-                listed.chain(threads).collect()
-            };
-            for (room, parent) in rooms {
-                match self.read_room(room, parent).await {
-                    Err(e) if matches!(e.status, Some(403 | 404)) => match parent {
-                        // A followed thread that cannot be read leaves scope until listed again.
-                        Some(_) => {
+            let rooms = self.scope().pending_rooms();
+            for (room, pending) in rooms {
+                match self.read_room(room, pending.parent).await {
+                    Ok(true) => self.scope().finish_read(room, pending.revision),
+                    Ok(false) => {} // Full: keep its fence and continue with the other rooms.
+                    Err(e) if matches!(e.status, Some(403 | 404)) => {
+                        // An unreadable room leaves scope; it no longer owes a history read.
+                        if pending.parent.is_some() {
                             self.scope().threads.remove(&room);
+                        } else {
+                            self.unlist(room, &e);
                         }
-                        None => self.unlist(room, &e),
-                    },
-                    other => other?,
+                        self.scope().catching_up.remove(&room);
+                    }
+                    Err(e) => return Err(e),
                 }
             }
-            Ok::<(), RestError>(())
+            Ok::<bool, RestError>(self.flag(false).await)
         }
         .await;
         match result {
-            Ok(()) => {
-                self.flag(false).await;
+            Ok(true) => {
                 *self
                     .catch_up_backoff
                     .lock()
@@ -928,26 +1025,33 @@ impl<T: Runtime> Intake<T> {
                 });
                 self.shared.kick.notify_one();
             }
-            Err(e) => {
-                let mut backoff = self
-                    .catch_up_backoff
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let wait = backoff.0;
-                *backoff = ((wait * 2).min(CATCH_UP_MAX), Some(Instant::now() + wait));
-                drop(backoff);
-                log::info(
-                    "catch-up read retried later",
-                    &[("error", &e), ("after_s", &wait.as_secs())],
-                );
-                self.shared
-                    .set(|h| h.last_error = Some(format!("catch-up read: {e}")));
-            }
+            Ok(false) => self.retry_catch_up("catch-up remains owed"),
+            Err(e) => self.retry_catch_up(&e.to_string()),
         }
     }
 
-    /// Reads one room from its position forward and queues or passes what it finds (DISC-IN req. 31).
-    async fn read_room(&self, room: Snowflake, parent: Option<Snowflake>) -> Result<(), RestError> {
+    fn retry_catch_up(&self, error: &str) {
+        let mut backoff = self
+            .catch_up_backoff
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let wait = backoff.0;
+        *backoff = ((wait * 2).min(CATCH_UP_MAX), Some(Instant::now() + wait));
+        drop(backoff);
+        log::info(
+            "catch-up read retried later",
+            &[("error", &error), ("after_s", &wait.as_secs())],
+        );
+        self.shared
+            .set(|h| h.last_error = Some(format!("catch-up read: {error}")));
+    }
+
+    /// Reads one room forward; false means admission stopped before its history was consumed.
+    async fn read_room(
+        &self,
+        room: Snowflake,
+        parent: Option<Snowflake>,
+    ) -> Result<bool, RestError> {
         let positions = self
             .store
             .read(|r| r.positions(NAME))
@@ -963,10 +1067,10 @@ impl<T: Runtime> Intake<T> {
                     parent: parent.map(|p| p.to_string()),
                 })
                 .await;
-            return Ok(());
+            return Ok(true);
         };
         if pos.held.is_some() {
-            return Ok(());
+            return Ok(true);
         }
         let mut gathered: Vec<Value> = Vec::new();
         let mut before: Option<Snowflake> = None;
@@ -1009,15 +1113,17 @@ impl<T: Runtime> Intake<T> {
                     })
                     .await;
                 self.alert_held(room, &reason);
-                return Ok(());
+                return Ok(true);
             }
             before = oldest;
         }
         gathered.reverse();
         for m in gathered {
-            self.take(&m, room, parent, None).await;
+            if !self.take(&m, room, parent, None).await {
+                return Ok(false);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn alert_held(&self, room: Snowflake, reason: &str) {
@@ -1053,16 +1159,17 @@ impl<T: Runtime> Intake<T> {
 
     /// Queues an owner message or passes anything else (DISC-IN req. 12-14, 22, 24). `read_at` is a
     /// live message's frame read time, `None` for one found by a catch-up read. A queued message
-    /// wakes the round from the pipeline ([`Pipeline::arrive`]).
+    /// wakes the round from the pipeline ([`Pipeline::arrive`]). False stops history on an
+    /// owner message that could not be queued; later passes must not overtake it.
     async fn take(
         &self,
         raw: &Value,
         room: Snowflake,
         parent: Option<Snowflake>,
         read_at: Option<Instant>,
-    ) {
+    ) -> bool {
         let Some((message, _)) = types::ids(raw) else {
-            return;
+            return true;
         };
         let gate = types::gate(raw, self.owner);
         let others = self.settings().others.contains(&room);
@@ -1072,6 +1179,9 @@ impl<T: Runtime> Intake<T> {
         }
         match gate {
             Gate::Pass => {
+                if read_at.is_some() && self.scope().catching_up.contains_key(&room) {
+                    return true;
+                }
                 let _ = self
                     .write(RelayWrite::Pass {
                         relay: NAME.into(),
@@ -1093,6 +1203,16 @@ impl<T: Runtime> Intake<T> {
                 self.alert_held(room, &reason);
             }
             Gate::Owner => {
+                let admission = self.admission.lock().await;
+                if read_at.is_some() {
+                    let mut scope = self.scope();
+                    if scope.catching_up.get(&room).is_some_and(|p| p.overflowed) {
+                        // Leave this owner to history, even after capacity returns. Renew the
+                        // fence because an in-flight history snapshot may not include it yet.
+                        scope.fence(room, parent);
+                        return false;
+                    }
+                }
                 let arrival = Arrival {
                     room: room.to_string(),
                     message: message.to_string(),
@@ -1100,12 +1220,23 @@ impl<T: Runtime> Intake<T> {
                     parent: parent.map(|p| p.to_string()),
                     raw: raw.to_string(),
                 };
-                if let Err(e) = self.pipeline.arrive(arrival, read_at, &self.wake).await {
-                    log::warn("owner message not queued", &[("error", &e)]);
-                    self.flag(true).await;
+                match self.pipeline.arrive(arrival, read_at, &self.wake).await {
+                    Ok(Arrived::Full) => {
+                        // Renew even an existing fence: an in-progress read cannot finish it.
+                        self.scope().fence(room, parent);
+                        return false;
+                    }
+                    Err(e) => {
+                        drop(admission);
+                        log::warn("owner message not queued", &[("error", &e)]);
+                        self.flag(true).await;
+                        return false;
+                    }
+                    Ok(_) => {}
                 }
             }
         }
+        true
     }
 
     /// A live message (DISC-IN req. 22): scope, gate, then the durable queue, which the hand-off
