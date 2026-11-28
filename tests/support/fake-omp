@@ -24,7 +24,8 @@
 #                               a message containing ASK opens the HTML `form` dialog stock OMP's ask
 #                               tool sends, and the turn ends when it is answered: "picked <choice>";
 #                               with omp-data/approve a message containing APPROVE opens the approval
-#                               select stock OMP sends under always-ask, ended the same way.
+#                               select stock OMP sends under always-ask, ended the same way (after
+#                               omp-data/release when the message also matches omp-data/hold).
 #                               Every prompt, follow-up and steer line is appended to omp-data/prompts.
 #   with omp-data/slow-start     the first rpc-ui start answers nothing until its input closes, then
 #                               exits 1 (a start slower than the probe allows, as after an OMP update
@@ -134,7 +135,15 @@ turn() {
     fi
     if [ -f "$dir/approve" ] && printf '%s' "$msg" | grep -q APPROVE; then
         asked=$2
-        echo '{"type":"extension_ui_request","id":"approval-1","method":"select","title":"Approve this fake write?","options":["Approve Once","Approve for this session","Deny"]}'
+        approval='{"type":"extension_ui_request","id":"approval-1","method":"select","title":"Approve this fake write?","options":["Approve Once","Approve for this session","Deny"]}'
+        if [ -f "$dir/hold" ] && printf '%s' "$msg" | grep -qF "$(cat "$dir/hold")"; then
+            (
+                while [ -d "$dir" ] && [ ! -f "$dir/release" ]; do sleep 0.1; done
+                [ -f "$dir/release" ] && echo "$approval"
+            ) &
+            return
+        fi
+        echo "$approval"
         return
     fi
     answer='"ok"'

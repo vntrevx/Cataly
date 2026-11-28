@@ -1442,6 +1442,86 @@ fn a_local_approval_is_announced_once_in_the_request_room() {
     assert!(hub.stop().success());
 }
 
+/// An approval answers the lead's own request: an owner message handed to a lane in its thread
+/// meanwhile is not the lead's, so the notice still replies to the lead's request.
+#[test]
+fn an_approval_replies_to_the_leads_request_not_a_lane_message() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &["approve"], "");
+    let work = hub.root.join("work");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{config}[lanes]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        work.display()
+    ));
+    // The lead's turn opens its approval only once released.
+    hub.fixture("omp", "hold", Some("APPROVE"));
+    hub.start();
+    ready(&hub);
+    let source = "800000000000000191";
+    fake.put(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_191,
+        OWNER,
+        "lane work",
+    ));
+    fake.start_thread(CH, source, support::discord::BOT);
+    let params = json!({
+        "key": "w-1",
+        "title": "Work w-1",
+        "brief": "Do the work.",
+        "checks": [{ "kind": "command", "argv": ["true"] }],
+        "thread": format!("discord:{source}"),
+        "cwd": work,
+    });
+    let out = hub.cli(&["lane", "open", "--json", "--params", &params.to_string()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Request A goes to the lead, which holds its turn.
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_192,
+        OWNER,
+        "please APPROVE this",
+    ));
+    hub.until(WAIT, || (requests(&hub).len() == 1).then_some(()));
+    // Message B in the lane's thread is handed to the lane, after A.
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let now = u64::try_from(since_epoch).unwrap() - 1_420_070_400_000;
+    fake.say(FakeDiscord::message(
+        source,
+        (now << 22) + 1,
+        OWNER,
+        "follow-up for the lane",
+    ));
+    let lanes = hub.json(&["lane", "list", "--json", "--params", "{\"all\":true}"]);
+    let file = lanes[0]["session_file"].as_str().unwrap().to_string();
+    hub.until(WAIT, || {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains("follow-up for the lane")
+            .then_some(())
+    });
+    hub.fixture("omp", "release", Some(""));
+    let notice = fake.wait(WAIT, |f| {
+        f.creates().into_iter().find(|c| {
+            c.body["content"]
+                .as_str()
+                .is_some_and(|t| t.contains("Waiting on the machine"))
+        })
+    });
+    assert_eq!(notice.path, format!("/channels/{CH}/messages"));
+    assert_eq!(reference(&notice).as_deref(), Some("800000000000000192"));
+    assert_eq!(requests(&hub).len(), 1, "the lead got only its request");
+    assert!(hub.stop().success());
+}
+
 /// Check 7: a single recommended choice is submitted after the quiet time, and the question says so.
 #[test]
 fn recommended_choice_is_used_after_the_quiet_time() {
