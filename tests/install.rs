@@ -163,7 +163,7 @@ fn install_reinstall_and_refusals() {
     let out = install_sh(&hub, &r1);
     assert!(out.status.success(), "{}", text(&out));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("nothing changed"),
+        String::from_utf8_lossy(&out.stdout).contains("아무것도 바뀌지 않았습니다."),
         "{}",
         text(&out)
     );
@@ -223,6 +223,28 @@ fn install_reinstall_and_refusals() {
     );
 }
 
+/// `cataly update --help` and `rollback --help` follow `[hub] language` when a config is
+/// readable, and are English without one.
+#[test]
+fn update_and_rollback_help_follow_the_owner_language() {
+    let hub = sandbox("[hub]\nlanguage = \"ko\"\n");
+    let help = |args: &[&str]| {
+        let out = run(&hub, BIN.as_ref(), args);
+        assert!(out.status.success(), "{}", text(&out));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(
+        help(&["update", "--help"]).contains("\n  최신 안정 릴리스"),
+        "{}",
+        help(&["update", "--help"])
+    );
+    assert!(help(&["rollback", "--help"]).contains("\n  이전 버전으로 되돌리고"));
+    hub.write_config("[hub]\nlanguage = \"en\"\n");
+    assert!(help(&["update", "--help"]).contains("\n  install the latest stable release"));
+    std::fs::remove_file(hub.config_path()).unwrap();
+    assert!(help(&["rollback", "--help"]).contains("\n  switch back to the previous version"));
+}
+
 /// Check 3, the link collision: a foreign file at the command link path of a fresh home is refused
 /// and nothing is created.
 #[test]
@@ -255,6 +277,7 @@ fn append(path: &Path, bytes: &[u8]) {
 /// Check 2 and the running-hub refusal of check 3: update to a higher build (held while a hub
 /// answers), rollback, status clean after each, and an interrupted switch repaired by status.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn update_rollback_and_repair() {
     let v2 = bump(V1, 1);
     let mut hub = sandbox("");
@@ -276,7 +299,10 @@ fn update_rollback_and_repair() {
     );
     assert!(out.status.success(), "{}", text(&out));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("stays on"),
+        String::from_utf8_lossy(&out.stdout).contains(&format!(
+            "cataly {V1} -> {v2} 전환을 마쳤습니다. 실행 중인 허브는 다시 시작할 때까지 {V1} 버전으로 \
+             동작합니다."
+        )),
         "{}",
         text(&out)
     );
@@ -299,6 +325,22 @@ fn update_rollback_and_repair() {
         &["rollback", "--expect", "9.9.9"],
     );
     assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("cataly: 보류: 이전 버전은 9.9.9이(가) 아니라 {V1}입니다.\n"),
+    );
+    // The owner's language decides: in English, the same refusal.
+    hub.write_config("[hub]\nlanguage = \"en\"\n");
+    let out = run(
+        &hub,
+        &command_link(&hub),
+        &["rollback", "--expect", "9.9.9"],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("cataly: held: the previous version is {V1}, not 9.9.9\n"),
+    );
+    hub.write_config("");
     let out = run(&hub, &command_link(&hub), &["rollback", "--expect", V1]);
     assert!(out.status.success(), "{}", text(&out));
     let (out, s) = status_install(&hub);
@@ -320,13 +362,28 @@ fn update_rollback_and_repair() {
         "updating to the newer one again works: {}",
         text(&out)
     );
+    // Already current: nothing changes, said so.
+    let out = run(
+        &hub,
+        BIN.as_ref(),
+        &["update", "--from", r2.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("cataly {v2} 버전이 이미 설치되어 있습니다. 아무것도 바뀌지 않았습니다.\n"),
+    );
     let out = run(
         &hub,
         BIN.as_ref(),
         &["install", "--from", r1.to_str().unwrap()],
     );
     assert_eq!(out.status.code(), Some(6), "{}", text(&out));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("only `cataly rollback`"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("`cataly rollback`으로만 돌아갑니다"),
+        "{}",
+        text(&out)
+    );
 
     // Killed between rename and record: the link names the other version, records do not.
     let current = root(&hub).join("current");
@@ -373,6 +430,12 @@ fn restart_switches_back_and_holds_while_busy() {
     assert!(out.status.success(), "{}", text(&out));
     let said = String::from_utf8_lossy(&out.stdout).into_owned();
     eprintln!("measure: update: {said}");
+    assert!(
+        said.contains(&format!(
+            "cataly {V1} -> {v2} 전환을 마쳤습니다. 새 허브가 이전 허브가 닫힌 뒤 "
+        )) && said.contains("ms 만에 응답했습니다."),
+        "{said}"
+    );
     assert_eq!(hub_version(&hub).as_deref(), Some(v2.as_str()));
     let _ = old.wait();
 
@@ -383,6 +446,14 @@ fn restart_switches_back_and_holds_while_busy() {
         &["update", "--from", r3.to_str().unwrap()],
     );
     assert_eq!(out.status.code(), Some(7), "{}", text(&out));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.starts_with(&format!(
+            "cataly: 되돌림: {v3} 버전이 올라오지 않아 (30초 안에 {v3} 버전으로 응답한 허브가 \
+             없습니다) {v2} 버전으로 되돌렸습니다. {v2} 버전이 다시 실행 중입니다."
+        )),
+        "{said}"
+    );
     assert_eq!(hub_version(&hub).as_deref(), Some(v2.as_str()));
     let (_, s) = status_install(&hub);
     assert_eq!(s["current"]["version"], v2.as_str());
@@ -519,14 +590,17 @@ fn restart_holds_while_a_session_is_busy() {
     assert_eq!(out.status.code(), Some(6), "{}", text(&out));
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(
-        said.contains("dialog") && said.contains("작업이 끝나면 다시 실행해주세요"),
+        said.starts_with(
+            "cataly: 보류: 업데이트가 작업 중인 세션을 기다리고 있습니다 (리드가 대화 상자의 답을 \
+             기다리는 중)."
+        ) && said.contains("작업이 끝나면 다시 실행해주세요"),
         "{}",
         text(&out)
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .filter(|l| l.contains("기다리는 중"))
+            .filter(|l| l.starts_with("작업 중인 세션을 기다리는 중입니다 (리드가 대화 상자의"))
             .count(),
         1,
         "one waiting line: {}",
@@ -847,10 +921,11 @@ fn capability_less() -> PathBuf {
     out
 }
 
-/// The store refusal, in the default language (Korean), naming `version`.
+/// The store refusal, held, in the default language (Korean), naming `version`.
 fn refused_for_the_store(out: &Output, version: &str) -> bool {
     String::from_utf8_lossy(&out.stderr).contains(&format!(
-        "대화 보존을 위해 저장소를 업그레이드했습니다. {version} 버전은 이 저장소를 읽을 수 없습니다"
+        "cataly: 보류: 대화 보존을 위해 저장소를 업그레이드했습니다. {version} 버전은 이 저장소를 읽을 수 \
+         없습니다"
     ))
 }
 
@@ -1007,4 +1082,40 @@ fn unknown_capability_and_install_sh_downgrades_are_refused() {
     assert!(out.status.success(), "{}", text(&out));
     let (_, s) = status_install(&hub);
     assert_eq!(s["current"]["version"], CAPABILITY_LESS_VERSION);
+}
+
+/// An install leaves its version folders read-only. The sandbox holding one still goes when its
+/// test ends, also when the test fails (unless `CATALY_TEST_KEEP=1` keeps it for debugging).
+#[test]
+fn a_sandbox_with_an_installed_layout_leaves_nothing_in_tmp() {
+    let installed = |root: &Path| {
+        let version = root.join("home/.local/share/cataly/versions/0.2.5");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::write(version.join("cataly"), "x").unwrap();
+        std::fs::set_permissions(&version, std::fs::Permissions::from_mode(0o555)).unwrap();
+    };
+    let hub = TestHub::new("");
+    let root = hub.root.clone();
+    installed(&root);
+    drop(hub);
+    assert!(!root.exists(), "{} left behind", root.display());
+
+    let temp = support::TempRoot::new("cy-guard");
+    let root = temp.to_path_buf();
+    installed(&root);
+    drop(temp);
+    assert!(!root.exists(), "{} left behind", root.display());
+
+    let hub = TestHub::new("");
+    let root = hub.root.clone();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        installed(&hub.root);
+        panic!("a failing test");
+    }));
+    assert!(failed.is_err());
+    let kept = std::env::var_os("CATALY_TEST_KEEP").is_some_and(|v| v == "1");
+    assert_eq!(root.exists(), kept, "{}", root.display());
+    if kept {
+        support::release(&root);
+    }
 }

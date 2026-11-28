@@ -181,15 +181,19 @@ client) plus the lead's OMP session, and every record has one writer.
 29. Audit (read-only findings): a lane that claimed completion 2 hours or more ago and is still open; an active or
     waiting lane with no progress for 3 hours or more (a waiting lane names its full target and since when).
 30. Start: nothing starts without a lead. Free starts = min(max open lanes - open lanes, max starts per run),
-    never below 0; defaults 3 and 2. Candidates are open items with no open question whose key has no open lane,
+    never below 0; defaults 3 and 2. Candidates are open items with no open question whose lane is not open,
     ordered by priority, then creation time, then id. If the admission guard (LANE-08) refuses, no item starts and
     the reason is recorded.
-31. Each attempt uses one start. A failed open adds one start failure; at 2 the item gets an open question that
-    quotes the first 120 characters of the error and asks whether to fix the brief or directory or give it up. A
-    start that the session host left in an uncertain state gets a question at once and is never retried
-    automatically. A lane that opened but whose start notice did not reach the lead still counts as started. An item
-    becomes running only if it is still the same item (same creation time), open and without a question. Leftover
-    candidates are summarised with their count, the free lane places against the maximum, and the per-run limit.
+31. Each attempt uses one start and opens its lane under a key no lane or queued launch holds (LANE req. 3): the
+    item id, else the id with `-2`, `-3`, ... (shortened to keep the key within 61 characters); the item records
+    that key as its lane for every outcome, including a failed open. A retained failed lane prevents another
+    start; an allocation rolled back without a lane record leaves its key free for the next attempt. A failed
+    open adds one start failure; at 2 the item gets an open question that quotes the first 120 characters of the
+    error and asks whether to fix the brief or directory or give it up. A start that the session host left in an
+    uncertain state gets a question at once and is never retried automatically. A lane
+    that opened but whose start notice did not reach the lead still counts as started. An item becomes running only
+    if it is still the same item (same creation time), open and without a question. Leftover candidates are
+    summarised with their count, the free lane places against the maximum, and the per-run limit.
 32. Ask: each open item with a question is sent to the lead once as an item question; one reminder follows after
     6 hours; no more after that. The question line tells the lead how to answer or drop the item.
 33. Then the owner-notes refresh step (rule 49) runs.
@@ -206,10 +210,11 @@ client) plus the lead's OMP session, and every record has one writer.
 
 36. An item has id (lane key rules, LANE-01, not a reserved role name), title (default the id), brief (copied into
     the store when added), working directory (default the caller's), priority 1-9 (default 5), status (open,
-    running, done, dropped), optional open question, ask and reminder times, failed tries, start failures,
-    optional GitHub source, creation and update times, and a log of what happened.
+    running, done, dropped), the key of its latest lane, optional open question, ask and reminder times, failed
+    tries, start failures, optional GitHub source, creation and update times, and a log of what happened.
 37. Adding refuses an invalid id, a missing brief file, a priority outside 1-9, and an id whose item is open or
-    running. A done or dropped id may be reused.
+    running. A done or dropped id may be reused; the new item keeps the earlier item's lane, so it does not start
+    while that lane is open.
 38. Answering needs non-empty text and an open item; it appends the question and answer to the item's brief,
     clears the question and its ask and reminder times, and resets both try counters.
 39. Dropping refuses a running item (close its lane first); otherwise sets dropped with a reason.
@@ -276,9 +281,11 @@ client) plus the lead's OMP session, and every record has one writer.
     output to a private diagnostic file named in the error. Otherwise the record holds PR, head, verdict, model,
     time and the last 4000 characters of output. The command exits 0 for approve, 1 for reject.
 55. Merge check, against the current head: refuse without a record at that head; refuse unless it approves; refuse
-    when GitHub reports no checks; refuse naming every check that is neither passed nor skipped; refuse when all
-    were skipped. Then squash-merge pinned to that head. A dry run stops before merging. The check is necessary,
-    not sufficient: the lead merges only with the owner's authorisation.
+    when GitHub reports no checks; read all check-run pages (100 per page, at most 30 pages), refusing a missing
+    `total_count` and any result that does not match it; a `total_count` that changes between pages reads the list
+    once more from the first page, and refuses if it changes again; refuse naming every check that is neither
+    passed nor skipped; refuse when all were skipped. Then squash-merge pinned to that head. A dry run stops before
+    merging. The check is necessary, not sufficient: the lead merges only with the owner's authorisation.
 56. A configured reviewer command (argv template, rule 57) replaces the built-in reviewer and must print the same
     verdict line; its records name the model as custom.
 
