@@ -9,8 +9,10 @@
 //!   tried again in the background. State is bound to (workspace/account, owner).
 //! - Intake (SLACK req. 38-44): Socket Mode events for DMs, group DMs, mentions, and replies in
 //!   threads the account posted in (thread memory: one room per thread, `<channel>:<root ts>`, whose
-//!   position is the seen timestamp). Every envelope is acknowledged within 3 s, after the event was
-//!   admitted or dropped. After start and every reconnect, remembered threads and DMs are read from
+//!   position is the seen timestamp). Envelopes are acknowledged within 3 s only after durable
+//!   admission or a deliberate drop; failed or timed-out admissions remain unacknowledged for Slack
+//!   to redeliver. Dedupe uses the message's queue or hand-off record, not a newer room position.
+//!   After start and every reconnect, remembered threads and DMs are read from
 //!   their positions (200 at most, oldest first). Own and bot messages are dropped; a reply whose
 //!   channel or root disagrees with where it was read stops that read. Only allowlisted senders are
 //!   admitted (owner decision 10: the owner alone by default).
@@ -686,6 +688,7 @@ impl Relay for SlackRelay {
     const NAME: &'static str = NAME;
     const REPEATABLE: bool = false;
     const LIVE_ONCE: bool = false;
+    const POSITION_DEDUPE: bool = false;
 
     fn parts(&self, answer: &str) -> Result<Vec<String>, String> {
         let answer = answer.trim();
@@ -1065,8 +1068,14 @@ impl<T: Runtime> Socket<T> {
                     .and_then(|p| p.get("event"))
                     .filter(|_| v.get("type").and_then(Value::as_str) == Some("events_api"))
                 {
-                    // Admitted or dropped first, acknowledged within 3 s either way.
-                    let _ = tokio::time::timeout(ADMIT_WITHIN, self.event(event, read_at)).await;
+                    // Only admitted or deliberately dropped events are safe to acknowledge.
+                    // A failed or timed-out admission must remain eligible for redelivery.
+                    if !matches!(
+                        tokio::time::timeout(ADMIT_WITHIN, self.event(event, read_at)).await,
+                        Ok(true)
+                    ) {
+                        continue;
+                    }
                 }
                 let ack = json!({"envelope_id": envelope}).to_string();
                 if let Err(e) = ws.send(Frame::text(ack)).await {
@@ -1076,41 +1085,41 @@ impl<T: Runtime> Socket<T> {
         }
     }
 
-    /// One live event: gate, then the durable queue (SLACK req. 41-44).
-    async fn event(&self, e: &Value, read_at: Instant) {
+    /// One live event: gate, then the durable queue (SLACK req. 41-44). True means safe to ack.
+    async fn event(&self, e: &Value, read_at: Instant) -> bool {
         intake::touched(&self.shared);
         let kind = e.get("type").and_then(Value::as_str);
         if !matches!(kind, Some("message" | "app_mention")) {
-            return;
+            return true;
         }
         let Some(channel) = e
             .get("channel")
             .and_then(Value::as_str)
             .filter(|c| slack_channel(c))
         else {
-            return;
+            return true;
         };
         let channel_type = e.get("channel_type").and_then(Value::as_str);
         let direct = matches!(channel_type, Some("im" | "mpim")) || channel.starts_with('D');
-        self.take(channel, e, direct, read_at).await;
+        self.take(channel, e, direct, read_at).await
     }
 
     /// Admits an allowlisted human's message addressed to the account, or a reply in a remembered
-    /// thread; anything else is dropped before any receipt (SLACK req. 41-44).
-    async fn take(&self, channel: &str, m: &Value, direct: bool, read_at: Instant) {
+    /// thread; anything else is dropped before any receipt (SLACK req. 41-44). False means retry.
+    async fn take(&self, channel: &str, m: &Value, direct: bool, read_at: Instant) -> bool {
         let subtype = m.get("subtype").and_then(Value::as_str);
         if subtype.is_some_and(|s| s != "file_share" && s != "thread_broadcast") {
-            return;
+            return true;
         }
         let user = m.get("user").and_then(Value::as_str).unwrap_or("");
         if m.get("bot_id").is_some()
             || user == self.account
             || !self.senders.iter().any(|s| s == user)
         {
-            return;
+            return true;
         }
         let Some(ts) = m.get("ts").and_then(Value::as_str).filter(|t| valid_ts(t)) else {
-            return;
+            return true;
         };
         let thread_ts = m
             .get("thread_ts")
@@ -1138,10 +1147,10 @@ impl<T: Runtime> Socket<T> {
             _ => false,
         };
         if !(direct || mention || remembered) {
-            return;
+            return true;
         }
         let Some(seq) = ts_seq(ts) else {
-            return;
+            return true;
         };
         let parent = thread_ts.map(|_| channel.to_string());
         match self
@@ -1149,9 +1158,15 @@ impl<T: Runtime> Socket<T> {
             .arrive(&room, ts, seq, parent.as_deref(), m.to_string(), read_at)
             .await
         {
-            Ok(Arrived::Full) => log::warn("Slack queue full", &[("message", &ts)]),
-            Ok(_) => {}
-            Err(e) => log::warn("Slack owner message not queued", &[("error", &e)]),
+            Ok(Arrived::Full) => {
+                log::warn("Slack queue full", &[("message", &ts)]);
+                false
+            }
+            Ok(Arrived::Queued | Arrived::Duplicate | Arrived::Handled) => true,
+            Err(e) => {
+                log::warn("Slack owner message not queued", &[("error", &e)]);
+                false
+            }
         }
     }
 

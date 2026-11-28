@@ -133,6 +133,8 @@ pub(crate) enum RelayWrite {
     },
     Arrive {
         relay: String,
+        /// When false, only this message's queue or hand-off record can prove a duplicate.
+        position_dedupe: bool,
         room: String,
         message: String,
         seq: i64,
@@ -425,12 +427,15 @@ fn reset(tx: &Transaction<'_>, relay: &str) -> rusqlite::Result<()> {
 fn arrive(
     tx: &Transaction<'_>,
     w: (&str, &str, &str, i64, Option<&str>, &str),
+    position_dedupe: bool,
     now: i64,
 ) -> rusqlite::Result<Arrived> {
     let (relay, room, message, seq, parent, raw) = w;
+    // A release removes doubtful or failed messages from the queue but retains their hand-offs.
+    // Those terminal records still prevent redelivery from reopening the released room.
     let handled: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM handoffs WHERE relay = ?1 AND room = ?2 AND message = ?3 \
-             AND state = 'delivered')",
+             AND state IN ('delivered', 'in_doubt', 'failed'))",
         params![relay, room, message],
         |r| r.get(0),
     )?;
@@ -441,7 +446,7 @@ fn arrive(
             |r| r.get(0),
         )
         .optional()?;
-    if handled || position.is_some_and(|p| p >= seq) {
+    if handled || (position_dedupe && position.is_some_and(|p| p >= seq)) {
         return Ok(Arrived::Handled);
     }
     let queued: bool = tx.query_row(
@@ -540,6 +545,7 @@ fn write_rows(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite::
         }
         RelayWrite::Arrive {
             relay,
+            position_dedupe,
             room,
             message,
             seq,
@@ -548,6 +554,7 @@ fn write_rows(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite::
         } => arrive(
             tx,
             (relay, room, message, *seq, parent.as_deref(), raw),
+            *position_dedupe,
             now,
         )
         .map(RelayDone::Arrived),
@@ -1152,6 +1159,7 @@ mod tests {
     fn arrive(room: &str, seq: i64) -> RelayWrite {
         RelayWrite::Arrive {
             relay: "discord".into(),
+            position_dedupe: true,
             room: room.into(),
             message: seq.to_string(),
             seq,

@@ -76,6 +76,9 @@ pub(crate) trait Relay: Send + Sync + 'static {
     /// replays nothing). The round may then hand it off while its arrival commits (decision 15).
     /// Telegram and Slack redeliver what was not acknowledged as live messages: they commit first.
     const LIVE_ONCE: bool;
+    /// The room's position proves that older arrivals are already handled. Slack can redeliver
+    /// an unadmitted older message after a newer one; it needs a queue or hand-off record instead.
+    const POSITION_DEDUPE: bool = true;
 
     /// The answer text as the parts this platform takes (outgoing checks applied, tables rendered,
     /// split at its limit), or why it cannot be posted.

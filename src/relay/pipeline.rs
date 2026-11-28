@@ -368,6 +368,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
         });
         let write = RelayWrite::Arrive {
             relay: R::NAME.into(),
+            position_dedupe: R::POSITION_DEDUPE,
             room,
             message,
             seq,

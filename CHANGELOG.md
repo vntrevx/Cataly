@@ -2,6 +2,11 @@
 
 ## 0.2.9 (Unreleased)
 
+- Slack no longer acknowledges messages when the arrival queue is full, a queue write fails, or
+  admission times out, leaving them eligible for Slack's bounded redelivery window. An older
+  redelivery is admitted even if a newer message has already advanced the room's position.
+  Redelivering a doubtful or failed hand-off given up by a room release no longer queues it again
+  or blocks the released room.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

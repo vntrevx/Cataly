@@ -210,8 +210,12 @@ Totals: KEEP 36, SIMPLIFY 12, MERGE 3, DROP 11 (62 capabilities).
 37. SLACK-04 Every destination names workspace, account and channel (C, G or D prefix). A send for
     another workspace or account is refused before any request, including upload allocation.
 38. SLACK-05 Live intake: Socket Mode events for DMs, group DMs, mentions and messages in
-    conversations the account is in. Each envelope is acknowledged within 3 s, after the event is
-    admitted or dropped. Reconnect backoff 1 s doubling to 60 s.
+    conversations the account is in. Acknowledge within 3 s only after the event is durably admitted
+    (including a duplicate) or deliberately dropped. A full queue, failed admission write or admission
+    timeout leaves the envelope unacknowledged so Slack can redeliver it within its retry window.
+    A newer room position alone does not prove a redelivery was handled: dedupe by the message's
+    durable queue or hand-off record. A doubtful or failed hand-off given up by a room release still
+    counts as handled on redelivery. Reconnect backoff 1 s doubling to 60 s.
 39. SLACK-05 After start and every reconnect: for each remembered thread read replies newer than
     its seen position (at most 200, oldest first); for each DM with a position read newer history.
     Dedupe key is channel plus message timestamp, shared with live events.
