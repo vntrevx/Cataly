@@ -257,6 +257,187 @@ fn busy_lead_answers_in_order() {
     assert!(hub.stop().success());
 }
 
+/// Discord hand-offs in the hub's store.
+fn handoffs(hub: &TestHub) -> i64 {
+    let db = rusqlite::Connection::open_with_flags(
+        hub.state().join("cataly.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    db.query_row(
+        "SELECT COUNT(*) FROM handoffs WHERE relay = 'discord'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Moves both Discord hand-offs 31 minutes back, past the 30 min owed window, while the hub runs.
+fn age_handoffs(hub: &TestHub) {
+    let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    // The hub's writer does not wait for the lock: hold it as briefly as possible.
+    db.execute_batch("PRAGMA synchronous=OFF").unwrap();
+    let aged = db
+        .execute(
+            "UPDATE handoffs SET created_ms = created_ms - 31 * 60 * 1000 WHERE relay = 'discord'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(aged, 2);
+}
+
+/// A request whose turn outlasts the 30 min owed window, and a request queued behind that turn,
+/// keep waiting while the lead works; each answer is posted once its turn ends (DISC-OUT req.
+/// 21-22). The hand-offs are aged in the store rather than waited out.
+#[test]
+fn answers_wait_for_a_turn_longer_than_the_owed_window() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.fixture("omp", "hold", Some("the long job"));
+    hub.fixture("omp", "hold-busy", Some(""));
+    hub.start();
+    ready(&hub);
+    let (long, queued) = ("800000000000000021", "800000000000000022");
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_021,
+        OWNER,
+        "the long job",
+    ));
+    // Its turn runs: the request is in the transcript with no answer yet (Pending).
+    let tag = format!("[discord {CH}/{long}]");
+    hub.until(WAIT, || {
+        requests(&hub)
+            .iter()
+            .any(|r| r.contains(&tag))
+            .then_some(())
+    });
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_022,
+        OWNER,
+        "then this",
+    ));
+    // Handed to the lead, it waits behind the turn, not in the transcript yet (NotFound).
+    hub.until(WAIT, || (handoffs(&hub) == 2).then_some(()));
+    assert_eq!(requests(&hub).len(), 1);
+    age_handoffs(&hub);
+    // Typing renews every 8 s while a request waits and the turn runs: the second renewal comes
+    // from a round that began after the hand-offs aged.
+    let typing = format!("/channels/{CH}/typing");
+    let typed = fake.calls("POST", &typing).len();
+    fake.wait(WAIT, |f| {
+        (f.calls("POST", &typing).len() >= typed + 2).then_some(())
+    });
+    assert_eq!(answer_state(&hub, long), "waiting");
+    assert_eq!(answer_state(&hub, queued), "waiting");
+    assert_eq!(requests(&hub).len(), 1);
+    hub.fixture("omp", "release", Some(""));
+    let creates = fake.wait_creates(2, WAIT);
+    assert_eq!(reference(&creates[0]).as_deref(), Some(long));
+    assert_eq!(reference(&creates[1]).as_deref(), Some(queued));
+    hub.until(WAIT, || {
+        (answer_state(&hub, long) == "posted" && answer_state(&hub, queued) == "posted")
+            .then_some(())
+    });
+    assert!(hub.stop().success());
+}
+
+/// An intake rebuild must recover recent lead work even when its first snapshot is idle, but
+/// must not give an old, untouched transcript a fresh window just because intake restarted.
+#[test]
+fn intake_restart_recovers_only_recent_lead_work() {
+    for recent in [true, false] {
+        let fake = FakeDiscord::start();
+        let mut hub = relay_hub(&fake, &[], "");
+        hub.start();
+        ready(&hub);
+        assert!(hub.stop().success());
+        // Install the aging rule with the hub stopped: only its own writer changes the hand-off.
+        // The release that restarts intake ages it after the original pipeline observed work.
+        {
+            let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+            db.execute_batch(
+                "CREATE TRIGGER age_restarted_request AFTER UPDATE OF held ON positions
+                 WHEN NEW.relay = 'discord' AND NEW.held IS NULL
+                 BEGIN
+                   UPDATE handoffs SET created_ms = created_ms - 31 * 60 * 1000
+                   WHERE relay = NEW.relay AND room = NEW.room
+                     AND message = '800000000000000023' AND state = 'delivered';
+                 END;",
+            )
+            .unwrap();
+        }
+        hub.fixture("omp", "hold", Some("the interrupted wait"));
+        hub.fixture("omp", "hold-busy", Some(""));
+        hub.start();
+        ready(&hub);
+        hub.fixture("omp", "answer.json", Some(r#""the late answer""#));
+        fake.say(FakeDiscord::message(
+            CH,
+            800_000_000_000_000_023,
+            OWNER,
+            "the interrupted wait",
+        ));
+        hub.until(WAIT, || {
+            (handoffs(&hub) == 1 && queued(&hub, 800_000_000_000_000_023) == 0).then_some(())
+        });
+        // A renewal after confirmation proves an answer round observed the busy lead.
+        let typing = format!("/channels/{CH}/typing");
+        let typed = fake.calls("POST", &typing).len();
+        fake.wait(WAIT, |f| {
+            (f.calls("POST", &typing).len() > typed).then_some(())
+        });
+        let source = "800000000000000023";
+        assert_eq!(answer_state(&hub, source), "waiting");
+        // The fake clears streaming and emits session_settled to trigger an idle readback, but
+        // keeps the final answer held. The old pipeline remembers work; the new one needs mtime.
+        hub.fixture("omp", "hold-idle", Some(""));
+        hub.until(WAIT, || {
+            (hub.json(&["lead", "status", "--json"])["session"]["status"] == "idle").then_some(())
+        });
+        let file = session_file(&hub);
+        let age = Duration::from_secs(if recent { 60 } else { 31 * 60 });
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - age))
+            .unwrap();
+        let connections = fake.connections().len();
+        assert!(hub.cli(&["discord", "release", CH]).status.success());
+        fake.wait_connections(connections + 1, WAIT);
+        ready(&hub);
+        if recent {
+            // Allow two 3 s handling ticks after the rebuild before making the answer available.
+            std::thread::sleep(support::patience(Duration::from_secs(6)));
+            assert_eq!(answer_state(&hub, source), "waiting");
+        } else {
+            hub.until(WAIT, || {
+                (answer_state(&hub, source) == "abandoned").then_some(())
+            });
+        }
+        hub.fixture("omp", "release", Some(""));
+        if recent {
+            let creates = fake.wait_creates(1, WAIT);
+            assert_eq!(reference(&creates[0]).as_deref(), Some(source));
+            hub.until(WAIT, || {
+                (answer_state(&hub, source) == "posted").then_some(())
+            });
+        }
+        // End the held turn before stopping the hub, including the expired-answer case.
+        hub.until(WAIT, || {
+            (std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("the late answer")
+                && hub.json(&["lead", "status", "--json"])["session"]["status"] == "idle")
+                .then_some(())
+        });
+        assert!(hub.stop().success());
+    }
+}
+
 /// Sends an owner message from which the owner has already started a thread (the thread takes the
 /// message's ID); `THREAD_CREATE` goes first, so intake follows the thread before the request.
 fn ask_with_thread(fake: &FakeDiscord, message: u64, text: &str) -> String {
@@ -815,14 +996,9 @@ fn a_lane_thread_keeps_the_leads_answer_in_the_channel() {
     );
     // The owner follows up in the thread: the lane takes it, the lead does not. A thread that
     // appears while the hub runs is read from the hub's start on, so the message is made now.
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    let now = u64::try_from(since_epoch).unwrap() - 1_420_070_400_000;
     fake.say(FakeDiscord::message(
         source,
-        (now << 22) + 1,
+        now_id(),
         OWNER,
         "follow-up for the lane",
     ));
@@ -835,6 +1011,101 @@ fn a_lane_thread_keeps_the_leads_answer_in_the_channel() {
             .then_some(())
     });
     assert_eq!(requests(&hub).len(), 1, "the lead got only the request");
+    assert!(hub.stop().success());
+}
+
+/// A Discord message ID made now.
+fn now_id() -> u64 {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let now = u64::try_from(since_epoch).unwrap() - 1_420_070_400_000;
+    (now << 22) + 1
+}
+
+/// A request handed to a lane is never in the lead's transcript: the lead's work does not keep it
+/// waiting, and it ends once its hand-off is older than the 30 min owed window, while the lead's
+/// own request in a longer turn still waits.
+#[test]
+fn a_lane_hand_off_ends_after_the_owed_window_while_the_lead_works() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    let work = hub.root.join("work");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{config}[lanes]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        work.display()
+    ));
+    hub.fixture("omp", "hold", Some("the long job"));
+    hub.fixture("omp", "hold-busy", Some(""));
+    hub.start();
+    ready(&hub);
+    let thread = "800000000000000191";
+    fake.put(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_191,
+        OWNER,
+        "start the work",
+    ));
+    fake.start_thread(CH, thread, support::discord::BOT);
+    let params = json!({
+        "key": "w-1",
+        "title": "Work w-1",
+        "brief": "Do the work.",
+        "checks": [{ "kind": "command", "argv": ["true"] }],
+        "thread": format!("discord:{thread}"),
+        "cwd": work,
+    });
+    let out = hub.cli(&["lane", "open", "--json", "--params", &params.to_string()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The lane's kickoff turn ends before the lead's long turn holds the fake.
+    let lanes = hub.json(&["lane", "list", "--json", "--params", "{\"all\":true}"]);
+    let file = lanes[0]["session_file"].as_str().unwrap().to_string();
+    hub.until(WAIT, || {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains("\"assistant\"")
+            .then_some(())
+    });
+    let long = "800000000000000192";
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_192,
+        OWNER,
+        "the long job",
+    ));
+    let tag = format!("[discord {CH}/{long}]");
+    hub.until(WAIT, || {
+        requests(&hub)
+            .iter()
+            .any(|r| r.contains(&tag))
+            .then_some(())
+    });
+    let lane = now_id();
+    fake.say(FakeDiscord::message(
+        thread,
+        lane,
+        OWNER,
+        "follow-up for the lane",
+    ));
+    hub.until(WAIT, || (handoffs(&hub) == 2).then_some(()));
+    age_handoffs(&hub);
+    hub.until(WAIT, || {
+        (answer_state(&hub, &lane.to_string()) == "abandoned").then_some(())
+    });
+    assert_eq!(answer_state(&hub, long), "waiting");
+    // The lead's turn ends, so the hub stops promptly. The lane's input queued in the shared fake
+    // is dropped first: the lead's process would run it in its own transcript.
+    hub.fixture("omp", "queued", None);
+    hub.fixture("omp", "release", Some(""));
+    hub.until(WAIT, || {
+        (answer_state(&hub, long) == "posted").then_some(())
+    });
     assert!(hub.stop().success());
 }
 

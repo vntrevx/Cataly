@@ -2,6 +2,21 @@
 
 ## 0.2.9 (Unreleased)
 
+- The lead's answer is no longer lost when its turn runs past 30 minutes. A turn that ran longer
+  (subagents, long tool calls), or a message of yours waiting behind such a turn, was given up 30
+  minutes after it arrived, and the answer that came later was never posted. While the lead works,
+  a message to the lead now keeps waiting for its answer; the next message that reaches the lead
+  still ends the wait, and a message with no answer is given up only once the lead has also been
+  idle for 30 minutes. Intake and hub restarts seed the last-work time from the lead's session
+  file's modification time as an approximation of earlier work. Messages handed to a lane keep
+  the 30-minute limit. Limits: a message whose line in the lead's session file is pushed out of
+  the last 8 MiB read, or whose session file changed, waits until the lead has been idle for 30
+  minutes and is then given up; work not reflected in the file's modification time cannot be
+  recovered after a restart. A resume that touches the file can give an old request another
+  30-minute window. A message queued behind a long turn can still go in doubt when its delivery
+  is not confirmed within 30 seconds (a separate cause, fixed by
+  [PR #314](https://github.com/vntrevx/Cataly/pull/314)); the full effect for such messages needs
+  both. Discord, Telegram and Slack alike.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

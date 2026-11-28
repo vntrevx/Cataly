@@ -19,7 +19,10 @@
 #                               omp-data/followup (a JSON string) adds a background result after the
 #                               answer and a second turn ending with that text;
 #                               with omp-data/hold (a text) a message containing that text waits for
-#                               omp-data/release before its answer;
+#                               omp-data/release before its answer (with omp-data/hold-busy that
+#                               turn shows streaming and queues later input, as slow does);
+#                               omp-data/hold-idle is consumed by a held turn to clear streaming and
+#                               emit session_settled without releasing its delayed final answer;
 #                               omp-data/noentry answers the prompt and writes nothing; with omp-data/ask
 #                               a message containing ASK opens the HTML `form` dialog stock OMP's ask
 #                               tool sends, and the turn ends when it is answered: "picked <choice>";
@@ -121,6 +124,12 @@ turn() {
         return
     fi
     msg=$(printf '%s' "$1" | sed -nE 's/.*"message":("([^"\\]|\\.)*").*/\1/p')
+    held=
+    if [ -f "$dir/hold" ] && printf '%s' "$msg" | grep -qF "$(cat "$dir/hold")"; then
+        held=yes
+        # Before agent_start, so no readback during the held turn shows the session idle.
+        [ -f "$dir/hold-busy" ] && touch "$dir/busy"
+    fi
     printf '{"type":"message","message":{"role":"user","content":[{"type":"text","text":%s}]}}\n' "$msg" >> "$file"
     echo '{"type":"agent_start"}'
     if [ -f "$dir/ask" ] && printf '%s' "$msg" | grep -q ASK; then
@@ -139,10 +148,21 @@ turn() {
     fi
     answer='"ok"'
     [ -f "$dir/answer.json" ] && answer=$(cat "$dir/answer.json")
-    if [ -f "$dir/hold" ] && printf '%s' "$msg" | grep -qF "$(cat "$dir/hold")"; then
+    if [ -n "$held" ]; then
         (
-            while [ -d "$dir" ] && [ ! -f "$dir/release" ]; do sleep 0.1; done
-            [ -f "$dir/release" ] && finish "$answer" "$2"
+            while [ -d "$dir" ] && [ ! -f "$dir/release" ]; do
+                if [ -f "$dir/hold-idle" ]; then
+                    rm -f "$dir/hold-idle" "$dir/busy"
+                    echo '{"type":"session_settled"}'
+                fi
+                sleep 0.1
+            done
+            [ -f "$dir/release" ] || exit 0
+            if [ -f "$dir/hold-busy" ]; then
+                busy_end "$answer" "$2"
+            else
+                finish "$answer" "$2"
+            fi
         ) &
         return
     fi
@@ -150,23 +170,29 @@ turn() {
         touch "$dir/busy"
         (
             sleep 2
-            # Stock OMP stops streaming before it emits agent_end, so a readback the end events
-            # trigger shows the session idle, unless follow-ups wait to run next.
-            [ -f "$dir/queued" ] || rm -f "$dir/busy"
-            finish "$answer" "$2"
-            rm -f "$dir/busy"
-            if [ -f "$dir/queued" ]; then
-                mv "$dir/queued" "$dir/queued.run"
-                while IFS= read -r next; do
-                    nid=$(printf '%s' "$next" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-                    turn "$next" "$nid"
-                done < "$dir/queued.run"
-                rm -f "$dir/queued.run"
-            fi
+            busy_end "$answer" "$2"
         ) &
         return
     fi
     finish "$answer" "$2"
+}
+
+# Ends a turn that showed the session streaming (omp-data/busy) with the JSON string $1 for the
+# prompt with ID $2, then runs the inputs that waited behind it, in order.
+busy_end() {
+    # Stock OMP stops streaming before it emits agent_end, so a readback the end events trigger
+    # shows the session idle, unless follow-ups wait to run next.
+    [ -f "$dir/queued" ] || rm -f "$dir/busy"
+    finish "$1" "$2"
+    rm -f "$dir/busy"
+    if [ -f "$dir/queued" ]; then
+        mv "$dir/queued" "$dir/queued.run"
+        while IFS= read -r next; do
+            nid=$(printf '%s' "$next" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            turn "$next" "$nid"
+        done < "$dir/queued.run"
+        rm -f "$dir/queued.run"
+    fi
 }
 
 # Ends a turn with the JSON string $1 as the final answer, for the prompt with ID $2. With

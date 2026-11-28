@@ -123,6 +123,14 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
     later turns not stored yet in the transcript again.
 22. If, before that turn ends, another user input or request enters the same transcript, the pending
     reply is abandoned (the answer would belong to mixed work) and the obligation stays open.
+    While the session works, a pending reply waits however long the turn runs, also when the
+    request is still queued behind it. A pending reply with no answer is abandoned the same way
+    only once both its hand-off and the session's last work (a turn running) are more than 30
+    minutes old. After an intake or daemon restart, the last-work time is seeded from the session
+    file's modification time, not the time of the restart. This approximates earlier work: a
+    resume that touches the file can grant an old request another 30-minute window. Earlier work
+    not reflected in that timestamp cannot be recovered; without a usable timestamp, only work
+    observed since the restart extends an old hand-off's wait.
 23. The daemon reads the answer from OMP's public surfaces (rpc-ui events or the session file) and
     confirms it is persisted in the transcript before posting. It never posts text it only saw in a
     transient event.
