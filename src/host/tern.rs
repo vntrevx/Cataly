@@ -604,13 +604,15 @@ impl Port {
     }
 
     /// A bridge hello for this session (EXT req. 3-5; HOST req. 94, 97). The first one binds the
-    /// identity; a reconnect must come from the same OMP process with the same session, and one
-    /// with another session ends the old identity.
+    /// identity; a reconnect must come from the same OMP process with the same session, unless
+    /// the hub authenticated a pending continuation by its reconnect key. Other session changes
+    /// end the old identity.
     pub(crate) fn attach(
         self: &Arc<Self>,
         hello: &Value,
         key: &str,
         tx: mpsc::Sender<Response>,
+        continuing: bool,
     ) -> Result<(), String> {
         let pid = hello
             .get("pid")
@@ -626,7 +628,9 @@ impl Port {
             if pid.is_none() || st.pid != pid {
                 return Err("a reconnect from another OMP process".into());
             }
-            if st.current.as_ref().map(|(id, _)| id.as_str()) != Some(session.as_str()) {
+            if !continuing
+                && st.current.as_ref().map(|(id, _)| id.as_str()) != Some(session.as_str())
+            {
                 drop(st);
                 self.record_stop(
                     "exited".into(),

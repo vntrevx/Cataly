@@ -1,7 +1,7 @@
 // Bridge tests (DESIGN 10.4): a fake OMP extension API and a fake hub connection. Run with
 // `bun test extension/`.
 import { expect, test } from "bun:test";
-import { bridge, type Deps, fingerprint, socketPath, type Wire } from "./cataly";
+import { bridge, type Bridge, type Deps, fingerprint, socketPath, type Wire } from "./cataly";
 import { ctxOf, fakePi, laneCtx, laneHub } from "./fakes";
 
 /** A fake hub: answers hello with `role`, tools with an echo, stop with a reminder. */
@@ -81,6 +81,176 @@ test("role none leaves the session inert", async () => {
 	expect(connects.n).toBe(1);
 	expect([...pi.handlers.keys()].sort()).toEqual(["session_start", "session_switch"]);
 	expect(pi.tools.length).toBe(0);
+});
+
+test.each(["session_switch", "session_branch", "session_tree"])("a switch replaces role tools and none clears authority without reconnecting (%s)", async event => {
+	const pi = fakePi();
+	// A delayed initial activation must not put the lead tool back after the role changes.
+	const activating = Promise.withResolvers<void>();
+	const activate = pi.setActiveTools;
+	let first = true;
+	pi.setActiveTools = async names => {
+		if (first) { first = false; await activating.promise; }
+		activate(names);
+	};
+	let session = "s1", role = "lead", closed = 0, retries = 0;
+	const connect: Deps["connect"] = async (_path, onLine, onClose) => ({
+		write(line) {
+			const msg = JSON.parse(line);
+			if (msg.method !== "bridge.hello" && msg.method !== "bridge.switch") return;
+			const ok = { role, key: "key", guidance: role, shell: role !== "none", pin: role === "lane" ? "fake/primary" : null,
+				tools: role === "none" ? [] : [{ name: `cataly_${role}`, parameters: { type: "object" } }] };
+			queueMicrotask(() => onLine(JSON.stringify({ id: msg.id, ok })));
+		},
+		close() { closed += 1; onClose(); },
+	});
+	const ctx = { ...ctxOf(pi), setTimeout: () => { retries += 1; return 0; } };
+	ctx.sessionManager.getSessionId = () => session;
+	const b = bridge(pi, { env: { CATALY_LAUNCH: "token" }, connect, uid: () => 1 });
+	await pi.emit("session_start", {}, ctx);
+	const leadTool = pi.tools[0];
+	role = "lane"; session = "lane-session";
+	await pi.emit(event, { reason: "resume" }, ctx);
+	activating.resolve();
+	await b.toolsActive;
+	expect(pi.active()).toEqual(["read", "bash", "cataly_lane"]);
+	expect(b.pin).toBe("fake/primary");
+	await expect(leadTool.execute("old-lead", {}, undefined, undefined, ctx)).rejects.toThrow("not available");
+	role = "lead"; session = "s1";
+	await pi.emit(event, { reason: "resume" }, ctx);
+	await b.toolsActive;
+	expect(pi.active()).toEqual(["read", "bash", "cataly_lead"]);
+	expect(b.pin).toBeUndefined();
+	expect(pi.tools.filter(t => t.name === "cataly_lead").length).toBe(1);
+	role = "none"; session = "unrelated";
+	await pi.emit(event, { reason: "resume" }, ctx);
+	await b.toolsActive;
+	expect(pi.active()).toEqual(["read", "bash"]);
+	expect([b.role, b.key, b.guidance, b.shell, b.wire]).toEqual(["none", undefined, "", false, undefined]);
+	expect(closed).toBe(1);
+	expect(retries).toBe(0);
+	expect(await pi.emit("before_agent_start", { systemPrompt: ["BASE"] }, ctx)).toBeUndefined();
+	await expect(leadTool.execute("after-none", {}, undefined, undefined, ctx)).rejects.toThrow("not available");
+});
+
+test.each(["lead", "lane"])("a copied transcript with the same ID is rechecked (%s)", async role => {
+	const pi = fakePi(), sent: any[] = [];
+	let file = "/s/s1.jsonl";
+	const ctx = ctxOf(pi);
+	ctx.sessionManager.getSessionFile = () => file;
+	const connect: Deps["connect"] = async (_path, onLine, onClose) => ({
+		write(line) {
+			const msg = JSON.parse(line);
+			sent.push(msg);
+			const reply = (ok: unknown) => queueMicrotask(() => onLine(JSON.stringify({ id: msg.id, ok })));
+			if (msg.method === "bridge.hello") reply({ role, key: "key", tern: true,
+				tools: [{ name: `cataly_${role}`, parameters: { type: "object" } }] });
+			if (msg.method === "bridge.switch") reply({ role: "none" });
+		},
+		close: onClose,
+	});
+	const b = bridge(pi, { env: { CATALY_LAUNCH: "token" }, connect, uid: () => 1 });
+	await pi.emit("session_start", {}, ctx);
+	await b.toolsActive;
+	expect(pi.active()).toContain(`cataly_${role}`);
+	await pi.emit("session_switch", { reason: "resume" }, ctx);
+	expect(sent.filter(m => m.method === "bridge.switch")).toEqual([]);
+	// OMP mutates the same session manager; reading the old context cannot recover its old path.
+	file = "/s/copied.jsonl";
+	await pi.emit("session_switch", { reason: "resume" }, ctx);
+	await b.toolsActive;
+	expect(sent.filter(m => m.method === "bridge.switch")).toMatchObject([
+		{ params: { session: "s1", file, reason: "resume" } },
+	]);
+	expect(b.role).toBe("none");
+	expect(pi.active()).toEqual(["read", "bash"]);
+	await expect(pi.tools[0].execute("copied", {}, undefined, undefined, ctx)).rejects.toThrow("not available");
+});
+
+test.each(["offline", "disconnect"])("a missing switch reply drops authority and cancels queued reconnects (%s)", async mode => {
+	const pi = fakePi();
+	let session = "s1", connections = 0;
+	let disconnect: (() => void) | undefined;
+	const retries: (() => void)[] = [];
+	const connect: Deps["connect"] = async (_path, onLine, onClose) => {
+		connections += 1;
+		disconnect = onClose;
+		return {
+			write(line) {
+				const msg = JSON.parse(line);
+				if (msg.method === "bridge.hello") queueMicrotask(() => onLine(JSON.stringify({ id: msg.id, ok: {
+					role: "lead", key: "old-key", tools: [{ name: "cataly_lead", parameters: { type: "object" } }],
+				} })));
+				if (msg.method === "bridge.switch") onClose();
+			},
+			close: onClose,
+		};
+	};
+	const ctx = { ...ctxOf(pi), setTimeout: (fn: () => void) => { retries.push(fn); return 0; } };
+	ctx.sessionManager.getSessionId = () => session;
+	const b = bridge(pi, { env: { CATALY_LAUNCH: "token" }, connect, uid: () => 1 });
+	await pi.emit("session_start", {}, ctx);
+	if (mode === "offline") disconnect?.();
+	session = "unrelated";
+	await pi.emit("session_switch", { reason: "resume" }, ctx);
+	await b.toolsActive;
+	expect([b.role, b.key, b.wire]).toEqual(["none", undefined, undefined]);
+	expect(pi.active()).toEqual(["read", "bash"]);
+	for (const retry of retries) retry();
+	expect(connections).toBe(1);
+	await expect(pi.tools[0].execute("after-lost-switch", {}, undefined, undefined, ctx)).rejects.toThrow("not available");
+});
+
+test.each(["lead", "lane"].flatMap(role => ["new", "fork", "session_branch"].flatMap(reason =>
+	["offline", "disconnect", "timeout"].map(mode => [role, reason, mode] as const))))(
+"a lost continuation reply is replayed before buffered events (%s/%s/%s)", async (role, reason, mode) => {
+	const pi = fakePi(), sent: any[] = [], retries: (() => void)[] = [];
+	const recovered = Promise.withResolvers<void>();
+	let session = "s1", connections = 0, disconnect = () => {};
+	let b: Bridge;
+	const welcome = { role, tern: true,
+		tools: [{ name: `cataly_${role}`, parameters: { type: "object" } }] };
+	const connect: Deps["connect"] = async (_path, onLine, onClose) => {
+		const connection = ++connections;
+		disconnect = onClose;
+		return {
+			write(line) {
+				const msg = JSON.parse(line);
+				sent.push({ ...msg, connection });
+				if (msg.method === "bridge.hello" || (msg.method === "bridge.switch" && connection > 1))
+					queueMicrotask(() => onLine(JSON.stringify({ id: msg.id, ok: { ...welcome, key: `key-${connection}` } })));
+				else if (msg.method === "bridge.switch") {
+					if (mode === "timeout") queueMicrotask(() => b.pending.get(msg.id)?.(undefined));
+					else onClose();
+				}
+				if (connection > 1 && msg.method === "bridge.event" && msg.params.kind === "snapshot") recovered.resolve();
+			},
+			close: onClose,
+		};
+	};
+	const ctx = { ...ctxOf(pi), setTimeout: (fn: () => void) => { retries.push(fn); return 0; } };
+	ctx.sessionManager.getSessionId = () => session;
+	ctx.sessionManager.getSessionFile = () => `/s/${session}.jsonl`;
+	b = bridge(pi, { env: { CATALY_LAUNCH: "token" }, connect, uid: () => 1 });
+	await pi.emit("session_start", {}, ctx);
+	if (mode === "offline") disconnect();
+	session = "continued";
+	pi.entries.length = 0; // The new branch has no marker until its switch is accepted.
+	await pi.emit(reason === "session_branch" ? reason : "session_switch", { reason }, ctx);
+	await b.toolsActive;
+	expect([b.role, b.key, b.wire]).toEqual([role, "key-1", undefined]);
+	expect(pi.active()).toContain(`cataly_${role}`);
+	b.event("while-offline");
+	expect(retries.length).toBeGreaterThan(0);
+	retries.shift()?.();
+	await recovered.promise;
+	await b.toolsActive;
+	const replay = sent.filter(m => m.connection === 2);
+	expect(replay[0].params).toMatchObject({ key: "key-1", session, continuation: reason });
+	expect(replay[1]).toMatchObject({ method: "bridge.switch", params: { session, file: "/s/continued.jsonl", reason } });
+	expect(replay.slice(2).some(m => m.params.kind === "while-offline")).toBe(true);
+	expect([b.role, b.key]).toEqual([role, "key-2"]);
+	expect(pi.entries.some(e => e.customType === "cataly")).toBe(true);
 });
 
 test("events are buffered while disconnected, oldest dropped first", () => {

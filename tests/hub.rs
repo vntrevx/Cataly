@@ -9,6 +9,9 @@
 
 mod support;
 
+#[path = "hub/bridge.rs"]
+mod bridge;
+
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::time::Duration;

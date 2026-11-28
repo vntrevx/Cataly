@@ -58,6 +58,98 @@ fn bind(db: &mut Connection, handle: &str, id: &str, now: i64) {
 }
 
 #[test]
+fn a_continued_identity_moves_the_anchor_and_its_pin_together() {
+    let mut db = database();
+    attempt(&mut db, "lead", "fresh", 1);
+    bind(&mut db, "lead", "original", 2);
+    let tx = db.transaction().unwrap();
+    continued(
+        &tx,
+        &SessionUpdate {
+            handle: "lead".into(),
+            session_id: Some("fork".into()),
+            session_file: Some("/sessions/fork.jsonl".into()),
+            ..SessionUpdate::default()
+        },
+        3,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let reads = Reads(db);
+    for pin in [None, Some("fork")] {
+        let selected = reads.lead_target(pin).unwrap();
+        assert!(selected.hold.is_none(), "{selected:?}");
+        let row = selected.row.unwrap();
+        assert_eq!(row.session_id.as_deref(), Some("fork"));
+        assert_eq!(row.session_file.as_deref(), Some("/sessions/fork.jsonl"));
+    }
+}
+
+#[test]
+fn a_moved_identity_keeps_binding_history_unambiguous() {
+    let mut db = database();
+    attempt(&mut db, "old", "fresh", 1);
+    bind(&mut db, "old", "original", 2);
+    attempt(&mut db, "current", "resume", 3);
+    bind(&mut db, "current", "original", 4);
+    let tx = db.transaction().unwrap();
+    continued(
+        &tx,
+        &SessionUpdate {
+            handle: "current".into(),
+            session_id: Some("original".into()),
+            session_file: Some("/moved/original.jsonl".into()),
+            ..SessionUpdate::default()
+        },
+        5,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    // The moved identity must remain selectable after a later fresh launch, not look like two files.
+    attempt(&mut db, "fresh", "fresh", 6);
+    bind(&mut db, "fresh", "other", 7);
+    let selected = Reads(db).lead_target(Some("original")).unwrap();
+    assert!(selected.hold.is_none(), "{selected:?}");
+    let row = selected.row.unwrap();
+    assert_eq!(row.handle, "current");
+    assert_eq!(row.session_file.as_deref(), Some("/moved/original.jsonl"));
+}
+
+#[test]
+fn a_continuation_preserves_launch_ownership_evidence() {
+    let mut db = database();
+    attempt(&mut db, "lead", "fresh", 1);
+    bind(&mut db, "lead", "original", 2);
+    let evidence = |db: &Connection| -> (String, String, i64) {
+        db.query_row(
+            "SELECT runtime, provenance, bound_ms FROM lead_bindings WHERE handle = 'lead'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+    };
+    let before = evidence(&db);
+    let tx = db.transaction().unwrap();
+    continued(
+        &tx,
+        &SessionUpdate {
+            handle: "lead".into(),
+            session_id: Some("fork".into()),
+            session_file: Some("/sessions/fork.jsonl".into()),
+            ..SessionUpdate::default()
+        },
+        3,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        evidence(&db),
+        before,
+        "a continuation is not a new verified launch"
+    );
+}
+
+#[test]
 fn failed_attempt_and_retention_never_replace_the_anchor() {
     let mut db = database();
     attempt(&mut db, "bound", "fresh", 1);

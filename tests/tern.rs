@@ -320,6 +320,151 @@ fn tern_lead_is_opened_in_a_block_and_controlled_through_the_bridge() {
         .status();
 }
 
+/// Returning from a lane restores the original terminal port, including remote delivery.
+#[test]
+fn a_return_to_the_tern_lead_reattaches_its_port() {
+    let (hub, work) = tern_hub(None);
+    let block = block_of(&hub);
+    let token = block["token"].as_str().unwrap();
+    let pid = block["pid"].as_u64().unwrap();
+    let file = work.join("s1.jsonl");
+    std::fs::write(&file, "").unwrap();
+    let file = std::fs::canonicalize(file).unwrap();
+    let mut bridge = Bridge::connect(&hub.socket());
+    assert_eq!(bridge.accept(&hello(token, "s1", &file, pid))["tern"], true);
+    hub.until(Duration::from_secs(20), || {
+        let status = hub.json(&["lead", "status", "--json"]);
+        (status["phase"] == "live" && status["sent"] == 0 && status["waiting"] == 0).then_some(())
+    });
+
+    // Keep the live lead in Tern; the destination lane has no terminal port of its own.
+    hub.write_config(&format!(
+        "[omp]\npath = \"{}\"\n[sessions]\nruntime = \"headless\"\ntern = \"{}\"\n\
+         [lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n\
+         [lanes]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        hub.root.join("bin/omp").display(),
+        hub.root.join("bin/tern").display(),
+        work.display(),
+        work.display(),
+    ));
+    assert!(hub.cli(&["config", "reload"]).status.success());
+    let params = json!({"key":"switch-lane","title":"Switch lane","brief":"Inspect only.",
+        "look_only":true,"checks":[{"kind":"command","argv":["true"]}]})
+    .to_string();
+    hub.json(&["lane", "open", "--params", &params, "--json"]);
+    let lane = hub.until(Duration::from_secs(20), || {
+        let lanes = hub.json(&["lane", "list", "--json"]);
+        lanes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|lane| lane["session_id"].is_string())
+            .cloned()
+    });
+    let away = bridge.request(
+        "bridge.switch",
+        &json!({
+            "session": lane["session_id"], "file": lane["session_file"], "reason": "resume",
+        }),
+    );
+    assert_eq!(away["role"], "lane", "{away}");
+    assert_eq!(away["tern"], false, "{away}");
+    let back = bridge.request(
+        "bridge.switch",
+        &json!({
+            "session": "s1", "file": file, "reason": "resume",
+        }),
+    );
+    assert_eq!(back["role"], "lead", "{back}");
+    assert_eq!(back["tern"], true, "{back}");
+
+    let idle = json!({"idle":true,"session":"s1","file":file});
+    let mut sending = hub
+        .command(&["lead", "send", "after return"])
+        .spawn()
+        .unwrap();
+    // Lane notifications may arrive before the owner's message; confirm every delivery.
+    let started = Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the owner's message was not delivered after returning to the lead"
+        );
+        let cmd = bridge.command(&idle);
+        assert_eq!(cmd["op"], "deliver", "{cmd}");
+        assert_eq!(cmd["session"], "s1", "{cmd}");
+        let text = cmd["text"].as_str().unwrap();
+        let owner_message = text.contains("after return");
+        write_entry(&file, text, cmd["id"].as_str().unwrap());
+        bridge.reply(&cmd, json!({"sent":true}));
+        bridge.event("s1", "agent_start", &json!({}));
+        bridge.event("s1", "agent_end", &json!({"will_continue":false}));
+        if owner_message {
+            break;
+        }
+    }
+    assert!(sending.wait().unwrap().success());
+    hub.until(Duration::from_secs(20), || {
+        let status = hub.json(&["lead", "status", "--json"]);
+        (status["sent"] == 0 && status["waiting"] == 0).then_some(())
+    });
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
+}
+
+#[test]
+fn a_pending_continuation_reconnects_before_replaying_its_switch() {
+    let (hub, work) = tern_hub(None);
+    let block = block_of(&hub);
+    let token = block["token"].as_str().unwrap();
+    let pid = block["pid"].as_u64().unwrap();
+    let file = work.join("s1.jsonl");
+    std::fs::write(&file, "").unwrap();
+    let file = std::fs::canonicalize(file).unwrap();
+    let mut bridge = Bridge::connect(&hub.socket());
+    let mut key = bridge.accept(&hello(token, "s1", &file, pid))["key"].clone();
+    hub.until(Duration::from_secs(20), || {
+        (hub.json(&["lead", "status", "--json"])["phase"] == "live").then_some(())
+    });
+    for (reason, reached_hub) in [("new", false), ("fork", true), ("session_branch", false)] {
+        let file = work.join(format!("{reason}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+        let file = std::fs::canonicalize(file).unwrap();
+        let change = json!({"session":reason,"file":file,"reason":reason});
+        if reached_hub {
+            assert_eq!(bridge.request("bridge.switch", &change)["role"], "lead");
+        }
+        drop(bridge);
+        // A continuation hint never exempts the reconnect from its process check.
+        let mut other = Bridge::connect(&hub.socket());
+        let refused = other.request(
+            "bridge.hello",
+            &json!({
+                "ext":1,"key":key,"session":reason,"file":file,"pid":pid + 7,
+                "agent":"main","continuation":reason,
+            }),
+        );
+        assert_eq!(refused["role"], "none", "{refused}");
+        bridge = Bridge::connect(&hub.socket());
+        let welcome = bridge.request(
+            "bridge.hello",
+            &json!({
+                "ext":1,"key":key,"session":reason,"file":file,"pid":pid,
+                "agent":"main","continuation":reason,"idle":true,"model":"fake/primary",
+                "model_resolution_version":1,
+            }),
+        );
+        assert_eq!(welcome["role"], "lead", "{welcome}");
+        assert_eq!(welcome["tern"], true, "{welcome}");
+        key = welcome["key"].clone();
+        assert_eq!(bridge.request("bridge.switch", &change)["role"], "lead");
+    }
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
+}
+
 /// A compaction's recap waits for a delivery still in flight to the lead, whose reply only the
 /// bridge connection reads: 0.2.2 waited for the recap on that connection, read nothing more, and
 /// the delivery was in doubt after 10 s (CI, slow Intel macOS, on the first wake after a start).

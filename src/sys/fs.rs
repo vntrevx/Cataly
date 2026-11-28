@@ -47,6 +47,24 @@ impl fmt::Display for FsError {
 
 impl std::error::Error for FsError {}
 
+/// Canonical identity of a file, including a fresh transcript not written yet. Only the final
+/// component may be absent: resolve its existing parent without creating a substitute file.
+pub(crate) fn canonical_file(file: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(file) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = file
+                .parent()
+                .ok_or_else(|| io::Error::other("file has no parent"))?;
+            let name = file
+                .file_name()
+                .ok_or_else(|| io::Error::other("file has no name"))?;
+            fs::canonicalize(parent).map(|parent| parent.join(name))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Creates `path` (and missing parents) and checks that the final directory is the owner's, not a
 /// symlink and has mode 0700 or stricter. Every folder created here gets mode 0700 whatever the
 /// umask says.

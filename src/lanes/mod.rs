@@ -746,6 +746,37 @@ impl<R: Runtime> Lanes<R> {
         })
     }
 
+    /// Persist the continuing conversation before the bridge acknowledges its switch (EXT req. 8).
+    pub(crate) async fn continue_session(
+        &self,
+        handle: &str,
+        session: &str,
+        file: &str,
+    ) -> Result<(), String> {
+        let key = self
+            .key_of(handle)
+            .await
+            .ok_or("no lane holds this session")?;
+        let _turn = self.turn(&key).await?;
+        let (mut rec, rev) = self.load(&key).await?;
+        if !rec.open() || rec.handle.as_deref() != Some(handle) {
+            return Err("no open lane holds this session".into());
+        }
+        let file = if rec.worker.is_none() {
+            crate::sys::fs::canonical_file(std::path::Path::new(file))
+                .map_err(|error| error.to_string())?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| "session transcript path is not UTF-8")?
+        } else {
+            file.into()
+        };
+        rec.session_id = Some(session.into());
+        rec.session_file = Some(file);
+        self.save(&rec, Some(rev), None).await?;
+        Ok(())
+    }
+
     /// The handle of the open lane whose session this is (a worker's parent, EXT req. 9).
     pub(crate) async fn handle_of_session(&self, session: &str) -> Option<String> {
         if session.is_empty() {

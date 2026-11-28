@@ -1,6 +1,6 @@
 //! The hub side of the bridge link (DESIGN 3.5, 8; EXT req. 3-5, 10-18, 41): a control connection
 //! whose first request is `bridge.hello` becomes a bridge connection. The hub assigns the role by
-//! launch token, reconnect key or the lead's session identity; anything else is told `none` and
+//! launch token, reconnect key or a known session identity; anything else is told `none` and
 //! stays inert. Over an accepted connection the bridge sends events, tool calls and the stop
 //! question; the hub sends heartbeats and answers. Headless sessions are never controlled from here.
 //!
@@ -90,7 +90,12 @@ fn lane_tool() -> Value {
 
 /// Who the hello is, if anyone: the session handle and role, and whether the hub launched it on a
 /// new conversation. A reconnect, a resume and a resume by hand continue one.
-async fn decide(hub: &Hub, hello: &Hello) -> Result<(String, Role, bool), String> {
+async fn decide(
+    hub: &Hub,
+    hello: &Hello,
+    raw: &Value,
+    worker: Option<&str>,
+) -> Result<(String, Role, bool), String> {
     if hello.ext != PROTOCOL {
         return Err(format!(
             "bridge protocol {} where this hub speaks {PROTOCOL}; install the matching bridge",
@@ -121,13 +126,139 @@ async fn decide(hub: &Hub, hello: &Hello) -> Result<(String, Role, bool), String
     }
     // A resume by hand carries the marker; the hub decides by the session's identity (EXT-02).
     if hello.marker
-        && let Some(s) = hub.lead.snapshot()
-        && !hello.session.is_empty()
-        && s.session_id.as_deref() == Some(hello.session.as_str())
+        && let Some((handle, role)) = switched(hub, raw, worker).await
     {
-        return Ok((s.handle.clone(), Role::Lead, false));
+        return Ok((handle, role, false));
     }
     Err("not a session of this hub".into())
+}
+
+/// A resume or tree move carries no authority from the previous conversation (EXT req. 8).
+/// Match both the ID and transcript before forwarding the transition to the terminal port.
+async fn switched(hub: &Hub, params: &Value, worker: Option<&str>) -> Option<(String, Role)> {
+    let id = params.get("session")?.as_str()?;
+    let raw_file = params.get("file")?.as_str()?;
+    if id.is_empty() || raw_file.is_empty() {
+        return None;
+    }
+    let session = id.to_string();
+    let from = worker.map(str::to_owned);
+    let local = worker.is_none();
+    let file = if local {
+        crate::sys::fs::canonical_file(std::path::Path::new(raw_file))
+            .ok()?
+            .into_os_string()
+            .into_string()
+            .ok()?
+    } else {
+        raw_file.to_string()
+    };
+    let (exact, moves) = hub
+        .store
+        .read(move |r| {
+            let same_file = |stored: &str| {
+                if local {
+                    crate::sys::fs::canonical_file(std::path::Path::new(stored))
+                        .is_ok_and(|path| path.to_str() == Some(file.as_str()))
+                } else {
+                    stored == file
+                }
+            };
+            let mut moves = Vec::new();
+            if local
+                && let Some(row) = r.lead_target(None)?.row
+                && row.session_id.as_deref() == Some(session.as_str())
+                && let Some(previous) = row.session_file
+            {
+                let known = (row.handle, Role::Lead);
+                if same_file(&previous) {
+                    return Ok((Some(known), Vec::new()));
+                }
+                moves.push((known, previous));
+            }
+            for row in r.lanes(true)? {
+                let Ok(rec) = serde_json::from_str::<crate::lanes::record::Record>(&row.record)
+                else {
+                    continue;
+                };
+                if rec.worker.as_deref() == from.as_deref()
+                    && rec.session_id.as_deref() == Some(session.as_str())
+                    && let (Some(handle), Some(previous)) = (rec.handle, rec.session_file)
+                {
+                    let known = (handle, Role::Lane);
+                    if same_file(&previous) {
+                        return Ok((Some(known), Vec::new()));
+                    }
+                    moves.push((known, previous));
+                }
+            }
+            Ok((None, moves))
+        })
+        .await
+        .ok()?;
+    if exact.is_some() {
+        return exact;
+    }
+    // Read headers only after exact matching failed, and only on the session's own machine.
+    for ((handle, role), previous) in moves {
+        let path = worker.map_or_else(
+            || raw_file.into(),
+            |w| crate::worker::remote_path(w, raw_file).into(),
+        );
+        if let Ok(Some(file)) =
+            crate::omp::transcript::verify_move(path, id.into(), previous.into()).await
+            && continue_session(hub, &handle, role, &json!({"session":id, "file":file})).await
+        {
+            return Some((handle, role));
+        }
+    }
+    None
+}
+
+/// A continuation is acknowledged only once its identity survives reconnects and restarts.
+async fn continue_session(hub: &Hub, handle: &str, role: Role, params: &Value) -> bool {
+    let (Some(session), Some(file)) = (
+        params
+            .get("session")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty()),
+        params
+            .get("file")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty()),
+    ) else {
+        return false;
+    };
+    let result = match role {
+        Role::Lead => {
+            let Ok(file) = crate::sys::fs::canonical_file(std::path::Path::new(file)) else {
+                return false;
+            };
+            let Ok(file) = file.into_os_string().into_string() else {
+                return false;
+            };
+            hub.store
+                .host(crate::store::host::HostWrite::ContinueLead(
+                    crate::store::host::SessionUpdate {
+                        handle: handle.into(),
+                        session_id: Some(session.into()),
+                        session_file: Some(file),
+                        ..crate::store::host::SessionUpdate::default()
+                    },
+                ))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        Role::Lane => hub.lanes.continue_session(handle, session, file).await,
+    };
+    if let Err(error) = &result {
+        log::warn(
+            "continued session identity not saved",
+            &[("handle", &handle), ("error", error)],
+        );
+    }
+    result.is_ok()
 }
 
 /// The root session a subagent's `parent` names: a session ID as sent, or (from a worker in its own
@@ -222,7 +353,17 @@ pub(crate) async fn serve<R, W>(
 {
     let raw = params.clone();
     let hello: Hello = serde_json::from_value(params).unwrap_or_default();
-    let decided = match decide(hub, &hello).await {
+    let continuing = matches!(
+        raw.get("continuation").and_then(Value::as_str),
+        Some("new" | "fork" | "session_branch")
+    ) && hello.token.as_deref().is_none_or(str::is_empty)
+        && hello.agent != "sub"
+        && hello
+            .key
+            .as_deref()
+            .and_then(|key| hub.links.by_key(key))
+            .is_some();
+    let decided = match decide(hub, &hello, &raw, worker).await {
         Ok((handle, role, fresh)) => placed(hub, &handle, role, worker)
             .await
             .map(|()| (handle, role, fresh)),
@@ -241,16 +382,17 @@ pub(crate) async fn serve<R, W>(
         }
         Ok((handle, role, fresh)) => match (!sub).then(|| hub.links.port(&handle)).flatten() {
             Some(port) => port
-                .attach(&raw, &key, tx.clone())
+                .attach(&raw, &key, tx.clone(), continuing)
                 .map(|()| (handle, role, fresh, Some(port))),
             None => Ok((handle, role, fresh, None)),
         },
         Err(e) => Err(e),
     };
-    let (handle, role, fresh, port) = match decided {
+    let (mut handle, mut role, fresh, mut port) = match decided {
         Ok(found) => found,
         Err(reason) => return refuse(hub, &mut writer, id, hello.ext != PROTOCOL, reason).await,
     };
+    let mut adopted_pid = None;
     if let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()) {
         // A process that started the hub (one of its ancestors) is the owner's environment, which
         // every owner command shares, not a session's: it is never placed in the session's role.
@@ -261,12 +403,13 @@ pub(crate) async fn serve<R, W>(
             .contains(&pid)
         {
             hub.links.adopt(pid, &handle, role);
+            adopted_pid = Some(pid);
         }
     }
     if !sub {
         hub.links.connect(&handle, role, &key, &hello.session);
     }
-    let role_name = if role == Role::Lane { "lane" } else { "lead" };
+    let mut active = true;
     let notes = crate::jobs::notes::Notes::new(&hub.paths.state_dir).exists();
     let mut answer = welcome(&key, sub, lane_pin.as_ref(), notes);
     if let (Some(_), Some(map)) = (&port, answer.as_object_mut()) {
@@ -300,6 +443,13 @@ pub(crate) async fn serve<R, W>(
         let Ok(request) = crate::proto::decode(&line) else {
             continue;
         };
+        if !active {
+            let reply = Response::err(request.id, code::BAD_REQUEST, "this session has no role");
+            if tx.send(reply).await.is_err() {
+                break;
+            }
+            continue;
+        }
         let form = terminal(port.as_ref(), &request);
         let method = request.method.clone();
         match method.as_str() {
@@ -337,14 +487,91 @@ pub(crate) async fn serve<R, W>(
                 let _ = tx.send(Response::ok(request.id, reply)).await;
             }
             "bridge.switch" => {
-                let switched = request.params.get("session").and_then(Value::as_str);
-                hub.links.observe(&handle, 0, switched, 0);
-                if let Some(s) = switched {
-                    session = s.to_string();
-                }
-                let _ = tx
-                    .send(Response::ok(request.id, json!({ "role": role_name })))
-                    .await;
+                let current = request
+                    .params
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let next = if current.is_empty() {
+                    None
+                } else if matches!(
+                    request.params.get("reason").and_then(Value::as_str),
+                    Some("new" | "fork" | "session_branch")
+                ) {
+                    (sub || continue_session(hub, &handle, role, &request.params).await)
+                        .then(|| (handle.clone(), role))
+                } else {
+                    switched(hub, &request.params, worker).await
+                };
+                let next = match next {
+                    Some((h, r)) if placed(hub, &h, r, worker).await.is_ok() => {
+                        let pin = if r == Role::Lane {
+                            hub.lanes.hello(&h).await
+                        } else {
+                            None
+                        };
+                        if r == Role::Lane && pin.is_none() {
+                            None
+                        } else {
+                            let target =
+                                (h != handle && !sub).then(|| hub.links.port(&h)).flatten();
+                            let attached = target.as_ref().is_none_or(|port| {
+                                let mut hello = raw.clone();
+                                if let Some(map) = hello.as_object_mut() {
+                                    map.insert("session".into(), json!(current));
+                                    if let Some(file) = request.params.get("file") {
+                                        map.insert("file".into(), file.clone());
+                                    }
+                                }
+                                port.attach(&hello, &key, tx.clone(), false).is_ok()
+                            });
+                            attached.then_some((h, r, pin, target))
+                        }
+                    }
+                    _ => None,
+                };
+                let answer = if let Some((next_handle, next_role, pin, target)) = next {
+                    if next_handle != handle {
+                        hub.links.revoke(&handle, &key, adopted_pid);
+                        if let Some(old) = port.take() {
+                            old.detach(&key);
+                        }
+                        handle = next_handle;
+                        role = next_role;
+                        port = target;
+                        if let Some(pid) = adopted_pid {
+                            hub.links.adopt(pid, &handle, role);
+                        }
+                        if !sub {
+                            hub.links.connect(&handle, role, &key, current);
+                            if port.is_none() {
+                                let mut hello = raw.clone();
+                                if let Some(map) = hello.as_object_mut() {
+                                    map.insert("session".into(), json!(current));
+                                }
+                                hub.links.open_query(&handle, &key, &hello, tx.clone());
+                            }
+                        }
+                    }
+                    current.clone_into(&mut session);
+                    hub.links.observe(&handle, 0, Some(&session), 0);
+                    if let Some(port) = &port {
+                        port.event(&request.params);
+                    }
+                    let mut answer = welcome(&key, sub, pin.as_ref(), notes);
+                    if let Some(map) = answer.as_object_mut() {
+                        map.insert("tern".into(), json!(port.is_some()));
+                    }
+                    answer
+                } else {
+                    active = false;
+                    hub.links.revoke(&handle, &key, adopted_pid);
+                    if let Some(old) = port.take() {
+                        old.detach(&key);
+                    }
+                    json!({ "role": "none" })
+                };
+                let _ = tx.send(Response::ok(request.id, answer)).await;
             }
             "bridge.shell" | "bridge.model" | "bridge.tool" | "bridge.stop" => {
                 answer_later(hub, &tx, (role, sub), (&handle, &session), request);
@@ -386,7 +613,7 @@ async fn refuse<W: AsyncWrite + Unpin>(
 }
 
 /// The terminal runtime's part of a bridge line (DESIGN 4.3): every line keeps the link alive,
-/// events and switches move the session, replies answer its commands, and a form is offered for
+/// events move the session (switches wait for the role decision), replies answer its commands, and a form is offered for
 /// mirroring; returns the form's answer.
 fn terminal(
     port: Option<&Arc<crate::host::tern::Port>>,
@@ -395,7 +622,7 @@ fn terminal(
     let port = port?;
     port.heard();
     match request.method.as_str() {
-        "bridge.event" | "bridge.switch" => port.event(&request.params),
+        "bridge.event" => port.event(&request.params),
         "bridge.reply" => port.reply(&request.params),
         "bridge.form" => return Some(port.form(&request.params)),
         _ => {}

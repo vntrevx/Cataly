@@ -2,6 +2,16 @@
 
 ## 0.2.9 (Unreleased)
 
+- Resuming another session in a Tern lead could keep the lead's tools. The bridge now checks the
+  destination's identity, revokes unrelated sessions' tools and CLI role, and restores terminal
+  control when returning to a known session. New sessions, forks and branch/btw continuations keep
+  their role and persist their new identity. Lost continuation replies are replayed on reconnect;
+  unrelated resumes drop the old tools and reconnect key. Returning lanes can reconnect by their
+  session marker, and a switch revokes only that connection's process role. Local transcript aliases
+  resolve to the same canonical path, and continuations retain the original launch ownership evidence.
+  Copied transcripts with an unchanged session ID are rechecked when their file path changes.
+  OMP transcript moves keep their role when the new header links back to the stored path.
+
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

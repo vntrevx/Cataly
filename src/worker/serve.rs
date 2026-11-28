@@ -920,6 +920,17 @@ fn transcript(worker: &Worker, name: &str, params: &Value) -> Result<Value, Stri
         };
         return Ok(json!({ "found": found, "reason": reason }));
     }
+    if let Some(previous) = params.get("previous").and_then(Value::as_str) {
+        let path = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        let previous = worker.confine(previous)?;
+        let moved = crate::omp::transcript::moved_from(&path, text("session"), &previous)
+            .map_err(|e| e.to_string())?;
+        return Ok(if moved {
+            json!({"file":path})
+        } else {
+            Value::Null
+        });
+    }
     let root = worker.confine(text("root"))?;
     let folder = match (params.get("exactly"), params.get("recorded")) {
         (Some(Value::String(dir)), _) => Folder::Exactly(PathBuf::from(dir)),

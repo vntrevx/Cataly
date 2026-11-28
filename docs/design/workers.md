@@ -97,6 +97,10 @@ one audited server, and `known_hosts`, keys and forced commands are standard, do
 | `find` / `verify` | The hub's delivery-marker search and resume check of a session file, run where the file is | 10 s |
 | `forget` | Remove this hub's line from `authorized_keys` | 5 s |
 
+- **Transcript moves.** `verify` also accepts `{path, session, previous}`: both paths are confined to
+  the worker root. A canonical alias or a matching session header's `previousSessionFiles` trace
+  returns `{file}` with the canonical destination; an unproven move returns `null`. The header check
+  uses the same 1 MiB limit as a reopen, on the worker rather than the hub.
 - **Attempt messages.** `spawn` params add `{"attempt": "<handle>", "session": "<id>" | null}`. Its
   answer is `{channel, pid, attempt, stderr}`. A failure after the attempt was recorded answers
   `{attempt, failed: "<reason>", state: <state>}` instead, so the hub knows whether a process existed.

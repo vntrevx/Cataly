@@ -82,6 +82,50 @@ pub(super) fn bound(
     Ok(done)
 }
 
+/// A continuation replaces the current anchor's identity, never a newer launch's anchor.
+/// The binding and session row move together, including selection by a configured session ID.
+/// The original launch's ownership provenance, runtime and binding time stay unchanged.
+pub(super) fn continued(
+    tx: &Transaction<'_>,
+    update: &SessionUpdate,
+    now: i64,
+) -> rusqlite::Result<HostDone> {
+    let (Some(id), Some(file)) = (&update.session_id, &update.session_file) else {
+        return Err(rusqlite::Error::InvalidQuery);
+    };
+    let changed = tx.execute(
+        "UPDATE lead_bindings SET session_id = ?2, session_file = ?3 WHERE handle = ?1 \
+         AND EXISTS(SELECT 1 FROM lead_anchor WHERE handle = ?1) \
+         AND NOT EXISTS(SELECT 1 FROM lead_bindings WHERE session_id = ?2 AND session_file <> ?3)",
+        params![update.handle, id, file],
+    )?;
+    if changed != 1 {
+        // A verified move keeps the ID. Relocate its earlier bindings too, so a later pin does
+        // not mistake launch history for multiple transcripts. Never touch another identity.
+        let previous: String = tx.query_row(
+            "SELECT session_file FROM lead_bindings WHERE handle = ?1 AND session_id = ?2 \
+             AND EXISTS(SELECT 1 FROM lead_anchor WHERE handle = ?1)",
+            params![update.handle, id],
+            |row| row.get(0),
+        )?;
+        let changed = tx.execute(
+            "UPDATE lead_bindings SET session_file = ?2 WHERE session_id = ?1 AND session_file = ?3 \
+             AND NOT EXISTS(SELECT 1 FROM lead_bindings WHERE session_id = ?1 \
+                 AND session_file NOT IN (?2, ?3))",
+            params![id, file, previous],
+        )?;
+        if changed == 0 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        tx.execute(
+            "UPDATE sessions SET session_file = ?2 WHERE session_id = ?1 AND session_file = ?3 \
+             AND handle IN (SELECT handle FROM lead_bindings WHERE session_id = ?1 AND session_file = ?2)",
+            params![id, file, previous],
+        )?;
+    }
+    super::update(tx, update, now)
+}
+
 /// Pins name a session ID, whose latest row per exact tuple is retained along with the current anchor.
 pub(super) fn maintain(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute(

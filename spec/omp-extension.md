@@ -139,9 +139,27 @@ logic can move to Rust, leaving the extension as a forwarder.
    carries the ID observed after the flush. If the flush fails, the extension does not connect and shows one
    warning.
 8. On session switch, branch move and tree move, the extension sends a transition event with the new session ID
-   and file. The daemon answers with the role for the new session (rule 4). A switch caused by the new-session
-   command keeps the previous role: the extension re-appends the marker to the fresh session and the daemon links
-   the new session ID to the same lane or lead record (lane-lifecycle requirement 38).
+   and file. The daemon answers with the role for the new session (rule 4). New-session and fork commands,
+   and session branches (including rewind and btw promotion), mint a continuing session and keep the previous
+   role: the extension re-appends the marker and the daemon links the new ID to the same lane or lead record
+   (lane-lifecycle requirement 38). Resumes and tree moves are resolved against the stored lead anchor or an
+   open lane's current session ID and transcript file, not the connection's previous role. Returning to a
+   terminal session, including a lane reached by its marker after an unrelated session, reattaches its port
+   only after the normal process-ID and session checks. An unrelated session loses its reconnect key, tools
+   and this connection's adopted process role; its CLI children remain unplaced, never owner. Other processes
+   of the same handle keep their roles. Subsequent calls on the old connection are refused. A missing reply
+   for a resume, tree or current move clears the extension's role and key and cancels queued reconnects.
+   A new/fork/branch continuation instead keeps its role pending and replays the switch after reconnecting,
+   before buffered events. Its hello identifies the pending continuation; only a valid reconnect key and
+   the same terminal process permit the new identity. The switch saves the lead binding or lane record
+   before acknowledging it. A changed session ID or transcript path sends a switch, including a copied
+   transcript whose session ID is unchanged. A same-ID file move is accepted only when the new transcript's
+   session header lists the stored path in `previousSessionFiles`; its new path is saved before the reply.
+   Copies without that trace remain unrelated. Local transcript paths are canonicalized for comparison and
+   storage, including a fresh file's existing parent before its first write; worker paths stay in the worker's
+   filesystem.
+   A continuation retains the binding's original runtime and ownership provenance. Accepted switches refresh
+   the terminal snapshot.
 9. Subagents: in the same process, a subagent's events carry agent kind "sub"; the extension sends them on the
    parent's connection, tagged with the subagent ID. A subagent running as a separate worker opens its own
    connection and its hello names the parent session ID from the session header; the daemon applies the parent's

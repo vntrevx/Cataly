@@ -205,6 +205,8 @@ pub(crate) enum HostWrite {
     Session(SessionUpdate),
     /// Validated lead binding and anchor advancement in one commit.
     BindLead(SessionUpdate),
+    /// A new/fork/branch identity of the current lead, without creating another launch attempt.
+    ContinueLead(SessionUpdate),
     LeadIntent(anchor::Intent),
     Episode(episode::Change),
     Admit(Admit),
@@ -332,6 +334,7 @@ pub(super) fn write(
         HostWrite::Record(row) => record(tx, row),
         HostWrite::Session(u) => update(tx, u, now),
         HostWrite::BindLead(u) => anchor::bound(tx, u, now),
+        HostWrite::ContinueLead(u) => anchor::continued(tx, u, now),
         HostWrite::LeadIntent(i) => anchor::intent(tx, *i),
         HostWrite::Episode(change) => episode::write(tx, change, now),
         HostWrite::Admit(a) => admit(tx, a, now).map(HostDone::Admitted),

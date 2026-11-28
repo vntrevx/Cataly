@@ -232,10 +232,11 @@ impl Placement {
             log::debug("control caller ancestry incomplete", &[("pid", &pid)]);
         }
         Self(match hub.links.place(&chain.pids) {
-            Some((_, Role::Lead)) => Some(Authority::Lead),
-            Some((handle, Role::Lane)) => Some(Authority::Lane(
+            Some((_, Some(Role::Lead))) => Some(Authority::Lead),
+            Some((handle, Some(Role::Lane))) => Some(Authority::Lane(
                 hub.lanes.key_of(&handle).await.unwrap_or(handle),
             )),
+            Some((_, None)) => Some(Authority::Unplaced),
             None => None,
         })
     }
@@ -469,6 +470,13 @@ mod tests {
             0o600
         );
         drop(second);
+    }
+
+    #[test]
+    fn revoked_session_processes_never_fall_back_to_owner() {
+        let revoked = Placement(Some(Authority::Unplaced));
+        assert!(matches!(revoked.authority(false), Authority::Unplaced));
+        assert!(matches!(revoked.authority(true), Authority::Unplaced));
     }
 
     #[tokio::test]

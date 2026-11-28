@@ -260,6 +260,77 @@ fn real(path: &Path) -> Result<PathBuf> {
     Ok(fs::canonicalize(path)?)
 }
 
+/// A canonical alias or OMP moveTo's header trace identifies the same transcript, not a copy.
+/// The old file may be gone; its existing parent still resolves directory aliases.
+pub(crate) fn moved_from(path: &Path, session: &str, previous: &Path) -> Result<bool> {
+    let canonical = crate::sys::fs::canonical_file(previous).ok();
+    let previous = canonical.as_deref().unwrap_or(previous);
+    if path == previous {
+        return Ok(true);
+    }
+    let mut file = read_only(path)?;
+    let info = file.metadata()?;
+    if !info.is_file()
+        || info.uid() != rustix::process::getuid().as_raw()
+        || info.nlink() != 1
+        || info.mode() & 0o002 != 0
+    {
+        return Err(TranscriptError::Verification(VerificationCheck::FileSafety));
+    }
+    if info.len() > FILE_LIMIT {
+        return Err(TranscriptError::TooLarge);
+    }
+    let Some(head) = header(&mut file, REOPEN_HEADER_BYTES)? else {
+        return Ok(false);
+    };
+    if head.get("id").and_then(Value::as_str) != Some(session) {
+        return Ok(false);
+    }
+    Ok(head
+        .get("previousSessionFiles")
+        .and_then(Value::as_array)
+        .is_some_and(|files| {
+            files
+                .iter()
+                .filter_map(Value::as_str)
+                .map(Path::new)
+                .any(|old| {
+                    old == previous
+                        || (old.is_absolute()
+                            && crate::sys::fs::canonical_file(old).is_ok_and(|old| old == previous))
+                })
+        }))
+}
+
+/// Checks a relocation on the file's machine and returns its canonical destination, if proven.
+pub(crate) async fn verify_move(
+    path: PathBuf,
+    session: String,
+    previous: PathBuf,
+) -> Result<Option<PathBuf>> {
+    if let Some((worker, file)) = crate::worker::split_remote(&path) {
+        let previous = crate::worker::split_remote(&previous)
+            .map_or(previous.as_path(), |(_, file)| Path::new(file));
+        let link = crate::worker::link::connect(worker)
+            .await
+            .map_err(TranscriptError::Io)?;
+        let answer = link
+            .verify(serde_json::json!({"path":file, "session":session, "previous":previous}))
+            .await
+            .map_err(TranscriptError::Io)?;
+        return Ok(answer
+            .get("file")
+            .and_then(Value::as_str)
+            .map(PathBuf::from));
+    }
+    tokio::task::spawn_blocking(move || {
+        let path = real(&path)?;
+        Ok(moved_from(&path, &session, &previous)?.then_some(path))
+    })
+    .await
+    .map_err(|e| TranscriptError::Io(format!("move verification task: {e}")))?
+}
+
 /// `file` lies below `root` (not equal to it) without `..` or root components.
 fn strictly_inside(root: &Path, file: &Path) -> bool {
     file.strip_prefix(root).is_ok_and(|rel| {
@@ -1130,6 +1201,44 @@ fn children(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> std::result::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_trace_names_both_the_session_and_previous_file() {
+        let scratch = crate::sys::fs::tests::scratch("move-trace");
+        let dir = fs::canonicalize(&scratch).unwrap();
+        let previous = dir.join("old.jsonl");
+        let path = dir.join("new.jsonl");
+        for (head, expected) in [
+            (serde_json::json!({"type":"session", "id":"same"}), false),
+            (
+                serde_json::json!({"type":"session", "id":"other", "previousSessionFiles":[previous]}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"session", "id":"same", "previousSessionFiles":["/unrelated.jsonl"]}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"session", "id":"same", "previousSessionFiles":previous}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"message", "id":"same", "previousSessionFiles":[previous]}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"session", "id":"same", "previousSessionFiles":[previous]}),
+                true,
+            ),
+        ] {
+            fs::write(&path, format!("{{\"type\":\"title\"}}\n{head}\n")).unwrap();
+            assert_eq!(
+                moved_from(&path, "same", &previous).unwrap(),
+                expected,
+                "{head}"
+            );
+        }
+    }
 
     #[test]
     fn replies_follow_the_turn_a_request_started() {

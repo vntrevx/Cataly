@@ -81,7 +81,7 @@ fn port() -> (Arc<Port>, oneshot::Receiver<()>) {
 async fn bound(answer: impl Fn(&Value) -> Value + Send + 'static) -> (Session, Seen) {
     let (port, attached) = port();
     let (seen, tx) = fake_bridge(&port, answer);
-    port.attach(&hello("s1", 42), "k1", tx).unwrap();
+    port.attach(&hello("s1", 42), "k1", tx, false).unwrap();
     attached.await.unwrap();
     let started = port.bind(&spec("t1", None)).await.unwrap();
     assert_eq!(
@@ -416,10 +416,18 @@ async fn a_silent_link_is_lost_after_45_s_and_the_same_process_restores_it() {
     assert!(session.snapshot().reason.clone().unwrap().contains("lost"));
     // Another process with the same token's session is refused.
     let (tx, _rx) = mpsc::channel(4);
-    assert!(session.port.attach(&hello("s1", 99), "k2", tx).is_err());
+    assert!(
+        session
+            .port
+            .attach(&hello("s1", 99), "k2", tx, false)
+            .is_err()
+    );
     // The same process with the same session restores it (check 5).
     let (_, tx) = fake_bridge(&session.port, |_| json!({}));
-    session.port.attach(&hello("s1", 42), "k3", tx).unwrap();
+    session
+        .port
+        .attach(&hello("s1", 42), "k3", tx, false)
+        .unwrap();
     let (_, restored) = events.recv().await.unwrap();
     assert_eq!(restored, SessionEvent::LinkRestored);
     assert_eq!(session.snapshot().status, Status::Idle);
@@ -427,7 +435,12 @@ async fn a_silent_link_is_lost_after_45_s_and_the_same_process_restores_it() {
     // The same process back with another session: a new identity, the old one is ended.
     session.port.detach("k3");
     let (tx, _rx) = mpsc::channel(4);
-    assert!(session.port.attach(&hello("s2", 42), "k4", tx).is_err());
+    assert!(
+        session
+            .port
+            .attach(&hello("s2", 42), "k4", tx, false)
+            .is_err()
+    );
     assert!(!session.alive());
 }
 
@@ -458,8 +471,13 @@ async fn a_detached_terminal_process_exit_emits_a_confirmed_stop() {
     let (port, attached) = port();
     *port.ownership.lock().unwrap() = Some(owner);
     let (_seen, tx) = fake_bridge(&port, |_| json!({}));
-    port.attach(&hello("s1", u64::from(child.pid().unwrap())), "owned", tx)
-        .unwrap();
+    port.attach(
+        &hello("s1", u64::from(child.pid().unwrap())),
+        "owned",
+        tx,
+        false,
+    )
+    .unwrap();
     attached.await.unwrap();
     port.bind(&spec("t1", None)).await.unwrap();
     let mut states = port.snapshot.subscribe();
@@ -526,7 +544,7 @@ async fn a_failed_terminal_open_does_not_claim_no_writer_was_spawned() {
 async fn a_suffixed_selector_verifies_and_an_old_bridge_is_unverified_at_once() {
     let (current, attached) = port();
     let (_seen, tx) = fake_bridge(&current, |_| json!({}));
-    current.attach(&hello("s1", 42), "k1", tx).unwrap();
+    current.attach(&hello("s1", 42), "k1", tx, false).unwrap();
     attached.await.unwrap();
     let mut high = spec("t1", None);
     high.model = "fake/primary:high".into();
@@ -535,7 +553,7 @@ async fn a_suffixed_selector_verifies_and_an_old_bridge_is_unverified_at_once() 
 
     let (old, attached) = port();
     let (seen, tx) = fake_bridge(&old, |_| json!({}));
-    old.attach(&old_hello("s1", 42), "k1", tx).unwrap();
+    old.attach(&old_hello("s1", 42), "k1", tx, false).unwrap();
     attached.await.unwrap();
     let held = old.bind(&high).await.unwrap().held.unwrap();
     assert!(
