@@ -581,8 +581,9 @@ fn decide(
                 |id| format!("#{name} {id}"),
             )
         };
+        let ops_unset = discord::ops_unset(planned);
         let settled = match (d.lead, d.ops) {
-            (Some(lead), Some(ops)) => {
+            (Some(lead), ops) if ops.is_some() || !ops_unset => {
                 discord::config_text(planned, String::new(), d, lead, ops).is_empty()
             }
             _ => false,
@@ -592,7 +593,11 @@ fn decide(
             format!(
                 "{} for the lead, {} for job notices",
                 shown(discord::LEAD, d.lead),
-                shown(discord::OPS, d.ops)
+                if ops_unset {
+                    shown(discord::OPS, d.ops)
+                } else {
+                    format!("the configured {} destination", discord::OPS)
+                }
             ),
             !settled,
         ));
@@ -768,6 +773,11 @@ fn service(
     } else {
         "systemd user service"
     };
+    // An explicit off is remembered, so a plain re-run does not turn the service back on.
+    let record = flag.is_some_and(|on| on != planned.setup.service);
+    if let Some(on) = flag.filter(|_| record) {
+        text = set_rendered(&text, "setup", "service", &on.to_string());
+    }
     let step = match (flag, exists, installed) {
         (Some(false), true, _) => {
             items.push(Item::new(
@@ -778,11 +788,20 @@ fn service(
             ServiceStep::Disable(layout)
         }
         (Some(false), false, _) => {
-            items.push(Item::new("service", "off", false));
+            let value = if record { "off (remembered)" } else { "off" };
+            items.push(Item::new("service", value, record));
             ServiceStep::Keep
         }
         (_, true, _) => {
-            items.push(Item::new("service", format!("on ({manager})"), false));
+            items.push(Item::new("service", format!("on ({manager})"), record));
+            ServiceStep::Keep
+        }
+        (None, false, true) if !planned.setup.service => {
+            items.push(Item::new(
+                "service",
+                "off (you turned it off; `cataly setup --service on` turns it on)",
+                false,
+            ));
             ServiceStep::Keep
         }
         (_, false, true) => {
@@ -849,7 +868,7 @@ fn apply(
 ) -> Result<String, Failure> {
     let mut text = decided.text.clone();
     if let Some(d) = &mut decided.discord {
-        let (lead, ops) = block_on(d.create_missing()).map_err(Failure::Refused)?;
+        let (lead, ops) = block_on(d.create_missing(planned)).map_err(Failure::Refused)?;
         text = discord::config_text(planned, text, d, lead, ops);
         if let Some(v) = &decided.voice {
             text = super::setup_voice::apply(v, d, text).map_err(Failure::Refused)?;
@@ -965,16 +984,17 @@ pub(super) fn load(paths: &Paths) -> Result<(Snapshot, String), Failure> {
     Ok((before, text))
 }
 
-/// Writes one setting outside a setup run (`cataly service enable` pins `[omp] path`), under the same
-/// snapshot, validity, atomic-write and read-back rules.
+/// Writes one setting, already rendered as TOML, outside a setup run (`cataly service enable` pins
+/// `[omp] path` and sets `[setup] service` back to `true`), under the same snapshot, validity,
+/// atomic-write and read-back rules.
 pub(super) fn write_one(
     paths: &Paths,
     section: &str,
     key: &str,
-    value: &str,
+    rendered: &str,
 ) -> Result<(), String> {
     file::edit(&paths.config_file, NEW_FILE, |text| {
-        Ok(set_key(text, section, key, value))
+        Ok(set_rendered(text, section, key, rendered))
     })
     .map(drop)
 }

@@ -70,15 +70,22 @@ impl fmt::Display for Version {
     }
 }
 
-/// Environment for OMP children beyond the runner's pass-through list: notifications off, and the
-/// documented profile overrides when the hub itself was given them (isolated tests, contract suite).
+/// Environment for OMP children beyond the runner's pass-through list: notifications off, profile
+/// overrides and absolute XDG config/state/data homes from the hub's environment. Empty or relative
+/// XDG homes are ignored, as they are when resolving the hub's own paths.
 pub(crate) fn child_env() -> Vec<(&'static str, String)> {
-    let mut env = vec![("PI_NOTIFICATIONS", "off".to_string())];
+    child_env_with(|key| std::env::var(key).ok())
+}
+
+fn child_env_with(lookup: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, String)> {
+    let mut env = Vec::with_capacity(6);
+    env.push(("PI_NOTIFICATIONS", "off".to_string()));
     for key in ["PI_CODING_AGENT_DIR", "PI_CONFIG_DIR"] {
-        if let Ok(value) = std::env::var(key) {
+        if let Some(value) = lookup(key) {
             env.push((key, value));
         }
     }
+    env.extend(crate::sys::xdg_homes(&lookup));
     env
 }
 
@@ -240,6 +247,58 @@ mod tests {
         assert!(resolve("/nonexistent/omp").is_none());
         assert!(resolve("sh").is_some());
         assert!(resolve("cataly-no-such-tool").is_none());
+    }
+
+    #[tokio::test]
+    async fn launched_omp_child_keeps_absolute_xdg_homes() {
+        use crate::sys::command::{KILL_GRACE, Output, Spec, run};
+
+        let values = child_env_with(|key| {
+            match key {
+                "XDG_CONFIG_HOME" => Some("/h/config home"),
+                "XDG_STATE_HOME" => Some("/h/state"),
+                "XDG_DATA_HOME" => Some("/h/data"),
+                "PI_CODING_AGENT_DIR" => Some("/h/agent"),
+                "PI_CONFIG_DIR" => Some("relative-pi-config"),
+                "XDG_CACHE_HOME" | "XDG_RUNTIME_DIR" | "CATALY_TEST_SECRET" => Some("not-passed"),
+                _ => None,
+            }
+            .map(str::to_string)
+        });
+        let env: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        // The stand-in for OMP reports its actual environment after the runner clears the parent.
+        let argv = [
+            "/bin/sh".to_string(),
+            "-c".into(),
+            r#"printf '%s\n' "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$PI_CODING_AGENT_DIR" "$PI_CONFIG_DIR" "$PI_NOTIFICATIONS" "${XDG_CACHE_HOME-unset}" "${XDG_RUNTIME_DIR-unset}" "${CATALY_TEST_SECRET-unset}""#.into(),
+        ];
+        let done = run(&Spec {
+            argv: &argv,
+            cwd: None,
+            env: &env,
+            timeout: Duration::from_secs(5),
+            kill_grace: KILL_GRACE,
+            output_cap: 1024,
+            output: Output::Capture,
+        })
+        .await
+        .unwrap();
+        assert!(done.success(), "{done:?}");
+        assert_eq!(
+            done.stdout,
+            b"/h/config home\n/h/state\n/h/data\n/h/agent\nrelative-pi-config\noff\nunset\nunset\nunset\n"
+        );
+    }
+
+    #[test]
+    fn omp_child_ignores_unset_empty_and_relative_xdg_homes() {
+        for value in [None, Some(""), Some("relative"), Some("~/config")] {
+            let env = child_env_with(|key| match key {
+                "XDG_CONFIG_HOME" | "XDG_STATE_HOME" | "XDG_DATA_HOME" => value.map(str::to_string),
+                _ => None,
+            });
+            assert_eq!(env, [("PI_NOTIFICATIONS", "off".to_string())]);
+        }
     }
 
     #[test]
