@@ -36,7 +36,10 @@ Tailscale claims cite their public documentation (Sources at the end). Estimates
 
 - Hub side: one `ssh` client child per worker in use, closed after 5 minutes with no remote lane and no
   pending operation; its memory is measured in phase 1. Worker side: one `cataly worker serve` per hub
-  connection, plus the OMP children of its lanes. Nothing else.
+  connection, plus the OMP children of its lanes. Nothing else. Cancelling a request releases its
+  pending-operation count. A cancelled spawn drops its unclaimed channel, even if it arrives later,
+  ending the child's input; cancellation is not a reap acknowledgement, so attempt reconciliation
+  still applies (2.4).
 - Remote lanes are **headless** only. Tern lanes need a terminal on the hub's screen; a remote tern lane
   is refused by name.
 - The `Headless` runtime stays one implementation. What changes is where its child lives: `command::attach`
@@ -74,7 +77,9 @@ one audited server, and `known_hosts`, keys and forced commands are standard, do
 - **Host key pin.** Step 2 of enrolment fetches the ed25519 host key with `ssh-keyscan`, compares its
   fingerprint with the one `worker init` printed, and writes the pin. A non-22 port is pinned as
   `[host]:port`, OpenSSH's own form [sshd(8), SSH_KNOWN_HOSTS FILE FORMAT]. A changed key is refused by
-  `StrictHostKeyChecking=yes` and never accepted automatically.
+  `StrictHostKeyChecking=yes` and never accepted automatically. Workers on the same host and port
+  share this pin even when their OS users differ; removal drops it only after the last worker using
+  it is removed.
 - **Stream.** One SSH session per worker carries frames: `u32 length | u32 channel | u8 kind | payload`,
   at most 1 MiB + 9 bytes. Kinds: `open`, `data`, `credit`, `eof`, `close`, `ping`, `exit`. Each channel
   has 1 MiB of credit per direction, so one slow lane cannot stall the others or grow memory. Both ends
@@ -357,7 +362,7 @@ authorisation and `pr_merged` is read on the hub.
 | `cataly worker init --hub-key '…' [--from IPs] [--host-key-file F] [--remove]` | Worker | Write or remove the forced-command line; check `omp`, `git`, bridge link; print the fingerprint and the hub command |
 | `cataly worker list [--json]` | Hub | Name, destination, state, version, compatibility, lanes in use/max, last seen |
 | `cataly worker doctor [NAME]` | Hub | Connect; check pin, marker, protocols, OMP probe, provider login, `git ls-remote` per repo, disk; `tailscale ip` when set |
-| `cataly worker remove NAME` | Hub | Refused while lanes live; `forget` on the worker if reachable, else print the line to delete; drop key, pin, config |
+| `cataly worker remove NAME` | Hub | Refused while lanes live; `forget` on the worker if reachable, else print the line to delete; drop key and config, and the pin only if no other worker uses it |
 | `cataly worker update NAME` (phase 4) | Hub | The worker's own `cataly update`, idle workers only |
 | `cataly worker serve --hub ID` | Worker, sshd only | Worker mode |
 
@@ -372,6 +377,9 @@ tailscale = true                      # doctor re-checks the address with `tails
 repos = ["github.com/vntrevx/cataly-core"]   # placement evidence and doctor checks
 lanes = 1                             # remote lanes at once, 1-8
 ```
+
+IPv6 destinations retain brackets, for example `destination = "dev@[fd7a::1]"`, with `port` stored
+separately. SSH arguments use the unbracketed `user@host` form and pass the port with `-p`.
 
 - Hub files: `<config>/secrets/worker-<name>` (0600, out of backups like every secret),
   `<config>/known_hosts` (0600). Worker files: `<config>/worker.toml` (`omp` path, `PATH` captured by

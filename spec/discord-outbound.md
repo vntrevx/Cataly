@@ -289,8 +289,10 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
     nothing selected defaults to its first enabled option).
 63. The question lists the form's visible text and, per field: label, type, required or optional,
     limits, enabled choices with exact values, default, and whether a free "other" value is allowed.
-    All shown text is neutralised so it cannot mention anyone, open code spans or inject Markdown.
-    Refuse if this summary exceeds 1500 characters.
+    Credential-shaped strings in question text and choice labels are masked before formatting or
+    shortening (OPC-86), including recorded `question.ask` questions and closing edits. Answer values
+    stay unchanged. All shown text is neutralised so it cannot mention anyone, open code spans or
+    inject Markdown. Refuse if this summary exceeds 1500 characters.
 64. A form is "single choice" when exactly one editable field exists and it is a radio group or
     single select; such forms get buttons. It "accepts plain text" when its single editable field is
     text or textarea, or a single choice that allows an "other" value.
@@ -334,7 +336,9 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
 75. On finish the question is edited (3 s budget, best effort) to remove buttons and append a status:
     answered, recommended choice used after the timeout, or closed. A failed edit is only logged.
 76. Open questions live in daemon memory and do not survive a restart; on start the daemon edits any
-    question it had left open to "closed" (see state section).
+    question it had left open to "closed" (see state section). Removing a card or ending intake also
+    cancels its recommended-answer timer. After an intake restart, a newly posted question uses the
+    current configured waiting time, never the old card's timer.
 
 ### Owner questions: routing (DISC-OUT-18)
 
@@ -354,8 +358,10 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
 82. A press counts only if all rule-69 checks pass and the stamp matches. An accepted press is
     acknowledged by updating the message to remove the buttons; any other press gets an ephemeral
     refusal. Interaction callbacks use the interaction token and have a 2.5 s budget.
-83. If the card cannot be posted, the request is denied (fail closed) and the run is cancelled. When
-    the run ends for any reason, buttons on an unanswered card are removed and it counts as denied.
+83. If the card cannot be posted, the request is denied (fail closed) and the run is cancelled.
+    If approval buttons cannot reach the daemon (the application has an interactions endpoint URL),
+    deny before posting: approvals have no text-answer fallback. When the run ends for any reason,
+    buttons on an unanswered card are removed and it counts as denied.
 
 ### Presence and avatar (DISC-OUT-21, 22)
 
