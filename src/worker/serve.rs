@@ -553,10 +553,11 @@ async fn hello(worker: &Worker) -> Hello {
     let omp = version_of(worker.program(&["omp".into(), "--version".into()]), worker);
     let git = version_of(vec!["git".into(), "--version".into()], worker);
     let (omp, git) = tokio::join!(omp, git);
+    let (protocol, version) = reported();
     Hello {
-        protocol: PROTOCOL,
+        protocol,
         bridge: crate::hub::bridge::PROTOCOL,
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version,
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         root: worker.root.display().to_string(),
@@ -565,6 +566,25 @@ async fn hello(worker: &Worker) -> Hello {
         bridge_link: crate::omp::extension::check().err(),
         socket: worker.socket.display().to_string(),
     }
+}
+
+/// The worker protocol and version `hello` reports: this build's.
+#[cfg(not(debug_assertions))]
+fn reported() -> (u32, String) {
+    (PROTOCOL, env!("CARGO_PKG_VERSION").to_string())
+}
+
+/// Debug builds only: `CATALY_WORKER_AS="<protocol> <version>"` makes this worker report an older
+/// Cataly, for the hub's outdated-worker tests. Release builds hold neither the hook nor its name.
+#[cfg(debug_assertions)]
+fn reported() -> (u32, String) {
+    std::env::var("CATALY_WORKER_AS")
+        .ok()
+        .and_then(|v| {
+            let (protocol, version) = v.split_once(' ')?;
+            Some((protocol.parse().ok()?, version.to_string()))
+        })
+        .unwrap_or_else(|| (PROTOCOL, env!("CARGO_PKG_VERSION").to_string()))
 }
 
 async fn status(worker: &Worker) -> Result<Value, String> {

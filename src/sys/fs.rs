@@ -281,7 +281,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A unique, owner-only scratch directory under the system temp folder, removed with everything
-    /// in it when the guard drops (also when a test fails: unwinding runs the drop).
+    /// in it when the guard drops (also when a test fails: unwinding runs the drop). See `release`.
     #[derive(Debug)]
     pub(crate) struct Scratch(PathBuf);
 
@@ -300,7 +300,34 @@ pub(crate) mod tests {
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            release(&self.0);
+        }
+    }
+
+    /// Removes a test's directory once the test is done with it, read-only folders (an installed
+    /// version) included. A failed test's directory stays when `CATALY_TEST_KEEP=1`, and its path
+    /// is printed. A directory that cannot be removed fails a test that passed, so none is left
+    /// behind unnoticed; a writer that has not quite stopped gets a few retries first.
+    pub(crate) fn release(dir: &Path) {
+        let failed = std::thread::panicking();
+        if failed && std::env::var_os("CATALY_TEST_KEEP").is_some_and(|v| v == "1") {
+            eprintln!("CATALY_TEST_KEEP=1: kept {}", dir.display());
+            return;
+        }
+        let mut left = Ok(());
+        for _ in 0..5 {
+            left = crate::sys::install::make_writable_and_remove(dir);
+            if left.is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if let Err(e) = left {
+            if failed {
+                eprintln!("test directory left behind: {e}");
+            } else {
+                panic!("test directory left behind: {e}");
+            }
         }
     }
 
@@ -319,6 +346,36 @@ pub(crate) mod tests {
     /// Marks a test script executable by its owner only.
     pub(crate) fn make_executable(path: &Path) {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// An installed version folder is read-only; the scratch directory holding one still goes,
+    /// also when the test holding it fails.
+    #[test]
+    fn scratch_goes_with_read_only_folders_also_on_a_panic() {
+        let install = |dir: &Path| {
+            let version = dir.join("versions/0.2.5");
+            fs::create_dir_all(&version).unwrap();
+            fs::write(version.join("cataly"), b"x").unwrap();
+            fs::set_permissions(&version, fs::Permissions::from_mode(0o555)).unwrap();
+        };
+        let dir = scratch("guard");
+        let path = dir.to_path_buf();
+        install(&dir);
+        drop(dir);
+        assert!(!path.exists(), "{} left behind", path.display());
+
+        let dir = scratch("guard-panic");
+        let path = dir.to_path_buf();
+        let failed = std::panic::catch_unwind(move || {
+            install(&dir);
+            panic!("a failing test");
+        });
+        assert!(failed.is_err());
+        let kept = std::env::var_os("CATALY_TEST_KEEP").is_some_and(|v| v == "1");
+        assert_eq!(path.exists(), kept, "{}", path.display());
+        if kept {
+            release(&path);
+        }
     }
 
     #[test]

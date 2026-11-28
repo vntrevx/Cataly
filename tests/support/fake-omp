@@ -26,6 +26,7 @@
 #                               with omp-data/approve a message containing APPROVE opens the approval
 #                               select stock OMP sends under always-ask, ended the same way.
 #                               Every prompt, follow-up and steer line is appended to omp-data/prompts.
+#                               Every dialog response is appended to omp-data/responses.
 #   with omp-data/slow-start     the first rpc-ui start answers nothing until its input closes, then
 #                               exits 1 (a start slower than the probe allows, as after an OMP update
 #                               under load); the fixture is used up and later starts are normal.
@@ -324,6 +325,7 @@ rpc() {
         *) data='{}' ;;
         esac
         if [ "$kind" = extension_ui_response ]; then
+            printf '%s\n' "$line" >> "$dir/responses"
             picked=$(printf '%s' "$line" | sed -nE 's/.*"color":"([^"]*)".*/\1/p')
             [ -n "$picked" ] || picked=cancelled
             finish "\"picked $picked\"" "$asked"

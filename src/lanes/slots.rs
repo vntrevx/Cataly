@@ -383,7 +383,7 @@ impl Slots {
     }
 
     #[cfg(test)]
-    fn since_start(started: Instant, config: watch::Receiver<Arc<Config>>) -> Self {
+    pub(crate) fn since_start(started: Instant, config: watch::Receiver<Arc<Config>>) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
             started,
