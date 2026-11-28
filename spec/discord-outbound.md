@@ -356,8 +356,10 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
 82. A press counts only if all rule-69 checks pass and the stamp matches. An accepted press is
     acknowledged by updating the message to remove the buttons; any other press gets an ephemeral
     refusal. Interaction callbacks use the interaction token and have a 2.5 s budget.
-83. If the card cannot be posted, the request is denied (fail closed) and the run is cancelled. When
-    the run ends for any reason, buttons on an unanswered card are removed and it counts as denied.
+83. If the card cannot be posted, the request is denied (fail closed) and the run is cancelled.
+    If approval buttons cannot reach the daemon (the application has an interactions endpoint URL),
+    deny before posting: approvals have no text-answer fallback. When the run ends for any reason,
+    buttons on an unanswered card are removed and it counts as denied.
 
 ### Presence and avatar (DISC-OUT-21, 22)
 

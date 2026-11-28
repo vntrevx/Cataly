@@ -903,8 +903,12 @@ impl<T: Runtime> Intake<T> {
         };
         let mark = recommended_mark(lang);
         let approval = kind == Kind::Approval;
-        let route = self.route(approval).await;
-        let Some((channel, reply_to)) = route else {
+        if approval && !self.buttons {
+            // Approvals have no text-answer fallback (DISC-OUT req. 83).
+            self.deny(dialog, "no Gateway approval buttons").await;
+            return skip(self);
+        }
+        let Some((channel, reply_to)) = self.route(approval).await else {
             if approval {
                 self.deny(dialog, "no Discord request started this run")
                     .await;

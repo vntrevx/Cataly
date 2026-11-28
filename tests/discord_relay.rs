@@ -2124,6 +2124,41 @@ fn without_gateway_buttons_a_question_is_text_only() {
     assert!(hub.stop().success());
 }
 
+/// DISC-OUT req. 83: approvals have no text-answer fallback. If an interactions endpoint URL
+/// diverts button presses away from the Gateway, deny before posting any approval card.
+#[test]
+fn without_gateway_buttons_an_approval_is_denied_before_posting() {
+    let fake = FakeDiscord::start();
+    fake.set_interactions_url("https://example.org/interactions");
+    let mut hub = relay_hub(&fake, &["approve"], "remote_approvals = true\n");
+    hub.start();
+    ready(&hub);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_432,
+        OWNER,
+        "please APPROVE this",
+    ));
+    // The first linked post must be the completed turn, never an unanswerable approval card.
+    let answer = fake.wait(WAIT, |f| {
+        f.creates()
+            .into_iter()
+            .find(|c| reference(c).as_deref() == Some("800000000000000432"))
+    });
+    assert_eq!(answer.body["content"], "picked cancelled");
+    let responses = std::fs::read_to_string(hub.root.join("bin/omp-data/responses")).unwrap();
+    let responses: Vec<Value> = responses
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        responses,
+        vec![json!({ "type": "extension_ui_response", "id": "approval-1", "value": "Deny" })]
+    );
+    assert!(hub.stop().success());
+    assert_eq!(fake.creates().len(), 1, "no approval card was posted");
+}
+
 /// A press on a question near Discord's size limit (1000 characters, four options of 200): the
 /// lead's event still names the whole chosen option, and the closed message still says which
 /// option the owner chose, its question cut short to make room.

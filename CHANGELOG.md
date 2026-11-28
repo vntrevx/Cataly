@@ -14,6 +14,9 @@
   reasons and details, and closing edits, while keeping the original option values for answers.
   reasons and details, the approval card's command block, and closing edits, while keeping the
   original option values for answers and the command that runs.
+- With a Discord interactions endpoint URL set, remote approvals could post without buttons and
+  wait forever. Such approvals are now denied before posting because their buttons cannot reach
+  the daemon; ordinary questions still accept text replies.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
