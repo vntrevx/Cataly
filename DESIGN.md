@@ -480,7 +480,8 @@ relay destinations, or kept locally. Messenger posts never mention anyone and pa
   claimed: a bridge connection gets the role the hub gives its session at hello (lead, lane with key and run,
   none); a CLI connection is the owner, unless its peer PID descends from an OMP child the hub spawned, in which
   case it gets that session's role. In addition, the bridge's shell veto blocks lanes from running the `cataly`
-  binary except read-only verbs (section 9.1). This guards against model mistakes; it does not claim to stop
+  binary except read-only verbs and `slot`, whose wrapped command after `--` must pass rule 0 itself (LANE
+  req. 21, COORD req. 5; section 9.1). This guards against model mistakes; it does not claim to stop
   deliberate escape by code running as the owner.
 - **Protocol.** Newline-delimited JSON, at most 1 MiB per line, 64 connections, 60 s idle close (HOST req. 73-74).
   Request `{v, id, method, params}`; reply `{v, id, ok}` or `{v, id, err: {code, message}}`. Streams
@@ -928,5 +929,5 @@ numbers are kept from the first draft so references stay stable; decided rows mo
 | A29 | Operating contract (OPC Q1-5) | Short neutral voice; the hub only wakes the lead after 60 s, never posts a holding line itself; lead may settle routine reversible choices; onboarding reads titles and metadata unless allowed more; profile distillation kept, simplified | Each changes guidance text or one rule. |
 | A30 | OMP patch questions (PATCH Q1-3) | Detect and report misdelivery in tern; file the four upstream reports; minimum 19.1.1, newer majors allowed with an "untested" warning | Refusing untested majors adds an upper bound to the probe. |
 | A31 | EXT Q2, Q4, Q5 | Form mirroring kept for tern; restricted second lead dropped; lane model pinned for its life, OMP-announced fallbacks excepted (6.1) | Config. |
-| A32 | Who may call the hub's owner verbs from a shell | CLI = owner unless the peer descends from a hub-spawned session; lanes' shell calls to `cataly` are vetoed except read-only verbs (8) | A stricter scheme would need a second OS user for sessions. |
+| A32 | Who may call the hub's owner verbs from a shell | CLI = owner unless the peer descends from a hub-spawned session; lanes' shell calls to `cataly` are vetoed except read-only verbs and `slot` whose wrapped command passes rule 0 (8) | A stricter scheme would need a second OS user for sessions. |
 | A33 | Provider standby for voice (rest of VOICE-12) | Not built; idle close plus wake on speech | A standby link adds one idle connection per call window. |

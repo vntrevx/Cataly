@@ -2,6 +2,12 @@
 
 ## 0.2.9 (Unreleased)
 
+- A lane (or the lead) can wrap a heavy command in `cataly slot <name> -- <command>`, as LANE
+  req. 21 and COORD req. 5 allow. Built-in shell rule 0 refused every `cataly slot` line, so a lane
+  had no way to queue for a slot. The command after `--` is now judged by rule 0 as its own line:
+  `cataly slot b -- cargo test` runs, `cataly slot b -- omp usage reset` is still refused, and a
+  slot whose command is not known from the text (nothing after `--`, a word before it that the
+  shell may expand, including `~`, or `xargs` or `find` in front) is refused as before.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
