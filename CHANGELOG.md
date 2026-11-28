@@ -31,6 +31,10 @@
   across reads, so the text arrives intact.
 - Adding a worker at an IPv6 address no longer fails when saving its config. The saved destination
   keeps the IPv6 brackets so config validation and later SSH connections can read it.
+- Removing a worker keeps the SSH host-key pin while another worker uses the same host and port
+  (ignoring host-name letter case), so other users on that host can still connect. The last worker's
+  removal drops every case variant of the pin. Enrolling a worker replaces case variants instead of
+  adding duplicate pins.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,

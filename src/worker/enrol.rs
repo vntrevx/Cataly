@@ -328,7 +328,11 @@ pub(crate) fn ed25519_key(text: &str) -> Option<String> {
 pub(crate) fn set_pin(text: &str, name: &str, blob: &str) -> String {
     let mut out: Vec<String> = text
         .lines()
-        .filter(|l| l.split_whitespace().next() != Some(name))
+        .filter(|l| {
+            !l.split_whitespace()
+                .next()
+                .is_some_and(|pin| pin.eq_ignore_ascii_case(name))
+        })
         .map(str::to_string)
         .collect();
     out.push(format!("{name} ssh-ed25519 {blob}"));
@@ -341,7 +345,11 @@ pub(crate) fn set_pin(text: &str, name: &str, blob: &str) -> String {
 pub(crate) fn drop_pin(text: &str, name: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
-        .filter(|l| l.split_whitespace().next() != Some(name))
+        .filter(|l| {
+            !l.split_whitespace()
+                .next()
+                .is_some_and(|pin| pin.eq_ignore_ascii_case(name))
+        })
         .collect();
     let mut joined = kept.join("\n");
     if !joined.is_empty() {
@@ -531,6 +539,29 @@ mod tests {
         );
         assert_eq!(drop_pin(&pins, "[h]:2222"), "other ssh-ed25519 X\n");
         assert_eq!(drop_pin(&pins, "h"), pins);
+    }
+
+    #[test]
+    fn host_pins_replace_and_remove_case_variants() {
+        for (first, second, other_port) in [
+            ("BoX", "bOx", "[box]:2222"),
+            ("[BoX]:2222", "[bOx]:2222", "[box]:2200"),
+        ] {
+            let unrelated = format!(
+                "{other_port} ssh-ed25519 OTHERPORT\n\
+                 elsewhere ssh-ed25519 OTHERHOST\n"
+            );
+            let pins = format!(
+                "{first} ssh-ed25519 OLD\n\
+                 {second} ssh-ed25519 OLD\n\
+                 {unrelated}"
+            );
+            assert_eq!(
+                set_pin(&pins, second, BLOB),
+                format!("{unrelated}{second} ssh-ed25519 {BLOB}\n")
+            );
+            assert_eq!(drop_pin(&pins, second), unrelated);
+        }
     }
 
     #[test]
