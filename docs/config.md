@@ -79,7 +79,7 @@ Then the defaults, each applied only where the config says nothing yet:
 | What | Default | Flag |
 |---|---|---|
 | Owner | the application's owner (the team's owner for a team application) | `--owner <id>` |
-| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched | |
+| Channels | the text channels `#cataly` (your talks with the lead) and `#cataly-ops` (the [status panel and alerts](#ops)) are reused, missing ones created; no other channel is touched. A `cataly-ops` destination already in the file is kept, and then no `#cataly-ops` is created | |
 | Lead | the model OMP starts with (`omp config get modelRoles`) | `--lead-model provider/id`, `--lead-cwd` |
 | Remote approvals | on: OMP's permission requests get buttons; only your presses count | `--approvals on\|off` |
 | Bot profile | Cataly's avatar and banner on the bot (`PATCH /users/@me`) and the avatar as the application's icon (`PATCH /applications/@me`), each only where there is none or still the one Cataly set; your own images are kept | `--profile` re-applies Cataly's |
@@ -821,7 +821,7 @@ security boundary are described in `docs/design/workers.md`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `destination` | string | required | `user@host`; with `tailscale`, the host is the tailnet IP |
+| `destination` | string | required | `user@host` or `user@[IPv6]`, without the port; with `tailscale`, the host is the tailnet IP |
 | `port` | integer 1-65535 | `22` | The worker's sshd port; a pin on another port is `[host]:port` |
 | `name` | string | the section name | The name shown (the tailnet machine name with `tailscale`) |
 | `tailscale` | bool | `false` | `worker doctor` checks the address again with `tailscale ip` |

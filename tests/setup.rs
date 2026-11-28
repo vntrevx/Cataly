@@ -305,6 +305,29 @@ fn a_hand_set_avatar_is_kept_until_profile_is_asked() {
 }
 
 #[test]
+fn a_configured_ops_destination_is_kept() {
+    let (hub, fake) = sandbox(false);
+    let token = hub.private_file("discord-token", TOKEN);
+    let alerts = "500000000000000012";
+    hub.write_config(&format!(
+        "[discord]\napi_base = \"{}\"\n\n[destinations.cataly-ops]\nkind = \"discord\"\nchannel = \"{alerts}\"\n",
+        fake.base()
+    ));
+    fake.join(GUILD, "home");
+    fake.named(LEAD, "cataly", 0, GUILD);
+    fake.named(alerts, "alerts", 0, GUILD);
+    let mut flags = script(&token);
+    flags.push("--yes".into());
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (ok, done, stderr) = json_run(&hub, &flags);
+    assert!(ok, "{stderr}");
+    assert_eq!(done["applied"], true);
+    assert_eq!(creates(&fake), Vec::<String>::new(), "no #cataly-ops made");
+    let text = read(&hub.config_path());
+    assert!(text.contains(&format!("channel = \"{alerts}\"")), "{text}");
+}
+
+#[test]
 fn a_script_sets_up_with_yes_and_flags() {
     let (hub, fake) = sandbox(false);
     let token = hub.private_file("discord-token", TOKEN);

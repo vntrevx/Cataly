@@ -581,8 +581,9 @@ fn decide(
                 |id| format!("#{name} {id}"),
             )
         };
+        let ops_unset = discord::ops_unset(planned);
         let settled = match (d.lead, d.ops) {
-            (Some(lead), Some(ops)) => {
+            (Some(lead), ops) if ops.is_some() || !ops_unset => {
                 discord::config_text(planned, String::new(), d, lead, ops).is_empty()
             }
             _ => false,
@@ -592,7 +593,11 @@ fn decide(
             format!(
                 "{} for the lead, {} for job notices",
                 shown(discord::LEAD, d.lead),
-                shown(discord::OPS, d.ops)
+                if ops_unset {
+                    shown(discord::OPS, d.ops)
+                } else {
+                    format!("the configured {} destination", discord::OPS)
+                }
             ),
             !settled,
         ));
@@ -849,7 +854,7 @@ fn apply(
 ) -> Result<String, Failure> {
     let mut text = decided.text.clone();
     if let Some(d) = &mut decided.discord {
-        let (lead, ops) = block_on(d.create_missing()).map_err(Failure::Refused)?;
+        let (lead, ops) = block_on(d.create_missing(planned)).map_err(Failure::Refused)?;
         text = discord::config_text(planned, text, d, lead, ops);
         if let Some(v) = &decided.voice {
             text = super::setup_voice::apply(v, d, text).map_err(Failure::Refused)?;

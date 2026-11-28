@@ -21,8 +21,8 @@ use super::args::Parsed;
 use super::out;
 use super::setup::Terminal;
 use crate::config::file;
-use crate::config::{self, Config, Destination, sha256_hex};
-use crate::relay::discord::{API, ChannelRef, Rest, Snowflake};
+use crate::config::{self, Config, sha256_hex};
+use crate::relay::discord::{API, Rest, Snowflake};
 use crate::relay::http::Base;
 use crate::sys::paths::Paths;
 
@@ -620,18 +620,21 @@ impl Flow<'_> {
 }
 
 impl Discord {
-    /// Creates the channels that are missing (after the owner's yes). No other channel is changed.
-    pub(super) async fn create_missing(&mut self) -> Result<(Snowflake, Snowflake), String> {
+    /// Creates the channels that are missing (after the owner's yes); `#cataly-ops` only when
+    /// `config` has no `cataly-ops` destination yet. No other channel is changed.
+    pub(super) async fn create_missing(
+        &mut self,
+        config: &Config,
+    ) -> Result<(Snowflake, Option<Snowflake>), String> {
         if self.lead.is_none() {
             self.lead = Some(self.create_one(LEAD).await?);
         }
-        if self.ops.is_none() {
+        if self.ops.is_none() && ops_unset(config) {
             self.ops = Some(self.create_one(OPS).await?);
         }
-        match (self.lead, self.ops) {
-            (Some(lead), Some(ops)) => Ok((lead, ops)),
-            _ => Err("the channels could not be settled".into()),
-        }
+        self.lead
+            .map(|lead| (lead, self.ops))
+            .ok_or_else(|| "the channels could not be settled".into())
     }
 
     async fn create_one(&mut self, name: &'static str) -> Result<Snowflake, String> {
@@ -900,14 +903,20 @@ fn read_record(state_dir: &Path, me: &Value) -> serde_json::Map<String, Value> {
         .unwrap_or_default()
 }
 
+/// Whether `config` names no `cataly-ops` destination, so setup may set it (and create the channel).
+pub(super) fn ops_unset(config: &Config) -> bool {
+    !config.destinations.contains_key(OPS)
+}
+
 /// The config with the guild, owner, the lead's channel and the `cataly-ops` destination; a
-/// setting is written only when the file says something else.
+/// setting is written only when the file says something else, the destination only when the file
+/// names none.
 pub(super) fn config_text(
     config: &Config,
     mut text: String,
     d: &Discord,
     lead: Snowflake,
-    ops: Snowflake,
+    ops: Option<Snowflake>,
 ) -> String {
     let c = &config.discord;
     if c.guild != Some(d.guild) {
@@ -924,10 +933,12 @@ pub(super) fn config_text(
             text = file::set_key(&text, "discord", "home", &lead.to_string());
         }
     }
-    let dest = Destination::Discord {
-        channel: ChannelRef::Id(ops),
-    };
-    if config.destinations.get(OPS) != Some(&dest) {
+    ops_text(config, text, ops)
+}
+
+/// The `cataly-ops` destination set to the channel `ops`, only when `config` names none.
+fn ops_text(config: &Config, mut text: String, ops: Option<Snowflake>) -> String {
+    if let Some(ops) = ops.filter(|_| ops_unset(config)) {
         let section = format!("destinations.{OPS}");
         text = file::set_key(&text, &section, "kind", "discord");
         text = file::set_key(&text, &section, "channel", &ops.to_string());
@@ -1117,6 +1128,19 @@ fn portal_steps(path: &Path, at_terminal: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_configured_ops_destination_is_kept() {
+        let ops = Snowflake::parse("222").unwrap();
+        let text = "[destinations.cataly-ops]\nkind = \"discord\"\nchannel = \"111\"\n";
+        let config = config::parse(text).unwrap();
+        assert!(!ops_unset(&config));
+        assert_eq!(ops_text(&config, text.into(), Some(ops)), text);
+        let fresh = Config::default();
+        assert!(ops_unset(&fresh));
+        let written = ops_text(&fresh, String::new(), Some(ops));
+        assert!(written.contains("[destinations.cataly-ops]") && written.contains("222"));
+    }
 
     #[test]
     fn invite_permissions_are_the_ones_cataly_uses() {
