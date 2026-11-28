@@ -1123,6 +1123,22 @@ mod tests {
         assert_eq!(fake.seen("prompt").len(), 1);
     }
 
+    /// A message offered mid-turn (status known only from `agent_start`) goes out as a follow-up.
+    #[tokio::test]
+    async fn a_message_mid_turn_goes_out_as_a_follow_up() {
+        let (mailbox, fake, session, _dir) = box_and_session("inbox-midturn").await;
+        fake.set(|s| s.streaming = true);
+        fake.push(serde_json::json!({"type": "agent_start"}));
+        fake.wait_for(&session, |s| s.status == Status::Working)
+            .await;
+        mailbox
+            .deliver(&owner("hello", None), Some(&*session), false)
+            .await
+            .unwrap();
+        assert_eq!(fake.seen("follow_up").len(), 1);
+        assert_eq!(fake.seen("prompt").len(), 0);
+    }
+
     /// The wake path: the message and the batch that carries it (with a waiting quiet note) are
     /// stored in one commit before the prompt is written; while that batch waits for its entry, the
     /// next message is only stored; a repeated request ID sends nothing.

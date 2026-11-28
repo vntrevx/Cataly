@@ -1334,6 +1334,10 @@ impl Inner {
                 }
                 self.emit(&mut st, SessionEvent::TurnStarted);
                 self.publish(&mut st);
+                drop(st);
+                // Read the state back so the turn shows as fresh `Working` (not `Unknown`) for
+                // follow-ups, steering and the busy guards.
+                self.queue_readback();
             }
             "agent_end" => {
                 let will_continue = frame.get("isTerminal") == Some(&Value::Bool(false))
@@ -2127,6 +2131,19 @@ mod tests {
             DeliverOutcome::NotReady(Status::Idle, "the goal is paused".into())
         );
         assert_eq!(fake.seen("prompt").len(), 0);
+    }
+
+    /// `agent_start` alone (no manual refresh) makes the session a fresh `Working` and busy.
+    #[tokio::test]
+    async fn agent_start_reads_back_a_working_status() {
+        let fake = Fake::start();
+        let session = started(&fake).await;
+        fake.set(|s| s.streaming = true);
+        fake.push(json!({"type": "agent_start"}));
+        let snap = fake
+            .wait_for(&session, |s| s.status == Status::Working)
+            .await;
+        assert!(snap.busy().is_some(), "{snap:?}");
     }
 
     #[tokio::test]
