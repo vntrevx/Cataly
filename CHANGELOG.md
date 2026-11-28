@@ -2,6 +2,65 @@
 
 ## 0.2.9 (Unreleased)
 
+- Discord form options with an explicit empty value keep that value instead of returning their
+  label to OMP. Only options without a value attribute use their label as the value.
+- Discord: disabled select options could be offered as buttons or recommended defaults, then refused
+  by OMP. They are now left out of form choices, defaults and answers.
+- Discord: a form with an optional radio group or select left unanswered was refused, its card
+  closed and posted again, so the choice had to be made. The unselected field is now left out of
+  the answer, as OMP does, and the form is submitted.
+- Questions could expose credential-shaped strings in their text and choice labels on Discord.
+  Mask them before formatting or shortening, including local-only waiting notices, approval
+  reasons and details, and closing edits, while keeping the original option values for answers.
+  reasons and details, the approval card's command block, and closing edits, while keeping the
+  original option values for answers and the command that runs.
+- With a Discord interactions endpoint URL set, remote approvals could post without buttons and
+  wait forever. Such approvals are now denied before posting because their buttons cannot reach
+  the daemon; ordinary questions still accept text replies.
+- Discord questions could still use a recommended answer on the old timer after intake restarted,
+  even after the waiting time was increased or intake was disabled. Removing the card or ending
+  intake now cancels its timer; a restarted intake uses the new waiting time.
+- Relay answers and later turns could post credential-shaped strings unchanged. They are now
+  masked before the reply parts are stored, so retries keep them masked too.
+- The board post cleans each lane's latest report as a thread post is cleaned, as EVR req. 51
+  says: the home directory shows as `~`, other local paths as `[path removed]`, and links lose
+  their query. It only flattened the text, so paths and URL queries (tokens among them) from a
+  report reached every board destination as written.
+- Korean or other multi-byte text from the hub could reach the OMP extension with U+FFFD in it
+  when a character was split between two socket reads. The extension now decodes the stream
+  across reads, so the text arrives intact.
+- Adding a worker at an IPv6 address no longer fails when saving its config. The saved destination
+  keeps the IPv6 brackets so config validation and later SSH connections can read it.
+- Removing a worker keeps the SSH host-key pin while another worker uses the same host and port
+  (ignoring host-name letter case), so other users on that host can still connect. The last worker's
+  removal drops every case variant of the pin. Enrolling a worker replaces case variants instead of
+  adding duplicate pins.
+- A slot waiter started without `--timeout` waits until it is granted or cancelled, as LANE
+  req. 21 says. It gave up after an hour with no change in its queue place ("no grant for slot
+  … within the timeout") and its command never ran, so a heavy job held for over an hour failed
+  every command queued behind it.
+- A slot request granted while the hub was still writing its queue place now runs its command at
+  once. The hub marked that grant as already seen, so `cataly slot` kept waiting while the hub
+  counted the slot as held, until some other slot request, release or grant on the hub woke it, or
+  until it timed out or was cancelled when none came. A request for a free slot is granted right
+  away and could hit this.
+- `cataly setup` no longer resets a `[destinations.cataly-ops]` you pointed elsewhere to the
+  `#cataly-ops` channel, and no longer creates that channel when the destination is already set.
+### Upgrade notes
+
+- `cataly setup --service off` now writes `[setup] service = false`. A 0.2.8 or older hub (after
+  a rollback) refuses that key; remove it from the config before going back.
+
+### Fixes
+
+- After `cataly setup --service off`, a plain `cataly setup` enabled and started the service
+  again. The off is now remembered as `[setup] service = false`; setup leaves the service off
+  until `--service on` or `cataly service enable`.
+- Setup can update settings under a table header with a trailing comment, such as `[lead] # main`,
+  without adding a duplicate table and failing validation. The header and its comment are kept.
+- Voice setup no longer rejects a channel whose overwrites grant Connect or Speak when the bot's
+  server roles lack them. It checks effective channel permissions before asking for role changes.
+
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
@@ -13,11 +72,50 @@
   episode, so a later exit gets a fresh retry window. No migration: a store with such an open or
   ended episode recovers on its next wake; a lead already held by this message needs one
   `cataly lead start`, as the hold says.
+- A resume that is refused no longer uses up the 300 s recovery window. Before, a wake first
+  opened the window and then checked the conversation a second time; when that check refused,
+  the window stayed open, the wake tried again every 30 s, and after 211 s the lead was held as
+  if 5 minutes of restarts had failed, with nothing tried (the 0.2.7 hold "300 s recovery episode
+  has no startup and cleanup budget remaining"). Now the conversation is checked once, before the
+  window opens, and a refusal holds with its real reason.
 - The lead's hold texts (the hold notice, the update result, `cataly lead status`, `cataly health`)
   no longer quote internal reasons such as "recovery is held (300 s recovery episode has no
   startup and cleanup budget remaining); explicit owner retry required". Each hold reason is told
   as a short sentence in `[hub] language`, Korean or English, saying what happened and what to do;
   the raw reason stays in the log and `cataly lead status --json`.
+- The lead's answer to your message no longer lands in the lane thread made from it, ahead of the
+  kickoff, when the lane's record is saved at the moment the answer is placed. The check that keeps
+  the answer in the channel looked at the open lanes before the thread's creation record and could
+  miss a record saved between the two; it now reads them in the order `lane.open` writes them, so
+  the answer stays in the channel as the lead's pointer.
+- `cataly update` and `cataly rollback` speak the owner's `[hub] language`: the result line, the
+  held, switched-back and needs-attention outcomes (`보류:`, `되돌림:`, `확인 필요:`), the busy wait
+  and hold with the busy session named by the hub in that language, and every refusal the owner acts
+  on. Errors meant for developers (a file, network or store failure) stay as they were said, inside
+  those sentences. Their `--help` follows `[hub] language` too when a config is readable, and is
+  English otherwise; every other command's help stays English.
+  The last-attempt line of plain `cataly lead status` and the model-unverified notice no longer
+  quote raw internal text either: they say what happened in plain words in `[hub] language`, the
+  last attempt with the same causes as the hold texts; the raw detail stays in `--json`.
+- `cataly update` and `cataly rollback` during a voice call: a hub stop waits for the call to wind
+  down (up to 90 s), but the update waited only 60 s and then failed with "the hub accepted the stop
+  but did not end in time". The hub's stop answer now names the call's wind-down bound, and the
+  update waits that long plus a margin, saying so once ("음성 통화를 정리하는 중이에요 (최대
+  90초)"); a wind-down beyond the bound holds the update with nothing changed and says why.
+- Worker PCs older than the hub are named: after a successful `cataly update` or `rollback`, and in
+  `cataly status` and `cataly health`, each configured worker whose last `hello` reported an older
+  worker protocol or version is listed in the owner's language ("다른 PC box는 아직 0.2.6이에요.
+  그 PC에서 `cataly update`를 실행하세요."); `health` warns when its lanes are held. The hub keeps
+  the `hello` of a worker it refused as incompatible, so it knows which version that PC runs. An
+  unreachable or never-reached worker is reported as unknown, never as outdated. Nothing is asked
+  of, or installed on, a worker for this.
+- Stopping the hub's systemd user service sends TERM to the hub alone (`KillMode=mixed`, as
+  launchd already does). It used to reach every session, job and stream job at the same moment,
+  so they could die before the hub knew it was stopping: the lead and lanes ended on the signal
+  instead of the hub's clean close, and a stream job could take the stop for its own exit. The hub
+  now ends them itself; whatever is left once it exits is killed. `cataly update` and
+  `cataly rollback` rewrite the unit before they start the hub; after `--no-restart`, or a switch
+  outside them, run `cataly service refresh`.
 
 ## 0.2.8 (2026-11-28)
 

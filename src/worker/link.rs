@@ -16,9 +16,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::attempt::{AttemptState, QUERY_MAX, Report};
 use super::enrol::{self, Destination};
 use super::mux::{Accepted, Mux, Timing};
-use super::{Hello, LINE_MAX, method};
-use crate::config::Config;
+use super::{Hello, LINE_MAX, PROTOCOL, method};
 use crate::config::workers::WorkerSettings;
+use crate::config::{Config, Language};
 use crate::jobs::event::{Emit, EventKind, Severity};
 use crate::log;
 use crate::proto::{Line, Request, Response};
@@ -84,8 +84,8 @@ pub(crate) enum ConnectError {
     NoForcedCommand,
     /// The worker refused the hub's key.
     Denied,
-    /// Speaks another protocol (design 2.8).
-    Incompatible(String),
+    /// Speaks another protocol (design 2.8); the worker's `hello`, which says what it runs.
+    Incompatible(String, Box<Hello>),
     /// Anything else: the network, the worker's sshd, a timeout.
     Unreachable(String),
 }
@@ -113,7 +113,7 @@ impl std::fmt::Display for ConnectError {
                 "refused: the worker did not accept this hub's key; run the `cataly worker init` \
                  line `worker add` printed on the worker",
             ),
-            Self::Incompatible(why) | Self::Unreachable(why) => f.write_str(why),
+            Self::Incompatible(why, _) | Self::Unreachable(why) => f.write_str(why),
         }
     }
 }
@@ -526,7 +526,7 @@ impl Link {
             child
                 .close(Duration::from_secs(2), Duration::from_secs(1))
                 .await;
-            return Err(ConnectError::Incompatible(why));
+            return Err(ConnectError::Incompatible(why, Box::new(hello)));
         }
         Ok((
             Self::assemble(&target.name, hello, mux, client, Some(child)),
@@ -894,6 +894,9 @@ pub(crate) struct View {
     pub(crate) reason: Option<String>,
     #[serde(default)]
     pub(crate) version: Option<String>,
+    /// The worker protocol its last `hello` spoke.
+    #[serde(default)]
+    pub(crate) protocol: Option<u32>,
     #[serde(default)]
     pub(crate) os: Option<String>,
     #[serde(default)]
@@ -907,6 +910,65 @@ pub(crate) struct View {
     #[serde(default)]
     pub(crate) repos: Vec<String>,
     pub(crate) tailscale: bool,
+}
+
+/// A worker PC's Cataly against this hub's, as far as the hub knows it: the last `hello` it got,
+/// also one it refused. Nothing is asked of the worker for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    /// As new as the hub, or newer.
+    Current,
+    /// Older; `held` when it speaks an older worker protocol, whose lanes are held.
+    Behind { held: bool },
+    /// Unreachable, or never reached: its version is not known.
+    Unknown,
+}
+
+impl View {
+    /// This worker against the hub running `hub` (its version).
+    pub(crate) fn standing(&self, hub: &str) -> Standing {
+        if matches!(self.state, State::Offline | State::Refused) {
+            return Standing::Unknown;
+        }
+        let Some(version) = &self.version else {
+            return Standing::Unknown;
+        };
+        let held = self.protocol.is_some_and(|p| p < PROTOCOL);
+        let parse = crate::sys::release::Version::parse;
+        let older = parse(version).zip(parse(hub)).is_some_and(|(w, h)| w < h);
+        if held || older {
+            Standing::Behind { held }
+        } else {
+            Standing::Current
+        }
+    }
+
+    /// What the owner is told about this worker PC against the hub running `hub`, in his
+    /// language; `None` when it is current.
+    pub(crate) fn standing_note(
+        &self,
+        hub: &str,
+        language: Language,
+    ) -> Option<(Standing, String)> {
+        let standing = self.standing(hub);
+        let (name, version) = (&self.display, self.version.as_deref().unwrap_or_default());
+        let note = match (standing, language) {
+            (Standing::Current, _) => return None,
+            (Standing::Behind { .. }, Language::Korean) => format!(
+                "다른 PC {name}는 아직 {version}이에요. 그 PC에서 `cataly update`를 실행하세요."
+            ),
+            (Standing::Behind { .. }, Language::English) => format!(
+                "The other PC {name} is still on {version}. Run `cataly update` on that PC."
+            ),
+            (Standing::Unknown, Language::Korean) => {
+                format!("다른 PC {name}에 연결되지 않아 버전을 알 수 없어요.")
+            }
+            (Standing::Unknown, Language::English) => {
+                format!("The other PC {name} is not connected, so its version is unknown.")
+            }
+        };
+        Some((standing, note))
+    }
 }
 
 /// What a bridge channel a worker opens is handed to: the hub's bridge.
@@ -1198,17 +1260,19 @@ impl Workers {
                 Ok(link)
             }
             Err(e) => {
-                let state = match &e {
-                    ConnectError::Incompatible(_) => State::Incompatible,
-                    e if e.refused() => State::Refused,
-                    _ => State::Offline,
+                let (state, hello) = match &e {
+                    ConnectError::Incompatible(_, hello) => {
+                        (State::Incompatible, Some(Hello::clone(hello)))
+                    }
+                    e if e.refused() => (State::Refused, None),
+                    _ => (State::Offline, None),
                 };
                 let text = e.to_string();
                 log::warn(
                     "worker connection failed",
                     &[("worker", &name), ("reason", &text)],
                 );
-                self.set(name, state, Some(text.clone()), None).await;
+                self.set(name, state, Some(text.clone()), hello).await;
                 Err(format!("{name}: {text}"))
             }
         }
@@ -1292,6 +1356,7 @@ impl Workers {
                     },
                     reason: if link.is_some() { None } else { record.reason },
                     version: hello.as_ref().map(|h| h.version.clone()),
+                    protocol: hello.as_ref().map(|h| h.protocol),
                     os: hello.as_ref().map(|h| h.os.clone()),
                     arch: hello.as_ref().map(|h| h.arch.clone()),
                     omp: hello.as_ref().and_then(|h| h.omp.version.clone()),
@@ -1406,8 +1471,8 @@ impl Workers {
     }
 
     /// `worker remove`: refused while lanes live; asks the worker to forget this hub's line when it
-    /// answers; drops the key, the pin and the config section. Returns what the owner still has to
-    /// do on the worker, if anything.
+    /// answers; drops the key and config section, and the pin if no other worker uses it. Returns
+    /// what the owner still has to do on the worker, if anything.
     pub(crate) async fn remove(
         self: &Arc<Self>,
         name: &str,
@@ -1434,7 +1499,7 @@ impl Workers {
         };
         self.disconnect(name).await;
         let dest = Destination::parse(&format!("{}:{}", settings.destination, settings.port))?;
-        remove_files(&self.config_dir, name, &dest)?;
+        remove_files(&self.config_dir, name, &dest, &config)?;
         crate::config::file::edit(config_file, "", |text| {
             Ok(crate::config::file::remove_section(
                 text,
@@ -1460,11 +1525,12 @@ impl Workers {
     }
 }
 
-/// Drops a worker's key pair and its host-key pin.
+/// Drops a worker's key pair and its host-key pin unless another configured worker uses the pin.
 pub(crate) fn remove_files(
     config_dir: &Path,
     name: &str,
     dest: &Destination,
+    config: &Config,
 ) -> Result<(), String> {
     let key = enrol::key_path(config_dir, name);
     for path in [key.clone(), PathBuf::from(format!("{}.pub", key.display()))] {
@@ -1473,6 +1539,15 @@ pub(crate) fn remove_files(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
+    }
+    // Pins identify hosts and ports, not remote users.
+    if config.workers.iter().any(|(other_name, other)| {
+        other_name != name
+            && other.port == dest.port
+            && Destination::parse(&other.destination)
+                .is_ok_and(|other| other.host.eq_ignore_ascii_case(&dest.host))
+    }) {
+        return Ok(());
     }
     let pins = enrol::known_hosts(config_dir);
     if let Ok(text) = std::fs::read_to_string(&pins) {
@@ -1545,6 +1620,101 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn removing_workers_keeps_a_shared_host_pin_until_the_last_user() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@box\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@box\"\nport = {port}\n\
+                 [workers.other-port]\ndestination = \"alice@box\"\nport = 2200\n\
+                 [workers.other-host]\ndestination = \"alice@elsewhere\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let dest = Destination::parse(&format!("alice@box:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            let unrelated = format!(
+                "[box]:2200 ssh-ed25519 OTHERPORT\n{} ssh-ed25519 OTHERHOST\n",
+                Destination::parse(&format!("alice@elsewhere:{port}"))
+                    .unwrap()
+                    .pin_name()
+            );
+            let all_pins = enrol::set_pin(&unrelated, &dest.pin_name(), "SHARED");
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+            crate::sys::fs::ensure_private_dir(&dir.join("secrets")).unwrap();
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                std::fs::write(&key, "private").unwrap();
+                std::fs::write(key.with_extension("pub"), "public").unwrap();
+            }
+
+            remove_files(&dir, "alice", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "alice");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            for name in config.workers.keys() {
+                let key = enrol::key_path(&dir, name);
+                assert!(key.exists() && key.with_extension("pub").exists());
+            }
+
+            let dest = Destination::parse(&format!("bob@box:{port}")).unwrap();
+            remove_files(&dir, "bob", &dest, &config).unwrap();
+            let key = enrol::key_path(&dir, "bob");
+            assert!(!key.exists() && !key.with_extension("pub").exists());
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), unrelated);
+        }
+    }
+
+    #[test]
+    fn removing_workers_keeps_a_shared_host_pin_with_mixed_case_hosts() {
+        for port in [22, 2222] {
+            let config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            for (name, destination) in [("alice", "alice@BoX"), ("bob", "bob@bOx")] {
+                let dir = crate::sys::fs::tests::scratch("worker-shared-pin-case");
+                let dest = Destination::parse(&format!("{destination}:{port}")).unwrap();
+                let pins = enrol::known_hosts(&dir);
+                let all_pins = enrol::set_pin("", &dest.pin_name(), "SHARED");
+                crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+                remove_files(&dir, name, &dest, &config).unwrap();
+                assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            }
+        }
+    }
+
+    #[test]
+    fn removing_workers_drops_all_shared_host_pin_case_variants() {
+        for port in [22, 2222] {
+            let dir = crate::sys::fs::tests::scratch("worker-shared-pin-variants");
+            let mut config = crate::config::parse(&format!(
+                "[workers.alice]\ndestination = \"alice@BoX\"\nport = {port}\n\
+                 [workers.bob]\ndestination = \"bob@bOx\"\nport = {port}\n"
+            ))
+            .unwrap();
+            let alice = Destination::parse(&format!("alice@BoX:{port}")).unwrap();
+            let bob = Destination::parse(&format!("bob@bOx:{port}")).unwrap();
+            let pins = enrol::known_hosts(&dir);
+            // Older enrolments can leave one pin for each host-name spelling.
+            let all_pins = format!(
+                "{} ssh-ed25519 SHARED\n{} ssh-ed25519 SHARED\n",
+                alice.pin_name(),
+                bob.pin_name()
+            );
+            crate::sys::fs::write_atomic(&pins, all_pins.as_bytes()).unwrap();
+
+            remove_files(&dir, "alice", &alice, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), all_pins);
+            config.workers.remove("alice");
+            remove_files(&dir, "bob", &bob, &config).unwrap();
+            assert_eq!(std::fs::read_to_string(&pins).unwrap(), "");
+        }
+    }
+
+    #[test]
     fn ssh_failures_are_named() {
         assert_eq!(
             classify(
@@ -1608,6 +1778,63 @@ pub(crate) mod tests {
         let ok = finished_of(&json!({"exit": {"code": 0}, "stdout": "", "stderr": ""})).unwrap();
         assert!(ok.success());
         assert!(finished_of(&json!({"exit": {"code": 0}})).is_err());
+    }
+
+    /// A worker PC is named when it speaks an older protocol or runs an older version than the
+    /// hub; a current or newer one is not; an unreachable or never-reached one is unknown, not
+    /// outdated, even with an old `hello` on record.
+    #[test]
+    fn older_worker_pcs_are_named_and_unreachable_ones_unknown() {
+        let view = |state: State, version: Option<&str>, protocol: Option<u32>| View {
+            name: "box".into(),
+            display: "box".into(),
+            destination: "dev@box".into(),
+            port: 22,
+            state,
+            reason: None,
+            version: version.map(str::to_string),
+            protocol,
+            os: None,
+            arch: None,
+            omp: None,
+            lanes: 0,
+            lanes_max: 1,
+            seen_ms: None,
+            repos: Vec::new(),
+            tailscale: false,
+        };
+        let ko = Language::Korean;
+        let old = view(State::Incompatible, Some("0.2.6"), Some(1));
+        assert_eq!(old.standing("0.2.8"), Standing::Behind { held: true });
+        assert_eq!(
+            old.standing_note("0.2.8", ko).unwrap().1,
+            "다른 PC box는 아직 0.2.6이에요. 그 PC에서 `cataly update`를 실행하세요."
+        );
+        assert_eq!(
+            old.standing_note("0.2.8", Language::English).unwrap().1,
+            "The other PC box is still on 0.2.6. Run `cataly update` on that PC."
+        );
+        let behind = view(State::Idle, Some("0.2.7"), Some(PROTOCOL));
+        assert_eq!(behind.standing("0.2.8"), Standing::Behind { held: false });
+        for current in [
+            view(State::Online, Some("0.2.8"), Some(PROTOCOL)),
+            view(State::Online, Some("0.2.9"), Some(PROTOCOL)),
+        ] {
+            assert_eq!(current.standing_note("0.2.8", ko), None);
+        }
+        for unknown in [
+            view(State::Offline, Some("0.2.6"), Some(1)),
+            view(State::Refused, None, None),
+            view(State::Idle, None, None),
+        ] {
+            assert_eq!(
+                unknown.standing_note("0.2.8", ko).unwrap(),
+                (
+                    Standing::Unknown,
+                    "다른 PC box에 연결되지 않아 버전을 알 수 없어요.".to_string()
+                )
+            );
+        }
     }
 
     #[test]

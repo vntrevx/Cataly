@@ -13,6 +13,11 @@
 //! thread the hub's freed memory stayed in a dozen arenas and its RSS kept rising while the live heap
 //! stayed level (`docs/measurements.md`, "Heap slope"). Children never see it: their environment is
 //! built from an allow-list (`sys::command`).
+//!
+//! A stop sends TERM to the hub alone (`KillMode=mixed`, as launchd does): the hub sets its own
+//! stopping mark, then ends its sessions, worker links, job runs and stream jobs itself. What is
+//! left once it exits gets KILL. With systemd's default the whole control group got TERM at once,
+//! so a child could die before the hub knew it was stopping and its exit read as its own.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -130,7 +135,7 @@ pub(crate) fn definition(unit: &Unit<'_>) -> String {
         format!(
             "[Unit]\nDescription=Cataly hub\n\n[Service]\nType=notify\nNotifyAccess=main\n\
 Environment=\"PATH={path}\"\nEnvironment=\"MALLOC_ARENA_MAX=1\"\nEnvironmentFile=-{env_file}\n\
-ExecStart={exe} hub\nRestart=on-failure\nRestartSec=5\nWatchdogSec=30\n\n\
+ExecStart={exe} hub\nKillMode=mixed\nRestart=on-failure\nRestartSec=5\nWatchdogSec=30\n\n\
 [Install]\nWantedBy=default.target\n"
         )
     }
@@ -427,7 +432,7 @@ mod tests {
             assert!(text.contains("<key>SuccessfulExit</key><false/>"));
             assert!(text.contains("<integer>5</integer>"));
         } else {
-            assert!(text.contains("ExecStart=/h/.local/bin/cataly hub"));
+            assert!(text.contains("ExecStart=/h/.local/bin/cataly hub\nKillMode=mixed\n"));
             assert!(text.contains("Restart=on-failure\nRestartSec=5"));
             assert!(text.contains(
                 "Environment=\"PATH=/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"\n"
