@@ -26,6 +26,9 @@
   says: the home directory shows as `~`, other local paths as `[path removed]`, and links lose
   their query. It only flattened the text, so paths and URL queries (tokens among them) from a
   report reached every board destination as written.
+- Korean or other multi-byte text from the hub could reach the OMP extension with U+FFFD in it
+  when a character was split between two socket reads. The extension now decodes the stream
+  across reads, so the text arrives intact.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
