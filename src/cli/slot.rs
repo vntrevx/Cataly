@@ -160,19 +160,24 @@ async fn slot(req: &Request, socket: &Path) -> u8 {
                 Err(_) => {}
             }
         }
-        let left = deadline.map_or(Duration::from_secs(3600), |d| {
-            d.saturating_duration_since(Instant::now())
-        });
-        if left.is_zero() {
+        // Without `--timeout` the wait ends only with a grant or a signal (LANE req. 21).
+        let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+        if left.is_some_and(|l| l.is_zero()) {
             say(&format!(
                 "no grant for slot {} within the timeout",
                 req.name
             ));
             return exit::FAILED;
         }
+        let expired = async {
+            match left {
+                Some(left) => tokio::time::sleep(left).await,
+                None => std::future::pending().await,
+            }
+        };
         let Some((lines, _)) = conn.as_mut() else {
             tokio::select! {
-                () = tokio::time::sleep(RECONNECT.min(left)) => continue,
+                () = tokio::time::sleep(left.map_or(RECONNECT, |l| RECONNECT.min(l))) => continue,
                 _ = int.recv() => return 130,
                 _ = term.recv() => return 143,
                 _ = hup.recv() => return 129,
@@ -206,7 +211,7 @@ async fn slot(req: &Request, socket: &Path) -> u8 {
                     }
                 }
             }
-            () = tokio::time::sleep(left) => {
+            () = expired => {
                 say(&format!("no grant for slot {} within the timeout", req.name));
                 return exit::FAILED;
             }
@@ -303,5 +308,44 @@ mod tests {
         assert!(parse(&words("build --")).is_err());
         assert!(parse(&words("build --priority 0 -- x")).is_err());
         assert!(parse(&words("-- x")).is_err());
+    }
+
+    /// Runs `slot` against a hub that keeps it waiting for `held`, then grants it.
+    async fn granted_after(held: Duration, args: &str) -> u8 {
+        let dir = crate::sys::fs::tests::scratch("slot-wait");
+        let socket = dir.join("hub.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let hub = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            lines.next_line().await.unwrap();
+            let item = |state: &str| {
+                format!(
+                    "{}\n",
+                    json!({ "v": 1, "id": 1, "item": { "state": state, "place": 1 } })
+                )
+            };
+            write.write_all(item("waiting").as_bytes()).await.unwrap();
+            tokio::time::sleep(held).await;
+            let _ = write.write_all(item("granted").as_bytes()).await;
+            // Hold the connection until the client is done.
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+        let code = slot(&parse(&words(args)).unwrap(), &socket).await;
+        hub.abort();
+        code
+    }
+
+    /// LANE req. 21: with no `--timeout` a waiter outlasts a slot held for hours; with one it gives
+    /// up when the timeout runs out.
+    #[tokio::test(start_paused = true)]
+    async fn only_a_given_timeout_ends_the_wait() {
+        let three_hours = Duration::from_hours(3);
+        assert_eq!(granted_after(three_hours, "build -- true").await, 0);
+        assert_eq!(
+            granted_after(three_hours, "build --timeout 10m -- true").await,
+            exit::FAILED
+        );
     }
 }
