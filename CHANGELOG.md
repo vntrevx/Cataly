@@ -20,6 +20,8 @@
 - Discord questions could still use a recommended answer on the old timer after intake restarted,
   even after the waiting time was increased or intake was disabled. Removing the card or ending
   intake now cancels its timer; a restarted intake uses the new waiting time.
+- Relay answers and later turns could post credential-shaped strings unchanged. They are now
+  masked before the reply parts are stored, so retries keep them masked too.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,

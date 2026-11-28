@@ -2512,6 +2512,61 @@ fn contents(fake: &FakeDiscord, room: &str) -> Vec<String> {
         .collect()
 }
 
+/// OPC req. 66: the answer and a later turn are masked in the outbox, before any post or retry.
+/// Ordinary prose resembling a key/value pair is not a credential-shaped string.
+#[test]
+fn answers_and_later_turns_mask_secrets_in_the_outbox_and_retries() {
+    let fake = FakeDiscord::start();
+    let token = format!("ghp_{}", "aB12".repeat(9));
+    let answer = format!("the answer: {token}; token: 3");
+    let later = format!("the background result: {token}; token: 3");
+    let mut hub = background_hub(&fake, &answer, Some(&later));
+    hub.start();
+    ready(&hub);
+    // Refuse the first attempt of each turn, then accept its retry from the durable outbox.
+    fake.script_in(CH, &[400, 0, 400, 0]);
+    let source = "800000000000000406";
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_406,
+        OWNER,
+        "answer and report the background result",
+    ));
+    let creates = fake.wait_creates(4, WAIT);
+    hub.until(WAIT, || {
+        (answer_state(&hub, source) == "posted").then_some(())
+    });
+    assert!(hub.stop().success());
+
+    let answer = "the answer: [masked]; token: 3";
+    let later = "the background result: [masked]; token: 3";
+    assert_eq!(contents(&fake, CH), [answer, later]);
+    assert_eq!(creates.len(), 4);
+    for (create, expected) in creates.iter().zip([answer, answer, later, later]) {
+        assert_eq!(create.body["content"], expected);
+        assert!(!create.body.to_string().contains(&token));
+    }
+    assert_eq!(creates[0].body["nonce"], creates[1].body["nonce"]);
+    assert_eq!(creates[2].body["nonce"], creates[3].body["nonce"]);
+
+    let db = rusqlite::Connection::open_with_flags(
+        hub.state().join("cataly.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let parts: Vec<(i64, String)> = db
+        .prepare(
+            "SELECT turn, text FROM outbox_parts \
+             WHERE relay = 'discord' AND room = ?1 AND source = ?2 ORDER BY idx",
+        )
+        .unwrap()
+        .query_map([CH, source], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(parts, [(0, answer.into()), (1, later.into())]);
+}
+
 /// A turn a background job's result starts after the answer never replaces it: the answer is the
 /// linked reply, and that turn's text follows as its own message in the same room, a reply to
 /// nothing, with its own enforced nonce; each is posted once (DISC-OUT req. 21, 25).
