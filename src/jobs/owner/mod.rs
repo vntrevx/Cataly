@@ -129,6 +129,57 @@ pub(crate) fn gh_answer(args: &[&str], done: &Finished) -> Result<serde_json::Va
         .map_err(|_| format!("gh {} printed no JSON", args.join(" ")))
 }
 
+/// GitHub list pages (WS req. 46): 100 rows each, at most 30.
+const GH_PAGE: usize = 100;
+const GH_PAGES: usize = 30;
+
+/// Every row of a GitHub list endpoint, each page fetched by `read` (WS req. 46), and the list's
+/// total: `total` when the caller knows it, else an object answer's `total_count`. `key` names the
+/// array inside an object answer. Reading stops at a short page or once the total is in; more than
+/// 30 full pages is an error. A `total_count` that differs between pages means the list moved under
+/// the read: it is read once more from the first page, and refused if it moves again.
+pub(crate) async fn gh_list<F>(
+    path: &str,
+    key: Option<&str>,
+    total: Option<usize>,
+    mut read: impl FnMut(String) -> F,
+) -> Result<(Vec<serde_json::Value>, Option<usize>), String>
+where
+    F: Future<Output = Result<serde_json::Value, String>>,
+{
+    let sep = if path.contains('?') { '&' } else { '?' };
+    'read: for _ in 0..2 {
+        let mut rows = Vec::new();
+        let mut advertised = None;
+        for page in 1..=GH_PAGES {
+            let mut answer = read(format!("{path}{sep}per_page={GH_PAGE}&page={page}")).await?;
+            let count = answer
+                .get("total_count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok());
+            if page > 1 && count != advertised {
+                continue 'read;
+            }
+            advertised = count;
+            let found = match key {
+                Some(k) => answer.get_mut(k).map(serde_json::Value::take),
+                None => Some(answer),
+            };
+            let Some(serde_json::Value::Array(batch)) = found else {
+                return Err(format!("{path}: not a list"));
+            };
+            let n = batch.len();
+            rows.extend(batch);
+            let total = total.or(advertised);
+            if n < GH_PAGE || total.is_some_and(|t| rows.len() >= t) {
+                return Ok((rows, total));
+            }
+        }
+        return Err(format!("{path}: more than {} rows", GH_PAGE * GH_PAGES));
+    }
+    Err(format!("{path}: total_count changed while reading"))
+}
+
 /// Network failures as `gh`, `git` and the hub's own deadlines word them, lower case.
 const NETWORK: [&str; 11] = [
     "timed out",
@@ -397,5 +448,37 @@ pub(crate) mod tests {
             ["job.failed"],
             "a 404 is reported at once"
         );
+    }
+
+    /// A list whose `total_count` changes between pages (CI adding a run) is read once more from
+    /// the first page; one that changes again is refused.
+    #[tokio::test]
+    async fn a_list_that_moves_while_paged_is_read_once_more() {
+        let page = |total: usize, rows: usize| serde_json::json!({ "total_count": total, "check_runs": vec![serde_json::json!({}); rows] });
+        let list = |answers: Vec<serde_json::Value>| {
+            let mut answers = answers.into_iter();
+            gh_list("runs", Some("check_runs"), None, move |_| {
+                let next = answers.next();
+                async move { next.ok_or_else(|| "read past the script".to_string()) }
+            })
+        };
+        let (rows, total) = list(vec![
+            page(101, 100),
+            page(102, 1),
+            page(102, 100),
+            page(102, 2),
+        ])
+        .await
+        .unwrap();
+        assert_eq!((rows.len(), total), (102, Some(102)));
+        let moved = list(vec![
+            page(101, 100),
+            page(102, 1),
+            page(102, 100),
+            page(103, 3),
+        ])
+        .await
+        .unwrap_err();
+        assert!(moved.contains("total_count changed"), "{moved}");
     }
 }

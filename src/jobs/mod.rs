@@ -727,6 +727,12 @@ pub(crate) mod tests {
         (ctx, stop, dir)
     }
 
+    pub(crate) fn jobs_of(ctx: &Arc<Ctx>) -> Jobs {
+        Jobs {
+            ctx: Arc::clone(ctx),
+        }
+    }
+
     pub(crate) fn ctx_in(
         store: Store,
         dir: &std::path::Path,

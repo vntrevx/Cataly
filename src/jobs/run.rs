@@ -5,13 +5,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::{Fire, Job, Trigger, Work};
 use crate::store::{Apply, EventRecord, RunEnd, RunRecord, RunStart};
 use crate::sys::command::{self, Exit, KILL_GRACE, Output, Spec};
 use crate::sys::fs::{ensure_private_dir, read_private};
-use crate::sys::now_ms;
+use crate::sys::{now_ms, unique_stem};
 
 use super::event::{BODY_INLINE_MAX, Emit, EventKind, Severity, build};
 use super::memory::Memory;
@@ -108,7 +107,6 @@ fn outcome_text(class: &Class) -> String {
 
 /// Performs one run end to end and returns the events it produced.
 pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>, JobsError> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
     let _slot = ctx
         .command_slots
         .acquire()
@@ -125,7 +123,7 @@ pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>,
     let dir = ctx.files_dir.join("runs").join(&job.name);
     ensure_private_dir(&dir).map_err(JobsError::Fs)?;
     let started_ms = now_ms();
-    let stem = format!("{started_ms}-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+    let stem = unique_stem();
     let stdout_path = dir.join(format!("{stem}.out"));
     let stderr_path = probe.then(|| dir.join(format!("{stem}.err")));
     let run = ctx
