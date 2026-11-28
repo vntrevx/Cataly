@@ -1,7 +1,7 @@
 //! The supervised voice task (`DESIGN.md` 5.2): it runs a call while the config holds valid voice
 //! settings and the provider key reads, and stays off naming the field otherwise. It feeds voice
-//! the configured guild's Gateway facts (VOICE-03), keeping the last READY and guild snapshot so a
-//! call started after the connection came up still sees them, and answers `cataly voice status`,
+//! the configured guild's Gateway facts (VOICE-03), keeping the last READY and guild snapshot with
+//! channel changes so a later call sees current channel types, and answers `cataly voice status`,
 //! `restart` and `reply`.
 
 use std::collections::{BTreeMap, HashMap};
@@ -31,7 +31,7 @@ const FEED: usize = 256;
 struct Gate {
     bot: Option<u64>,
     up: bool,
-    /// Channel types of the configured guild, from its snapshot.
+    /// Channel types of the configured guild, from its snapshot and channel dispatches.
     channels: HashMap<u64, u64>,
     /// Voice states: user to (channel, voice session ID).
     states: BTreeMap<u64, (Option<u64>, String)>,
@@ -41,6 +41,88 @@ struct Gate {
 }
 
 impl Gate {
+    fn seen(&mut self, guild: Option<u64>, seen: Seen<'_>) {
+        match seen {
+            Seen::Up { bot, resumed } => {
+                self.bot = Some(bot);
+                self.up = true;
+                if !resumed {
+                    self.snapshot = false;
+                    self.states.clear();
+                    self.channels.clear();
+                }
+                self.send(GatewayEvent::Ready { bot, resumed });
+            }
+            Seen::Down => {
+                self.up = false;
+                self.send(GatewayEvent::Down);
+            }
+            Seen::Dispatch(kind, d) => {
+                let for_guild = |key: &str| guild.is_some() && id(&d[key]) == guild;
+                match kind {
+                    "GUILD_CREATE" if for_guild("id") => {
+                        self.channels = d["channels"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|c| Some((id(&c["id"])?, c["type"].as_u64()?)))
+                            .collect();
+                        self.states = d["voice_states"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| {
+                                Some((
+                                    id(&v["user_id"])?,
+                                    (id(&v["channel_id"]), v["session_id"].as_str()?.to_string()),
+                                ))
+                            })
+                            .collect();
+                        self.snapshot = true;
+                        if let Some((_, channel)) = self.feed {
+                            let event = self.guild_event(channel);
+                            self.send(event);
+                        }
+                    }
+                    "CHANNEL_CREATE" | "CHANNEL_UPDATE" if for_guild("guild_id") => {
+                        if let (Some(channel), Some(kind)) = (id(&d["id"]), d["type"].as_u64()) {
+                            self.channels.insert(channel, kind);
+                        }
+                    }
+                    "CHANNEL_DELETE" if for_guild("guild_id") => {
+                        if let Some(channel) = id(&d["id"]) {
+                            self.channels.remove(&channel);
+                        }
+                    }
+                    "VOICE_STATE_UPDATE" if for_guild("guild_id") => {
+                        let (Some(user), Some(session)) =
+                            (id(&d["user_id"]), d["session_id"].as_str())
+                        else {
+                            return;
+                        };
+                        let channel = id(&d["channel_id"]);
+                        self.states.insert(user, (channel, session.to_string()));
+                        self.send(GatewayEvent::VoiceState {
+                            user,
+                            channel,
+                            session_id: session.to_string(),
+                        });
+                    }
+                    "VOICE_SERVER_UPDATE" if for_guild("guild_id") => {
+                        let Some(token) = d["token"].as_str() else {
+                            return;
+                        };
+                        self.send(GatewayEvent::VoiceServer {
+                            token: token.to_string(),
+                            endpoint: d["endpoint"].as_str().map(str::to_string),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn guild_event(&self, channel: u64) -> GatewayEvent {
         GatewayEvent::Guild {
             channel_type: self.channels.get(&channel).copied(),
@@ -161,76 +243,7 @@ impl<R: Runtime> Voice<R> {
 
     fn seen(&self, seen: Seen<'_>) {
         let guild = self.guild();
-        let mut gate = lock(&self.gate);
-        match seen {
-            Seen::Up { bot, resumed } => {
-                gate.bot = Some(bot);
-                gate.up = true;
-                if !resumed {
-                    gate.snapshot = false;
-                    gate.states.clear();
-                    gate.channels.clear();
-                }
-                gate.send(GatewayEvent::Ready { bot, resumed });
-            }
-            Seen::Down => {
-                gate.up = false;
-                gate.send(GatewayEvent::Down);
-            }
-            Seen::Dispatch(kind, d) => {
-                let for_guild = |key: &str| guild.is_some() && id(&d[key]) == guild;
-                match kind {
-                    "GUILD_CREATE" if for_guild("id") => {
-                        gate.channels = d["channels"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|c| Some((id(&c["id"])?, c["type"].as_u64()?)))
-                            .collect();
-                        gate.states = d["voice_states"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|v| {
-                                Some((
-                                    id(&v["user_id"])?,
-                                    (id(&v["channel_id"]), v["session_id"].as_str()?.to_string()),
-                                ))
-                            })
-                            .collect();
-                        gate.snapshot = true;
-                        if let Some((_, channel)) = gate.feed {
-                            let event = gate.guild_event(channel);
-                            gate.send(event);
-                        }
-                    }
-                    "VOICE_STATE_UPDATE" if for_guild("guild_id") => {
-                        let (Some(user), Some(session)) =
-                            (id(&d["user_id"]), d["session_id"].as_str())
-                        else {
-                            return;
-                        };
-                        let channel = id(&d["channel_id"]);
-                        gate.states.insert(user, (channel, session.to_string()));
-                        gate.send(GatewayEvent::VoiceState {
-                            user,
-                            channel,
-                            session_id: session.to_string(),
-                        });
-                    }
-                    "VOICE_SERVER_UPDATE" if for_guild("guild_id") => {
-                        let Some(token) = d["token"].as_str() else {
-                            return;
-                        };
-                        gate.send(GatewayEvent::VoiceServer {
-                            token: token.to_string(),
-                            endpoint: d["endpoint"].as_str().map(str::to_string),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
+        lock(&self.gate).seen(guild, seen);
     }
 
     fn set(&self, state: &'static str, reason: Option<String>) {
@@ -486,5 +499,114 @@ impl<R: Runtime> Voice<R> {
             }
         }
         Value::Object(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::discord::tap::DISPATCHES;
+
+    fn snapshot() -> Gate {
+        let mut gate = Gate::default();
+        gate.seen(
+            Some(1),
+            Seen::Dispatch(
+                "GUILD_CREATE",
+                &json!({"id": "1", "channels": [{"id": "3", "type": 2}], "voice_states": []}),
+            ),
+        );
+        gate
+    }
+
+    #[test]
+    fn channel_create_is_known_to_the_next_call() {
+        let mut gate = snapshot();
+        assert!(gate.snapshot);
+        assert!(matches!(
+            gate.guild_event(4),
+            GatewayEvent::Guild {
+                channel_type: None,
+                ..
+            }
+        ));
+        gate.seen(
+            Some(1),
+            Seen::Dispatch(
+                "CHANNEL_CREATE",
+                &json!({"guild_id": "1", "id": "4", "type": 2}),
+            ),
+        );
+        assert!(matches!(
+            gate.guild_event(4),
+            GatewayEvent::Guild {
+                channel_type: Some(2),
+                ..
+            }
+        ));
+        assert_eq!(gate.channels.get(&3), Some(&2));
+    }
+
+    #[test]
+    fn channel_updates_and_deletes_refresh_the_next_call() {
+        let mut gate = snapshot();
+        gate.seen(
+            Some(1),
+            Seen::Dispatch(
+                "CHANNEL_UPDATE",
+                &json!({"guild_id": "1", "id": "3", "type": 13}),
+            ),
+        );
+        assert!(matches!(
+            gate.guild_event(3),
+            GatewayEvent::Guild {
+                channel_type: Some(13),
+                ..
+            }
+        ));
+        gate.seen(
+            Some(1),
+            Seen::Dispatch("CHANNEL_DELETE", &json!({"guild_id": "1", "id": "3"})),
+        );
+        assert!(matches!(
+            gate.guild_event(3),
+            GatewayEvent::Guild {
+                channel_type: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn channel_dispatches_ignore_other_guilds_and_invalid_data() {
+        let mut gate = snapshot();
+        for kind in ["CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"] {
+            for data in [
+                json!({"guild_id": "2", "id": "3", "type": 13}),
+                json!({"id": "3", "type": 13}),
+                json!({"guild_id": "1", "id": "invalid", "type": 13}),
+                json!({"guild_id": "1", "type": 13}),
+            ] {
+                gate.seen(Some(1), Seen::Dispatch(kind, &data));
+            }
+            gate.seen(
+                None,
+                Seen::Dispatch(kind, &json!({"guild_id": "1", "id": "3", "type": 13})),
+            );
+        }
+        for kind in ["CHANNEL_CREATE", "CHANNEL_UPDATE"] {
+            gate.seen(
+                Some(1),
+                Seen::Dispatch(kind, &json!({"guild_id": "1", "id": "3"})),
+            );
+        }
+        assert_eq!(gate.channels, HashMap::from([(3, 2)]));
+    }
+
+    #[test]
+    fn channel_changes_are_tapped() {
+        for kind in ["CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"] {
+            assert!(DISPATCHES.contains(&kind), "missing voice dispatch: {kind}");
+        }
     }
 }

@@ -8,8 +8,14 @@ use super::gateway::Ops;
 use crate::config::Config;
 
 /// Dispatches handed to the tap.
-pub(crate) const DISPATCHES: [&str; 3] =
-    ["GUILD_CREATE", "VOICE_STATE_UPDATE", "VOICE_SERVER_UPDATE"];
+pub(crate) const DISPATCHES: [&str; 6] = [
+    "GUILD_CREATE",
+    "CHANNEL_CREATE",
+    "CHANNEL_UPDATE",
+    "CHANNEL_DELETE",
+    "VOICE_STATE_UPDATE",
+    "VOICE_SERVER_UPDATE",
+];
 
 /// A Gateway fact for the tap. Only a voice build reads them.
 #[cfg_attr(not(feature = "voice"), allow(dead_code))]

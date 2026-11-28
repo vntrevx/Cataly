@@ -2,6 +2,9 @@
 
 ## 0.2.9 (Unreleased)
 
+- Switching voice to a Discord channel created while the hub is running no longer rejects it as
+  "not a guild voice channel". The voice channel cache now follows channel creations, updates and
+  deletions in the configured guild.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

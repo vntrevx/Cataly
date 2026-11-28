@@ -250,7 +250,9 @@ Totals: KEEP 36, SIMPLIFY 12, MERGE 3, DROP 11 (62 capabilities).
     close 120 s (>0); wake level -45 dBFS (strictly between -120 and 0); per-minute speech prices
     for the summary estimate only. Invalid settings refuse voice and name the field.
 51. VOICE-03 The one Discord Gateway connection also requests guild and voice-state events; voice
-    reads only the configured guild's snapshot and voice-state updates.
+    reads only the configured guild's snapshot, channel creations/updates/deletions and voice-state
+    updates. Channel types stay current so changing the configured voice channel needs no Gateway
+    reconnect.
 52. VOICE-04 At start the channel must be a guild voice channel and the owner ID must differ from
     the bot's. Join neither muted nor deafened.
 53. VOICE-04 Any non-ready link state starts one 30 s readiness deadline for all recovery; missing
