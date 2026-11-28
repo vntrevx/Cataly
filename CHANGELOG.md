@@ -2,6 +2,8 @@
 
 ## 0.2.9 (Unreleased)
 
+- Telegram could lose an owner message when its arrival queue was full or its store write failed.
+  It now stops that batch, keeps the offset before the unsaved update and retries after a minute.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

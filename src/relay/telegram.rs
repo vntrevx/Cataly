@@ -8,7 +8,8 @@
 //!   The saved offset is sent only while the last non-empty batch is under 24 hours old by the local
 //!   clock; a replay guard of the handed-off message identities in the latest batch (at most 100)
 //!   skips repeats. Offset, batch time and guard are saved in one store commit after each update; a
-//!   failed save stops polling until it succeeds (MSG req. 5). 409: unhealthy, again every 30 s.
+//!   failed save stops polling until it succeeds (MSG req. 5). A full queue or failed arrival stops
+//!   the batch without advancing past that update, then retries after 60 s. 409: unhealthy, every 30 s.
 //!   401: stopped until the owner acts. 429: the requested delay is waited out however long.
 //! - Gate and normalise (TELE req. 24-28): the owner, not a bot, in his DM or the group and topic;
 //!   live-location edits are dropped. An edit is handed off as its own request; the room is the chat,
@@ -861,6 +862,13 @@ async fn profile(api: &Api) {
     }
 }
 
+/// Whether an update was consumed, or must be retried before acknowledging it to Telegram.
+enum Updated {
+    Admitted((i64, i64, i64)),
+    Dropped,
+    Failed,
+}
+
 /// The long-poll loop.
 struct Poller<T: Runtime> {
     api: Arc<Api>,
@@ -942,8 +950,8 @@ impl<T: Runtime> Poller<T> {
         });
     }
 
-    /// One poll response. `Err(None)`: a protocol error, retried with backoff; `Err(Some(wait))`: a
-    /// failed save, retried after the wait.
+    /// One poll response. `Err(None)`: a protocol error, retried with backoff; `Err(Some(wait))`: an
+    /// arrival could not be saved, so retry the unconsumed updates after the wait.
     async fn batch(&mut self, v: &Value, read_at: Instant) -> Result<(), Option<Duration>> {
         let Some(updates) = v.as_array().filter(|a| a.len() <= BATCH_MAX) else {
             self.protocol("the update list is not an array of at most 100");
@@ -975,11 +983,21 @@ impl<T: Runtime> Poller<T> {
         }
         let old_guard = std::mem::take(&mut self.state.guard);
         let mut guard = Vec::new();
-        for (u, id) in updates.iter().zip(ids) {
-            if let Some(identity) = self.update(u, id, read_at, &old_guard).await {
-                guard.push(identity);
-                if guard.len() > GUARD_MAX {
-                    guard.remove(0);
+        for (index, (u, id)) in updates.iter().zip(ids).enumerate() {
+            match self.update(u, id, read_at, &old_guard).await {
+                Updated::Admitted(identity) => {
+                    guard.push(identity);
+                    if guard.len() > GUARD_MAX {
+                        guard.remove(0);
+                    }
+                }
+                Updated::Dropped => {}
+                Updated::Failed => {
+                    if index == 0 {
+                        self.state.guard = old_guard;
+                    }
+                    self.unhealthy("an owner message could not be queued");
+                    return Err(Some(SAVE_RETRY));
                 }
             }
             self.state.offset = Some(id + 1);
@@ -1000,21 +1018,27 @@ impl<T: Runtime> Poller<T> {
         self.shared.set(|h| h.last_error = Some(why.to_string()));
     }
 
-    /// One update: gate, guard, queue. The identity when it was handed off (or already was).
+    /// One update: distinguish admission (including duplicates), policy drops and retryable failure.
     async fn update(
         &self,
         u: &Value,
         update_id: i64,
         read_at: Instant,
         guard: &[(i64, i64, i64)],
-    ) -> Option<(i64, i64, i64)> {
+    ) -> Updated {
         let (m, edit) = match (u.get("message"), u.get("edited_message")) {
             (Some(m), _) => (m, false),
             (None, Some(m)) => (m, true),
-            _ => return None,
+            _ => return Updated::Dropped,
         };
-        let chat = m.get("chat")?.get("id")?.as_i64()?;
-        let mid = m.get("message_id")?.as_i64()?;
+        let (Some(chat), Some(mid)) = (
+            m.get("chat")
+                .and_then(|c| c.get("id"))
+                .and_then(Value::as_i64),
+            m.get("message_id").and_then(Value::as_i64),
+        ) else {
+            return Updated::Dropped;
+        };
         let edit_date = if edit {
             m.get("edit_date").and_then(Value::as_i64).unwrap_or(0)
         } else {
@@ -1022,10 +1046,10 @@ impl<T: Runtime> Poller<T> {
         };
         let identity = (chat, mid, edit_date);
         if guard.contains(&identity) {
-            return Some(identity);
+            return Updated::Admitted(identity);
         }
         let Gate::Owner(room, parent) = gate(m, edit, &self.settings) else {
-            return None;
+            return Updated::Dropped;
         };
         if let Some(date) = m.get("date").and_then(Value::as_i64) {
             let lag = (now_ms() - date * 1000).max(0);
@@ -1049,12 +1073,12 @@ impl<T: Runtime> Poller<T> {
                     "Telegram queue full; message left for later",
                     &[("message", &key)],
                 );
-                None
+                Updated::Failed
             }
-            Ok(_) => Some(identity),
+            Ok(_) => Updated::Admitted(identity),
             Err(e) => {
                 log::warn("Telegram owner message not queued", &[("error", &e)]);
-                None
+                Updated::Failed
             }
         }
     }

@@ -156,7 +156,9 @@ Totals: KEEP 36, SIMPLIFY 12, MERGE 3, DROP 11 (62 capabilities).
 17. TELE-01 The position store must be writable before intake starts. Positions are bound to the
     bot ID: another bot's position is refused. Token rotation for the same bot keeps it.
 18. TELE-02 Each poll asks for at most 100 updates, a 25 s wait, and only new and edited messages.
-    The next poll starts immediately after each response; the long poll is the wait.
+    The next poll starts immediately after a successfully consumed response; the long poll is the
+    wait. A full arrival queue or failed arrival write stops the batch before the unsaved update,
+    leaves its offset unacknowledged and shows unhealthy; retry from that offset after 60 s.
 19. TELE-02 A response that is not an array, has over 100 items, or has an update ID that is not a
     non-negative safe integer is a protocol error: nothing is handed off; retry with backoff.
 20. TELE-02 409 (another consumer polling this bot): unhealthy, log once, retry every 30 s. 401:

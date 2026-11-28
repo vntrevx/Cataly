@@ -458,6 +458,120 @@ fn telegram_long_rate_limit_is_waited_out() {
     assert!(hub.stop().success());
 }
 
+/// A failed arrival must stop the batch, not acknowledge it or any later update to Telegram.
+fn telegram_retries_unsaved_updates(full: bool) {
+    let tg = FakeTelegram::start();
+    let mut hub = relay_hub(Some(&tg), None, "");
+    // Create the store, then set up the failure before any update can be polled.
+    hub.start();
+    assert!(hub.stop().success());
+    let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+    db.busy_timeout(WAIT).unwrap();
+    if full {
+        // Account for a full queue without allocating 256 MiB; a held room cannot drain it.
+        // The full admission sets catch_up after checking the size. Free the fixture in that
+        // same hub-writer transaction, so this attempt still fails but the retry can succeed.
+        db.execute_batch(
+            "INSERT INTO positions (relay, room, position, held, updated_ms) \
+             VALUES ('telegram', 'full', 0, 'test', 0); \
+             INSERT INTO arrival_queue \
+             (relay, room, message, seq, position_at, raw, bytes, created_ms) \
+             VALUES ('telegram', 'full', '1', 1, 0, '{}', 268435456, 0); \
+             CREATE TRIGGER free_telegram_queue AFTER INSERT ON relay_flags \
+             WHEN NEW.relay = 'telegram' AND NEW.flag = 'catch_up' \
+             BEGIN DELETE FROM arrival_queue WHERE relay = 'telegram' AND room = 'full'; END;",
+        )
+        .unwrap();
+    } else {
+        // Only arrival writes fail: the broken poller can still save its advanced offset.
+        // The preceding policy drop starts a 30 s failure window, shorter than the 60 s retry.
+        // Leave the trigger installed; no outside writer is needed to recover.
+        db.execute_batch(
+            "CREATE TRIGGER fail_telegram_arrival BEFORE INSERT ON arrival_queue \
+             WHEN NEW.relay = 'telegram' AND NEW.message = '12' \
+             AND CAST(strftime('%s', 'now') AS INTEGER) * 1000 < \
+                 (SELECT updated_ms + 30000 FROM relay_state WHERE relay = 'telegram') \
+             BEGIN SELECT RAISE(ABORT, 'test arrival write failure'); END;",
+        )
+        .unwrap();
+    }
+    // The hub owns all writes while running; enforce read-only assertions on this connection.
+    db.execute_batch("PRAGMA query_only=ON;").unwrap();
+    tg.push(
+        "message",
+        FakeTelegram::message(11, FakeTelegram::dm(), 8, "not the owner"),
+    );
+    let failed = tg.push(
+        "message",
+        FakeTelegram::message(12, FakeTelegram::dm(), 7, "retry this request"),
+    );
+    let later = tg.push(
+        "message",
+        FakeTelegram::message(13, FakeTelegram::dm(), 7, "keep this request behind it"),
+    );
+    let before = tg.calls("getUpdates").len();
+    hub.start();
+    let health = hub.until(WAIT, || {
+        let health = status(&hub, "telegram");
+        (health["health"]["state"] == "unhealthy" || tg.calls("getUpdates").len() >= before + 2)
+            .then_some(health)
+    });
+    let state: String = db
+        .query_row(
+            "SELECT doc FROM relay_state WHERE relay = 'telegram'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let state: Value = serde_json::from_str(&state).unwrap();
+    assert_eq!(
+        state["offset"], failed,
+        "only the policy drop may advance the offset"
+    );
+    assert_eq!(health["health"]["state"], "unhealthy");
+    let admitted: i64 = db
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM arrival_queue WHERE relay = 'telegram' AND room = '7') \
+             + (SELECT COUNT(*) FROM handoffs WHERE relay = 'telegram' AND room = '7')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        admitted, 0,
+        "neither the failed update nor the rest of the batch was queued"
+    );
+    assert_eq!(state["guard"].as_array().unwrap().len(), 0);
+
+    // Allow ample scheduling headroom beyond the poller's 60 s save retry.
+    let polls = tg.wait(Duration::from_secs(180), |f| {
+        let polls = f.calls("getUpdates");
+        (polls.len() >= before + 2).then_some(polls)
+    });
+    assert_eq!(polls[before + 1].body["offset"], failed);
+    assert!(polls[before + 1].at.duration_since(polls[before].at) >= Duration::from_secs(60));
+    tg.wait(WAIT, |f| tg_replies_to(f, 12).pop());
+    tg.wait(WAIT, |f| tg_replies_to(f, 13).pop());
+    tg.wait(WAIT, |f| {
+        f.calls("getUpdates")
+            .into_iter()
+            .find(|p| p.body["offset"] == later + 1)
+    });
+    assert_eq!(requests(&hub, "[telegram 7/12]").len(), 1);
+    assert_eq!(requests(&hub, "[telegram 7/13]").len(), 1);
+    assert!(hub.stop().success());
+}
+
+#[test]
+fn telegram_retries_unsaved_updates_when_queue_is_full() {
+    telegram_retries_unsaved_updates(true);
+}
+
+#[test]
+fn telegram_retries_unsaved_updates_after_store_error() {
+    telegram_retries_unsaved_updates(false);
+}
+
 /// Check 1: the offset survives a restart and a replayed update is not handed off again.
 #[test]
 fn telegram_offset_and_replay_guard_hold_across_restarts() {
