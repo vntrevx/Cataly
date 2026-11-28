@@ -1200,10 +1200,17 @@ async fn service(enable: bool, paths: &Paths) -> Outcome {
         && !Path::new(&config.omp.path).is_absolute()
     {
         let value = omp.display().to_string();
-        if let Err(e) = super::setup::write_one(paths, "omp", "path", &value) {
+        let rendered = crate::config::file::toml_string(&value);
+        if let Err(e) = super::setup::write_one(paths, "omp", "path", &rendered) {
             return Outcome::Held(e);
         }
         notes.push(format!("[omp] path set to {value}"));
+    }
+    if !config.setup.service {
+        match super::setup::write_one(paths, "setup", "service", "true") {
+            Ok(()) => notes.push("[setup] service set to true".into()),
+            Err(e) => return Outcome::Held(e),
+        }
     }
     match enable_service(&l, paths, &config).await {
         Ok((file, more)) => {

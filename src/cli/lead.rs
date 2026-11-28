@@ -24,10 +24,21 @@ fn text(v: &Value, key: &str) -> String {
 }
 
 fn print_view(v: &Value) {
+    let held = v.get("phase").and_then(Value::as_str) == Some("held");
     let reason = v
         .get("reason")
         .and_then(Value::as_str)
-        .map_or_else(String::new, |r| format!(" ({r})"));
+        .map_or_else(String::new, |r| {
+            // A hold says why in plain words, as its notice does; the raw reason is in `--json`.
+            let r = if held {
+                crate::host::lead::notice::Cause::of(r)
+                    .text(crate::config::Language::English)
+                    .0
+            } else {
+                r
+            };
+            format!(" ({r})")
+        });
     match v.get("asleep").filter(|a| a.is_object()) {
         Some(a) => out::line(&format!(
             "lead     asleep since {}, session {}; it wakes when a message needs it",

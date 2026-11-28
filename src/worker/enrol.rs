@@ -61,6 +61,15 @@ impl Destination {
         format!("{}@{}", self.user, self.host)
     }
 
+    /// The config destination, with IPv6 brackets so the separate port can be appended.
+    pub(crate) fn config_target(&self) -> String {
+        if self.host.contains(':') {
+            format!("{}@[{}]", self.user, self.host)
+        } else {
+            self.target()
+        }
+    }
+
     /// The `known_hosts` name: `host`, or `[host]:port` on another port (sshd(8)).
     pub(crate) fn pin_name(&self) -> String {
         if self.port == 22 {
@@ -319,7 +328,11 @@ pub(crate) fn ed25519_key(text: &str) -> Option<String> {
 pub(crate) fn set_pin(text: &str, name: &str, blob: &str) -> String {
     let mut out: Vec<String> = text
         .lines()
-        .filter(|l| l.split_whitespace().next() != Some(name))
+        .filter(|l| {
+            !l.split_whitespace()
+                .next()
+                .is_some_and(|pin| pin.eq_ignore_ascii_case(name))
+        })
         .map(str::to_string)
         .collect();
     out.push(format!("{name} ssh-ed25519 {blob}"));
@@ -332,7 +345,11 @@ pub(crate) fn set_pin(text: &str, name: &str, blob: &str) -> String {
 pub(crate) fn drop_pin(text: &str, name: &str) -> String {
     let kept: Vec<&str> = text
         .lines()
-        .filter(|l| l.split_whitespace().next() != Some(name))
+        .filter(|l| {
+            !l.split_whitespace()
+                .next()
+                .is_some_and(|pin| pin.eq_ignore_ascii_case(name))
+        })
         .collect();
     let mut joined = kept.join("\n");
     if !joined.is_empty() {
@@ -442,6 +459,28 @@ mod tests {
     }
 
     #[test]
+    fn config_destinations_round_trip_without_changing_ssh_targets() {
+        for (text, config, ssh) in [
+            ("dev@[fd7a::1]:2222", "dev@[fd7a::1]", "dev@fd7a::1"),
+            ("dev@[::1]", "dev@[::1]", "dev@::1"),
+            ("dev@linux-box", "dev@linux-box", "dev@linux-box"),
+            (
+                "dev@100.101.102.103:2222",
+                "dev@100.101.102.103",
+                "dev@100.101.102.103",
+            ),
+        ] {
+            let d = Destination::parse(text).unwrap();
+            assert_eq!(d.target(), ssh, "{text}");
+            let saved = d.config_target();
+            let reloaded = Destination::parse(&format!("{saved}:{}", d.port))
+                .expect("the stored destination and port must parse");
+            assert_eq!(reloaded, d, "{text}");
+            assert_eq!(saved, config, "{text}");
+        }
+    }
+
+    #[test]
     fn the_key_line_round_trips_and_names_the_hub() {
         let line = format!("ssh-ed25519 {BLOB} cataly-hub-3f2a9c");
         let key = HubKey::parse(&line).unwrap();
@@ -500,6 +539,29 @@ mod tests {
         );
         assert_eq!(drop_pin(&pins, "[h]:2222"), "other ssh-ed25519 X\n");
         assert_eq!(drop_pin(&pins, "h"), pins);
+    }
+
+    #[test]
+    fn host_pins_replace_and_remove_case_variants() {
+        for (first, second, other_port) in [
+            ("BoX", "bOx", "[box]:2222"),
+            ("[BoX]:2222", "[bOx]:2222", "[box]:2200"),
+        ] {
+            let unrelated = format!(
+                "{other_port} ssh-ed25519 OTHERPORT\n\
+                 elsewhere ssh-ed25519 OTHERHOST\n"
+            );
+            let pins = format!(
+                "{first} ssh-ed25519 OLD\n\
+                 {second} ssh-ed25519 OLD\n\
+                 {unrelated}"
+            );
+            assert_eq!(
+                set_pin(&pins, second, BLOB),
+                format!("{unrelated}{second} ssh-ed25519 {BLOB}\n")
+            );
+            assert_eq!(drop_pin(&pins, second), unrelated);
+        }
     }
 
     #[test]
