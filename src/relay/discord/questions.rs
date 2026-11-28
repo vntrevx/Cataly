@@ -26,6 +26,7 @@ use crate::log;
 use crate::relay::Inbound;
 use crate::relay::text::DISCORD_LIMIT;
 use crate::store::relay::{QueueRow, RelayWrite};
+use crate::sys::secrets;
 
 mod approval;
 pub(crate) mod ledger;
@@ -166,8 +167,10 @@ impl Cards {
     }
 }
 
-/// Keeps text from mentioning anyone, opening code spans or forming Markdown (DISC-OUT req. 63).
+/// Masks credentials before escaping could hide their shape, then prevents mentions, code spans
+/// and Markdown (OPC-86, DISC-OUT req. 63). Only displayed text goes through this, not answer values.
 pub(crate) fn neutral(text: &str) -> String {
+    let text = secrets::mask(text);
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -305,14 +308,15 @@ fn local_notice(dialog: &Dialog, remote_approvals: bool) -> String {
         .flatten()
         .map(String::as_str)
         .collect();
-    let raw = raw.join(" ");
+    // Mask the full detail before a cut can hide a credential's shape.
+    let raw = neutral(&raw.join(" "));
     let mut detail: String = raw.chars().take(NOTICE_DETAIL).collect();
     if detail.len() < raw.len() {
         detail.push('…');
     }
     let mut text = format!("**Waiting on the machine:** {what}");
     if !detail.is_empty() {
-        let _ = write!(text, ": {}", neutral(&detail));
+        let _ = write!(text, ": {detail}");
     }
     let _ = write!(text, " ({why}). Answer it there: ");
     let id = &dialog.id;
@@ -571,12 +575,13 @@ fn buttons(
         let components: Vec<Value> = chunk
             .iter()
             .map(|(i, label)| {
+                let label = secrets::mask(label);
                 let label = if !approval && Some(*i) == recommended {
-                    marked(label, mark, LABEL_MAX)
+                    marked(&label, mark, LABEL_MAX)
                 } else if label.chars().count() > LABEL_MAX {
                     format!("Option {}", i + 1)
                 } else {
-                    (*label).clone()
+                    label.into_owned()
                 };
                 let style = match (approval, *i) {
                     (true, 0) => 3,
@@ -1401,6 +1406,44 @@ mod tests {
     }
 
     #[test]
+    fn question_secrets_are_masked_without_changing_answers() {
+        let body_token = format!("ghp_{}", "a".repeat(36));
+        let label_token = format!("ghp_{}", "b".repeat(36));
+        let value = format!("ghp_{}", "c".repeat(36));
+        let prefix = "x".repeat(50);
+        let label = format!("{prefix} {label_token}");
+        let html = format!(
+            r#"<form><p>Use {body_token}?</p><label><input type="radio" name="color" value="{value}" checked> {label}</label><label><input type="radio" name="color" value="no"> No</label></form>"#
+        );
+        let dialog = dialog_of(&json!({"id": "f", "method": "form", "html": html})).unwrap();
+        let card = card(&dialog);
+        assert!(card.body.contains(r"Use \[masked\]?"), "{}", card.body);
+        let choices = choice_lines(&card.choices, Some(0), " (recommended)");
+        assert!(
+            choices.contains(&format!(r"1. {prefix} \[masked\]")),
+            "{choices}"
+        );
+        for recommended in [None, Some(0)] {
+            let buttons = buttons("s", &card.choices, recommended, false, " (recommended)");
+            let mark = if recommended.is_some() {
+                " (recommended)"
+            } else {
+                ""
+            };
+            assert_eq!(
+                buttons[0]["components"][0]["label"],
+                format!("{prefix} [masked]{mark}")
+            );
+            assert_eq!(buttons[0]["components"][0]["custom_id"], "cy:s:0");
+        }
+        assert_eq!(card.choices[0], label);
+        let expected = json!({"data": {"color": value}});
+        assert_eq!(answer_of(&card, &dialog, 0).unwrap(), expected);
+        assert_eq!(typed_answer(&card, "1").unwrap(), expected);
+        assert_eq!(neutral("token: 3"), "token: 3");
+    }
+
+    #[test]
     fn omp_forms_become_questions() {
         let html = r#"<form><fieldset><legend>Pick a color</legend><label><input type="radio" name="color" value="r"> Red</label><label><input type="radio" name="color" value="b" checked> Blue</label></fieldset><input type="hidden" name="k" value="v"></form>"#;
         let d = dialog_of(&json!({"id": "f", "method": "form", "html": html})).unwrap();
@@ -1761,6 +1804,26 @@ mod tests {
             long.ends_with(" (추천)") && long.chars().count() == 100,
             "{long}"
         );
+    }
+
+    #[test]
+    fn local_notices_mask_secrets_before_shortening() {
+        // A raw cut would leave fewer than the 30 characters needed to recognise this token.
+        let padding = "界".repeat(NOTICE_DETAIL - 20);
+        let token = format!("ghp_{}", "a".repeat(36));
+        let dialog = dialog_of(&json!({
+            "id": "a-1", "method": "select", "title": padding, "message": token,
+            "options": ["Approve Once", "Deny"]
+        }))
+        .unwrap();
+        let text = local_notice(&dialog, false);
+        assert!(
+            text.contains(&format!(
+                r": {padding} \[masked\] (remote approvals are off)."
+            )),
+            "{text}"
+        );
+        assert_eq!(dialog.message.as_deref(), Some(token.as_str()));
     }
 
     #[test]

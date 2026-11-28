@@ -1905,6 +1905,63 @@ fn a_question_button_answers_the_recorded_question_once() {
     assert!(hub.stop().success());
 }
 
+/// Question text and labels are masked before posting or cutting, but an owner's press still
+/// records the original option. Closing the question must not put the secret back on Discord.
+#[test]
+fn a_recorded_question_masks_secrets_without_changing_its_answer() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.start();
+    ready(&hub);
+    let mut lead = ToolBridge::connect(&hub);
+    let body_token = format!("ghp_{}", "a".repeat(36));
+    let label_token = format!("ghp_{}", "b".repeat(36));
+    let prefix = "x".repeat(60);
+    let option = format!("{prefix} {label_token}");
+    let (id, message) = record_question(
+        &mut lead,
+        &json!({ "text": format!("Use {body_token}? token: 3"),
+            "options": [option, "no"], "recommended": 1 }),
+    );
+    let posted = fake
+        .bot_messages(CH)
+        .into_iter()
+        .find(|m| m["id"] == message.as_str())
+        .unwrap();
+    let content = posted["content"].as_str().unwrap();
+    assert!(content.contains(r"Use \[masked\]? token: 3"), "{content}");
+    assert!(
+        content.contains(&format!(r"1. {prefix} \[masked\]")),
+        "{content}"
+    );
+    let first = &posted["components"][0]["components"][0];
+    assert_eq!(first["label"], format!("1. {prefix} [masked]"));
+    assert_eq!(first["custom_id"], format!("cy:{id}:0"));
+    assert_eq!(first["style"], 1);
+
+    fake.press(OWNER, CH, &message, &button(&posted, 0));
+    assert_eq!(callback(&fake, 0).body["type"], 6);
+    let result = hub.until(WAIT, || {
+        let row = ledger(&hub, &id);
+        (row.0 == "answered").then_some(row)
+    });
+    assert!(
+        result
+            .1
+            .unwrap()
+            .ends_with(&format!(": option 1 ({option})"))
+    );
+    let edited = closed(&fake, &message);
+    let content = edited["content"].as_str().unwrap();
+    assert!(content.contains(r"Use \[masked\]? token: 3"), "{content}");
+    assert!(
+        content.ends_with(&format!(r"Answered by Master: 1. {prefix} \[masked\]")),
+        "{content}"
+    );
+    assert!(!content.contains("ghp"), "{content}");
+    assert!(hub.stop().success());
+}
+
 /// A recommended option is never chosen by itself, whatever the quiet time of OMP's questions. A
 /// reply naming an option answers the question and closes its buttons; a press after that is
 /// refused and records nothing.

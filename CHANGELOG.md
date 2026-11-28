@@ -9,6 +9,11 @@
 - Discord: a form with an optional radio group or select left unanswered was refused, its card
   closed and posted again, so the choice had to be made. The unselected field is now left out of
   the answer, as OMP does, and the form is submitted.
+- Questions could expose credential-shaped strings in their text and choice labels on Discord.
+  Mask them before formatting or shortening, including local-only waiting notices, approval
+  reasons and details, and closing edits, while keeping the original option values for answers.
+  reasons and details, the approval card's command block, and closing edits, while keeping the
+  original option values for answers and the command that runs.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,

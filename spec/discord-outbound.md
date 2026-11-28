@@ -289,8 +289,10 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
     nothing selected defaults to its first enabled option).
 63. The question lists the form's visible text and, per field: label, type, required or optional,
     limits, enabled choices with exact values, default, and whether a free "other" value is allowed.
-    All shown text is neutralised so it cannot mention anyone, open code spans or inject Markdown.
-    Refuse if this summary exceeds 1500 characters.
+    Credential-shaped strings in question text and choice labels are masked before formatting or
+    shortening (OPC-86), including recorded `question.ask` questions and closing edits. Answer values
+    stay unchanged. All shown text is neutralised so it cannot mention anyone, open code spans or
+    inject Markdown. Refuse if this summary exceeds 1500 characters.
 64. A form is "single choice" when exactly one editable field exists and it is a radio group or
     single select; such forms get buttons. It "accepts plain text" when its single editable field is
     text or textarea, or a single choice that allows an "other" value.

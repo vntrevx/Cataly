@@ -15,6 +15,7 @@ use super::{Card, Kind, State, neutral};
 use crate::host::Runtime;
 use crate::host::dialogs::Question;
 use crate::relay::discord::intake::Intake;
+use crate::sys::secrets;
 
 /// A select holds at most 25 options; a message at most 5 rows; a modal at most 5 inputs.
 const OPTIONS_MAX: usize = 25;
@@ -152,16 +153,17 @@ fn select(stamp: &str, n: usize, item: &Item, mark: &str) -> Value {
         .iter()
         .enumerate()
         .map(|(i, o)| {
+            let shown = secrets::mask(o);
             let shown = if Some(i) == *recommended {
-                super::marked(o, mark, 100)
+                super::marked(&shown, mark, 100)
             } else {
-                cut(o, 100)
+                cut(&shown, 100)
             };
             json!({ "label": shown, "value": i.to_string(), "default": default.contains(&i) })
         })
         .collect();
     json!({ "type": 1, "components": [{
-        "type": 3, "custom_id": format!("cy:{stamp}:s:{n}"), "placeholder": cut(label, 150),
+        "type": 3, "custom_id": format!("cy:{stamp}:s:{n}"), "placeholder": cut(&secrets::mask(label), 150),
         "min_values": i32::from(!*multi), "max_values": if *multi { options.len() } else { 1 },
         "options": opts }] })
 }
@@ -253,7 +255,7 @@ fn modal(stamp: &str, items: &[Item], ids: &[usize], draft: &[Val], words: &Word
             let mut input = Map::new();
             input.insert("type".into(), json!(4));
             input.insert("custom_id".into(), json!(format!("i{n}")));
-            input.insert("label".into(), json!(cut(label, LABEL_MAX)));
+            input.insert("label".into(), json!(cut(&secrets::mask(label), LABEL_MAX)));
             input.insert("style".into(), json!(if limits.long { 2 } else { 1 }));
             input.insert("required".into(), json!(*required));
             input.insert(
@@ -563,5 +565,52 @@ mod tests {
             };
             assert!(answer_frame(&dialog, &answer).is_some(), "{answer}");
         }
+    }
+
+    #[test]
+    fn panel_labels_mask_secrets_without_changing_values() {
+        let token = format!("ghp_{}", "a".repeat(36));
+        let prefix = "x".repeat(70);
+        let mut items = [
+            Item::Choice {
+                label: format!("Pick {token}"),
+                options: vec![format!("{prefix} {token}")],
+                multi: false,
+                required: true,
+                default: vec![0],
+                recommended: None,
+            },
+            Item::Text {
+                label: format!("Note for this: {token}"),
+                required: false,
+                limits: Limits::default(),
+                default: token.clone(),
+            },
+        ];
+        for recommendation in [None, Some(0)] {
+            let Item::Choice { recommended, .. } = &mut items[0] else {
+                unreachable!()
+            };
+            *recommended = recommendation;
+            let menu = select("s", 0, &items[0], " (recommended)");
+            let menu = &menu["components"][0];
+            let mark = if recommendation.is_some() {
+                " (recommended)"
+            } else {
+                ""
+            };
+            assert_eq!(menu["placeholder"], "Pick [masked]");
+            assert_eq!(
+                menu["options"][0]["label"],
+                format!("{prefix} [masked]{mark}")
+            );
+            assert_eq!(menu["options"][0]["value"], "0");
+        }
+        let words = typed::words(Language::English);
+        let modal = modal("s", &items, &[1], &draft(&items), &words);
+        let input = &modal["data"]["components"][0]["components"][0];
+        assert_eq!(input["label"], "Note for this: [masked]");
+        assert_eq!(input["value"], token);
+        assert_eq!(input["custom_id"], "i1");
     }
 }
