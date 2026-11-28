@@ -1783,6 +1783,16 @@ fn a_wake_after_a_lifted_hold_begins_a_fresh_episode_and_delivers() {
     let old = left_episode(&db, &session, "active");
     hub.start();
     held(&hub, 20);
+    let status = hub.cli(&["lead", "status"]);
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.contains("lead     held (The lead's conversation is recorded in more than one"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("ambiguous lead binding"),
+        "no raw reason: {status}"
+    );
     assert!(hub.stop().success());
     db.execute("UPDATE lead_anchor SET hold = NULL", [])
         .unwrap();
@@ -1807,16 +1817,21 @@ fn a_wake_after_a_lifted_hold_begins_a_fresh_episode_and_delivers() {
     assert!(hub.stop().success());
 }
 
-/// An episode that ended long ago is nobody's recovery: a crash exit of the bound lead retries
-/// normally, whether that episode ended bound or an older start left it active past its window.
+/// An episode that ended long ago is nobody's recovery: whether it ended bound or an older start
+/// left it active past its window, the next automatic start begins a fresh one, and a crash exit
+/// of the bound lead retries normally. The episode is written while the hub is stopped: the hub's
+/// store writer does not wait for another writer.
 #[test]
 fn a_crash_exit_long_after_the_episode_ended_retries_normally() {
     for ended in ["bound", "active"] {
         let mut w = wrapped("", None);
         w.hub.start();
-        let first = live(&w.hub, &Value::Null);
+        let started = live(&w.hub, &Value::Null);
+        assert!(w.hub.stop().success());
         let db = store(&w.hub);
-        let old = left_episode(&db, &first["session"]["session_id"], ended);
+        let old = left_episode(&db, &started["session"]["session_id"], ended);
+        w.hub.start();
+        let first = live(&w.hub, &started["session"]["pid"]);
         kill(&first["session"]["pid"]);
         let again = w.hub.until(Duration::from_secs(20), || {
             let v = lead_view(&w.hub);
@@ -1834,4 +1849,45 @@ fn a_crash_exit_long_after_the_episode_ended_retries_normally() {
         assert!(w.hub.stop().success());
         w.no_orphans();
     }
+}
+
+/// The owner's 0.2.7 afternoon (hub.log, 28 Nov 08:59:21 and 09:02:52 UTC), after a manual store
+/// repair left the anchor's binding naming another ID than the anchored session: a wake chose that
+/// session, admitted the recovery episode, then refused it in a second lookup by session ID ("no
+/// proven binding … to resume"), leaving the episode open. Coming back every 30 s, it held the
+/// lead 211 s later for "no startup and cleanup budget remaining" with nothing attempted. The
+/// resume takes its runtime from the target it chose: the wake resumes it and delivers.
+#[test]
+fn a_wake_resumes_the_target_it_chose_without_a_second_lookup() {
+    let mut hub = sleepy_hub(&[], "2s", "", "");
+    hub.start();
+    let first = live(&hub, &Value::Null);
+    let (session, file) = (
+        first["session"]["session_id"].clone(),
+        first["session"]["session_file"].clone(),
+    );
+    asleep(&hub);
+    assert!(hub.stop().success());
+    let db = store(&hub);
+    db.execute(
+        "UPDATE lead_bindings SET session_id = 'repaired' \
+         WHERE handle = (SELECT handle FROM lead_anchor)",
+        [],
+    )
+    .unwrap();
+    hub.start();
+    asleep(&hub);
+
+    assert!(
+        hub.cli(&["lead", "send", "WAKE-AFTER-REPAIR"])
+            .status
+            .success()
+    );
+    let woke = live(&hub, &first["session"]["pid"]);
+    assert_eq!(woke["session"]["session_id"], session, "{woke}");
+    hub.until(Duration::from_secs(20), || {
+        (user_entries(&file, "WAKE-AFTER-REPAIR") == 1).then_some(())
+    });
+    assert_eq!(lead_episode(&db).0, "bound");
+    assert!(hub.stop().success());
 }

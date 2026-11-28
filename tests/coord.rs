@@ -314,6 +314,163 @@ fn planner_limits_questions_and_merged_items() {
     assert!(hub.stop().success());
 }
 
+/// COORD req. 37: a done item's id added again starts under a fresh lane key, not as a refused
+/// open of its closed lane.
+#[test]
+fn planner_restarts_a_reused_item_id() {
+    let (mut hub, work) = coord_hub("[coord.planner]\nmax_open = 2\nmax_starts = 2\n");
+    let text = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&text.replace(
+        "[coord.planner]",
+        &format!(
+            "[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n[coord.planner]",
+            work.display()
+        ),
+    ));
+    start(&mut hub);
+    let add =
+        json!({ "id": "it-x", "brief": "b", "checks": [{ "kind": "command", "argv": ["true"] }] });
+    lane(&hub, "item-add", &add).unwrap();
+    let first = hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(s)
+    });
+    assert!(first.contains("started: it-x"), "{first}");
+    lane(&hub, "close", &json!({ "key": "it-x", "note": "stop" })).unwrap();
+    hub.until(WAIT, || {
+        (record(&hub, "it-x")["state"] == "closed").then_some(())
+    });
+    let done = plan(&hub);
+    assert!(done.contains("it-x done (lane closed)"), "{done}");
+    lane(&hub, "item-add", &add).unwrap();
+    let again = plan(&hub);
+    assert!(again.contains("started: it-x"), "{again}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let x = items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "it-x")
+        .unwrap()
+        .clone();
+    assert_eq!(x["status"], "running", "{x}");
+    assert_eq!(x["start_failures"], 0, "{x}");
+    assert_eq!(x["question"], Value::Null, "{x}");
+    assert_eq!(x["lane"], "it-x-2", "{x}");
+    assert_eq!(record(&hub, "it-x-2")["state"], "running", "{x}");
+    // Done by a merged PR while lane it-x-2 stays open: added again, it waits for that lane.
+    hub.fixture(
+        "gh",
+        "repos_o_r_pulls_5.json",
+        Some(&json!({ "merged": true }).to_string()),
+    );
+    lane(
+        &hub,
+        "claim",
+        &json!({ "key": "it-x-2", "evidence": "https://github.com/o/r/pull/5" }),
+    )
+    .unwrap();
+    let merged = plan(&hub);
+    assert!(merged.contains("it-x done (o/r#5 merged"), "{merged}");
+    lane(&hub, "item-add", &add).unwrap();
+    let held = plan(&hub);
+    assert!(!held.contains("started:"), "{held}");
+    assert_eq!(record(&hub, "it-x-3"), Value::Null, "{held}");
+    assert!(hub.stop().success());
+}
+
+/// A reused item's next allocation fails before spawn. When requested, a database refusal keeps
+/// the failed lane; otherwise the unused allocation rolls back. Arm the trigger with the hub stopped.
+fn planner_failed_start(retain_lane: bool) -> TestHub {
+    let (mut hub, work) = coord_hub("[coord.planner]\nmax_open = 2\nmax_starts = 2\n");
+    let text = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&text.replace(
+        "[coord.planner]",
+        &format!(
+            "[lead]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n[coord.planner]",
+            work.display()
+        ),
+    ));
+    start(&mut hub);
+    let add = json!({ "id": "it-fail", "brief": "b", "checks": [{ "kind": "command", "argv": ["true"] }] });
+    lane(&hub, "item-add", &add).unwrap();
+    let first = hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(s)
+    });
+    assert!(first.contains("started: it-fail"), "{first}");
+    lane(&hub, "close", &json!({ "key": "it-fail", "note": "stop" })).unwrap();
+    hub.until(WAIT, || {
+        (record(&hub, "it-fail")["state"] == "closed").then_some(())
+    });
+    let done = plan(&hub);
+    assert!(done.contains("it-fail done (lane closed)"), "{done}");
+    lane(&hub, "item-add", &add).unwrap();
+    assert!(hub.stop().success());
+    if retain_lane {
+        let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER keep_failed_planner_lane BEFORE DELETE ON lanes
+             WHEN OLD.key = 'it-fail-2'
+             BEGIN SELECT RAISE(FAIL, 'keep failed planner lane'); END;",
+        )
+        .unwrap();
+    }
+    let blocked = hub.state().join("sessions/lanes/it-fail-2");
+    std::fs::write(&blocked, "not a directory").unwrap();
+    start(&mut hub);
+    hub.until(WAIT, || {
+        let s = plan(&hub);
+        (!s.contains("no lead")).then_some(())
+    });
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "open", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    std::fs::remove_file(blocked).unwrap();
+    hub
+}
+
+#[test]
+fn planner_failed_start_retains_its_lane_key() {
+    let mut hub = planner_failed_start(true);
+    let failed = record(&hub, "it-fail-2");
+    assert_eq!(failed["state"], "held", "{failed}");
+    assert!(
+        failed["receipt"].to_string().contains("record retained:"),
+        "{failed}"
+    );
+    let next = plan(&hub);
+    assert!(!next.contains("started:"), "{next}");
+    assert_eq!(record(&hub, "it-fail-3"), Value::Null, "{next}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "open", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    assert!(hub.stop().success());
+}
+
+#[test]
+fn planner_failed_start_reuses_rolled_back_key() {
+    let mut hub = planner_failed_start(false);
+    assert_eq!(record(&hub, "it-fail-2"), Value::Null);
+    let next = plan(&hub);
+    assert!(next.contains("started: it-fail"), "{next}");
+    assert_eq!(record(&hub, "it-fail-2")["state"], "running", "{next}");
+    assert_eq!(record(&hub, "it-fail-3"), Value::Null, "{next}");
+    let items = lane(&hub, "items", &json!({})).unwrap();
+    let item = &items["items"][0];
+    assert_eq!(item["status"], "running", "{item}");
+    assert_eq!(item["start_failures"], 1, "{item}");
+    assert_eq!(item["question"], Value::Null, "{item}");
+    assert_eq!(item["lane"], "it-fail-2", "{item}");
+    assert!(hub.stop().success());
+}
+
 /// Check 4: the merge check refuses without an approving verdict at the current head, with no
 /// checks, or with a check neither passed nor skipped; a dry run stops before merging.
 #[test]
@@ -587,6 +744,170 @@ fn found_message_takes_the_edits(hub: &TestHub, fake: &FakeDiscord) {
             .starts_with("3 lane(s)")
     );
     assert_eq!(board_calls(fake, BOARD_B).0.len(), TRIES);
+}
+
+fn pr_policy_fixture(hub: &TestHub, suffix: &str, value: &Value) {
+    hub.fixture(
+        "gh",
+        &format!("repos_o_r_pulls_7{suffix}.json"),
+        Some(&value.to_string()),
+    );
+}
+
+fn pr_policy_counts(hub: &TestHub, commits: usize, files: usize) {
+    pr_policy_fixture(
+        hub,
+        "",
+        &json!({ "head": { "sha": HEAD }, "body": "", "commits": commits, "changed_files": files }),
+    );
+}
+
+fn pr_policy_hub(commits: usize, files: usize) -> (TestHub, Value) {
+    let (mut hub, _) = coord_hub("[lanes.identities]\n\"o/r\" = \"owner@example.com\"\n");
+    // The lane's empty working directory is not a checkout, even on hosts without git.
+    let git = hub.root.join("bin/git");
+    std::fs::write(&git, "#!/bin/sh\nexit 128\n").unwrap();
+    std::fs::set_permissions(&git, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let commit = json!({ "commit": {
+        "author": { "email": "owner@example.com" },
+        "committer": { "email": "owner@example.com" },
+        "message": "fix: handle the edge case"
+    }, "parents": [{ "sha": HEAD }] });
+    pr_policy_counts(&hub, commits, files);
+    pr_policy_fixture(&hub, "_commits", &json!([commit]));
+    pr_policy_fixture(&hub, "_files", &json!([{ "filename": "README.md" }]));
+    start(&mut hub);
+    let mut params = open_params("policy");
+    params["checks"] = json!([{ "kind": "pr_policy", "repo": "o/r", "number": 7 }]);
+    lane(&hub, "open", &params).unwrap();
+    hub.until(WAIT, || {
+        (record(&hub, "policy")["state"] == "running").then_some(())
+    });
+    (hub, commit)
+}
+
+/// EVR req. 58: a bad author or committer on page two cannot hide behind the first 100 commits.
+#[test]
+fn pr_policy_checks_later_commits() {
+    let (mut hub, commit) = pr_policy_hub(101, 1);
+    pr_policy_fixture(&hub, "_commits", &json!(vec![commit.clone(); 100]));
+    for who in ["author", "committer"] {
+        let mut bad = commit.clone();
+        bad["commit"][who]["email"] = json!("other@example.com");
+        pr_policy_fixture(&hub, "_commits.page-2", &json!([bad]));
+        let refused = lane(&hub, "close", &json!({ "key": "policy" })).unwrap_err();
+        assert!(
+            refused.contains("identity is not the configured one"),
+            "{refused}"
+        );
+    }
+    pr_policy_fixture(&hub, "_commits.page-2", &json!([commit]));
+    lane(&hub, "close", &json!({ "key": "policy" })).unwrap();
+    assert_eq!(record(&hub, "policy")["state"], "closed");
+    assert!(hub.stop().success());
+}
+
+/// EVR req. 58: source and test files on later pages both participate in the policy decision.
+#[test]
+fn pr_policy_checks_later_files() {
+    let (mut hub, _) = pr_policy_hub(1, 101);
+    let docs: Vec<Value> = (0..100)
+        .map(|n| json!({ "filename": format!("docs/{n}.md") }))
+        .collect();
+    pr_policy_fixture(&hub, "_files", &json!(docs));
+    pr_policy_fixture(
+        &hub,
+        "_files.page-2",
+        &json!([{ "filename": "src/fix.rs" }]),
+    );
+    let refused = lane(&hub, "close", &json!({ "key": "policy" })).unwrap_err();
+    assert!(
+        refused.contains("without a test or a no-test reason"),
+        "{refused}"
+    );
+    pr_policy_counts(&hub, 1, 102);
+    pr_policy_fixture(
+        &hub,
+        "_files.page-2",
+        &json!([
+            { "filename": "src/fix.rs" }, { "filename": "tests/fix.rs" }
+        ]),
+    );
+    lane(&hub, "close", &json!({ "key": "policy" })).unwrap();
+    assert_eq!(record(&hub, "policy")["state"], "closed");
+    assert!(hub.stop().success());
+}
+
+/// Truncated/malformed lists fail closed; exactly 3000 files are allowed, but 3001 are not.
+#[test]
+fn pr_policy_requires_complete_lists_and_enforces_file_limit() {
+    let (mut hub, commit) = pr_policy_hub(1, 101);
+    let docs: Vec<Value> = (0..100)
+        .map(|n| json!({ "filename": format!("docs/{n}.md") }))
+        .collect();
+    pr_policy_fixture(&hub, "_files", &json!(docs));
+    let close = || lane(&hub, "close", &json!({ "key": "policy" }));
+    let refused = close().unwrap_err();
+    assert!(
+        refused.contains("incomplete files: read 100, expected 101"),
+        "{refused}"
+    );
+    pr_policy_fixture(&hub, "_files.page-2", &json!({}));
+    let refused = close().unwrap_err();
+    assert!(refused.contains("not a list"), "{refused}");
+
+    pr_policy_counts(&hub, 101, 100);
+    pr_policy_fixture(&hub, "_commits", &json!(vec![commit; 100]));
+    let refused = close().unwrap_err();
+    assert!(
+        refused.contains("incomplete commits: read 100, expected 101"),
+        "{refused}"
+    );
+    pr_policy_fixture(&hub, "_commits.page-2", &json!({}));
+    let refused = close().unwrap_err();
+    assert!(refused.contains("not a list"), "{refused}");
+
+    for missing in ["commits", "changed_files"] {
+        let mut pull =
+            json!({ "head": { "sha": HEAD }, "body": "", "commits": 100, "changed_files": 100 });
+        pull.as_object_mut().unwrap().remove(missing);
+        pr_policy_fixture(&hub, "", &pull);
+        let refused = close().unwrap_err();
+        assert!(
+            refused.contains(&format!("missing or invalid PR {missing} count")),
+            "{refused}"
+        );
+    }
+    pr_policy_counts(&hub, 100, 3001);
+    let refused = close().unwrap_err();
+    assert!(refused.contains("more than 3000 files"), "{refused}");
+
+    pr_policy_counts(&hub, 100, 3000);
+    for page in 1..=30 {
+        let mut files: Vec<Value> = (0..100)
+            .map(|n| json!({ "filename": format!("docs/{page}-{n}.md") }))
+            .collect();
+        if page == 2 {
+            files[0] = json!({ "filename": "src/fix.rs" });
+        }
+        if page == 30 {
+            files[99] = json!({ "filename": "tests/fix.rs" });
+        }
+        let suffix = if page == 1 {
+            "_files".into()
+        } else {
+            format!("_files.page-{page}")
+        };
+        pr_policy_fixture(&hub, &suffix, &json!(files));
+    }
+    hub.fixture("gh", "calls.log", Some(""));
+    close().unwrap();
+    let calls = std::fs::read_to_string(hub.root.join("bin/gh-data/calls.log")).unwrap();
+    assert!(calls.contains("files?per_page=100&page=30"), "{calls}");
+    assert!(!calls.contains("files?per_page=100&page=31"), "{calls}");
+    assert!(!calls.contains("commits?per_page=100&page=2"), "{calls}");
+    assert_eq!(record(&hub, "policy")["state"], "closed");
+    assert!(hub.stop().success());
 }
 
 /// Today's local date as the hub sees it (the snapshot name).

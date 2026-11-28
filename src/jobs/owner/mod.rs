@@ -129,6 +129,42 @@ pub(crate) fn gh_answer(args: &[&str], done: &Finished) -> Result<serde_json::Va
         .map_err(|_| format!("gh {} printed no JSON", args.join(" ")))
 }
 
+/// GitHub list pages (WS req. 46): 100 rows each, at most 30.
+const GH_PAGE: usize = 100;
+const GH_PAGES: usize = 30;
+
+/// Every row of a GitHub list endpoint, each page fetched by `read` (WS req. 46). `key` names the
+/// array inside an object answer. Reading stops at a short page or once `total` rows, when the
+/// caller knows the list's size, are in; more than 30 full pages is an error.
+pub(crate) async fn gh_list<F>(
+    path: &str,
+    key: Option<&str>,
+    total: Option<usize>,
+    mut read: impl FnMut(String) -> F,
+) -> Result<Vec<serde_json::Value>, String>
+where
+    F: Future<Output = Result<serde_json::Value, String>>,
+{
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let mut rows = Vec::new();
+    for page in 1..=GH_PAGES {
+        let mut answer = read(format!("{path}{sep}per_page={GH_PAGE}&page={page}")).await?;
+        let found = match key {
+            Some(k) => answer.get_mut(k).map(serde_json::Value::take),
+            None => Some(answer),
+        };
+        let Some(serde_json::Value::Array(batch)) = found else {
+            return Err(format!("{path}: not a list"));
+        };
+        let n = batch.len();
+        rows.extend(batch);
+        if n < GH_PAGE || total.is_some_and(|t| rows.len() >= t) {
+            return Ok(rows);
+        }
+    }
+    Err(format!("{path}: more than {} rows", GH_PAGE * GH_PAGES))
+}
+
 /// Network failures as `gh`, `git` and the hub's own deadlines word them, lower case.
 const NETWORK: [&str; 11] = [
     "timed out",
