@@ -95,7 +95,7 @@ pub(crate) struct Request<'a> {
     pub(crate) method: Method,
     pub(crate) path: &'a str,
     pub(crate) headers: Vec<(HeaderName, HeaderValue)>,
-    pub(crate) json: Option<Vec<u8>>,
+    pub(crate) json: Option<Bytes>,
     pub(crate) kind: Kind,
 }
 
@@ -104,7 +104,7 @@ pub(crate) struct Request<'a> {
 pub(crate) struct Response {
     pub(crate) status: u16,
     pub(crate) headers: HeaderMap,
-    pub(crate) body: Vec<u8>,
+    pub(crate) body: Bytes,
 }
 
 impl Response {
@@ -410,7 +410,7 @@ pub(crate) async fn download(url: &str, cap: usize) -> Result<Vec<u8>, String> {
             Attempt::NotSent(why) | Attempt::Unknown(why) => why,
         })?;
         match resp.status {
-            200..=299 => return Ok(resp.body),
+            200..=299 => return Ok(resp.body.to_vec()),
             301 | 302 | 303 | 307 | 308 => {
                 url = resp
                     .header("location")
@@ -489,15 +489,15 @@ where
         builder = builder.header(name, value);
     }
     let request = builder
-        .body(Full::new(Bytes::from(body)))
+        .body(Full::new(body))
         .map_err(|_| Attempt::NotSent("the request could not be built".into()))?;
     let result = async {
         let response = sender
             .send_request(request)
             .await
             .map_err(|e| Attempt::Unknown(format!("request failed: {e}")))?;
-        let status = response.status();
-        let headers = response.headers().clone();
+        let (parts, body) = response.into_parts();
+        let headers = parts.headers;
         let declared = headers
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
@@ -505,14 +505,13 @@ where
         if declared.is_some_and(|n| n > cap) {
             return Err(Attempt::Unknown(format!("declared body over {cap} bytes")));
         }
-        let body = Limited::new(response.into_body(), cap)
+        let body = Limited::new(body, cap)
             .collect()
             .await
             .map_err(|_| Attempt::Unknown(format!("response body unreadable or over {cap} bytes")))?
-            .to_bytes()
-            .to_vec();
+            .to_bytes();
         Ok(Response {
-            status: status.as_u16(),
+            status: parts.status.as_u16(),
             headers,
             body,
         })
@@ -558,7 +557,7 @@ pub(crate) mod tests {
             method: Method::POST,
             path: "/x",
             headers: Vec::new(),
-            json: Some(b"{}".to_vec()),
+            json: Some(Bytes::from_static(b"{}")),
             kind,
         }
     }
@@ -573,6 +572,89 @@ pub(crate) mod tests {
     const FIVE: &str = "HTTP/1.1 502 Bad\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
     const FOUR: &str =
         "HTTP/1.1 403 No\r\ncontent-length: 9\r\nconnection: close\r\n\r\n{\"a\":\"b\"}";
+
+    #[tokio::test]
+    async fn request_body_and_content_headers_survive_retry() {
+        for (body, content_type) in [
+            (None, None),
+            (Some(Bytes::new()), Some("application/json")),
+            (Some(Bytes::from(b"{}".to_vec())), Some("application/json")),
+            (
+                Some(Bytes::from(vec![0, 1, 255, 13, 10])),
+                Some("application/octet-stream"),
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = Base::parse(&format!(
+                "http://127.0.0.1:{}/api",
+                listener.local_addr().unwrap().port()
+            ))
+            .unwrap();
+            let mut request = req(Kind::Once);
+            request.json = body.clone();
+            if content_type == Some("application/octet-stream") {
+                request.headers.push((
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/octet-stream"),
+                ));
+            }
+            let server = tokio::spawn(async move {
+                let expected = body.unwrap_or_default();
+                for response in [LIMIT, OK] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut received = Vec::new();
+                    let end = loop {
+                        assert_ne!(stream.read_buf(&mut received).await.unwrap(), 0);
+                        if let Some(end) = received.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                    };
+                    let headers = std::str::from_utf8(&received[..end]).unwrap();
+                    assert!(headers.starts_with("POST /api/x HTTP/1.1\r\n"));
+                    assert!(headers.contains(&format!("content-length: {}\r\n", expected.len())));
+                    match content_type {
+                        Some(kind) => {
+                            assert!(headers.contains(&format!("content-type: {kind}\r\n")));
+                        }
+                        None => assert!(!headers.contains("content-type:")),
+                    }
+                    while received.len() < end + expected.len() {
+                        assert_ne!(stream.read_buf(&mut received).await.unwrap(), 0);
+                    }
+                    assert_eq!(&received[end..], expected.as_ref());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            match call(&base, &request, FAST, |_| {}).await {
+                Outcome::Done(response) => {
+                    assert_eq!(response.header("content-length"), Some("2"));
+                    assert_eq!(response.body.as_ref(), b"{}");
+                }
+                other => panic!("{other:?}"),
+            }
+            timeout(FAST.attempt, server).await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn response_cap_applies_to_declared_and_chunked_bodies() {
+        let (base, _) = canned(vec![OK]).await;
+        let response = once(&base, &req(Kind::Read), 2).await.unwrap();
+        assert_eq!(response.body.as_ref(), b"{}");
+        let (base, _) = canned(vec![OK]).await;
+        assert!(matches!(
+            once(&base, &req(Kind::Read), 1).await,
+            Err(Attempt::Unknown(why)) if why == "declared body over 1 bytes"
+        ));
+        let (base, _) = canned(vec![
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        ])
+        .await;
+        assert!(matches!(
+            once(&base, &req(Kind::Read), 2).await,
+            Err(Attempt::Unknown(why)) if why == "response body unreadable or over 2 bytes"
+        ));
+    }
 
     #[test]
     fn base_urls_are_checked() {

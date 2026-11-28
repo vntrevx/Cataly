@@ -4,6 +4,7 @@
 //! are one-line lessons scoped to a repository or global, put before the brief of new lanes.
 
 use std::fmt::Write as _;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -106,23 +107,44 @@ fn part_refused(rel: &Path) -> Option<String> {
 }
 
 /// The hash and size of a regular file, refused when it changed while hashed.
-fn hash_file(path: &Path) -> Result<(String, u64), String> {
-    let before = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if !before.is_file() {
-        return Err("not a regular file".into());
-    }
-    if before.len() > FILE_MAX {
-        return Err("larger than 512 MiB".into());
-    }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let after = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if after.len() != before.len()
-        || after.modified().ok() != before.modified().ok()
-        || u64::try_from(bytes.len()).ok() != Some(after.len())
-    {
-        return Err("the file changed while it was hashed".into());
-    }
-    Ok((crate::config::sha256_hex(&bytes), after.len()))
+async fn hash_file(path: PathBuf) -> Result<(String, u64), String> {
+    tokio::task::spawn_blocking(move || {
+        let before = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !before.is_file() {
+            return Err("not a regular file".into());
+        }
+        if before.len() > FILE_MAX {
+            return Err("larger than 512 MiB".into());
+        }
+        let mut file = std::fs::File::open(&path)
+            .map_err(|e| e.to_string())?
+            .take(FILE_MAX + 1);
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = match file.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            ctx.update(buf.get(..n).unwrap_or_default());
+        }
+        let after = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if after.len() != before.len()
+            || after.modified().ok() != before.modified().ok()
+            || total != after.len()
+        {
+            return Err("the file changed while it was hashed".into());
+        }
+        Ok((crate::sys::hex(ctx.finish().as_ref()), after.len()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The canonical file, its canonical root and the root it was named under, with every path rule of
@@ -191,7 +213,7 @@ impl<R: Runtime> Lanes<R> {
         }
         let real_text = real.display().to_string();
         self.outside_other_worktrees(&key, &real).await?;
-        let (sha256, size) = hash_file(&real)?;
+        let (sha256, size) = hash_file(real.clone()).await?;
         let default_title = real
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -273,19 +295,19 @@ impl<R: Runtime> Lanes<R> {
     /// Each file with its latest version and live state (EVR req. 28); nothing is fetched.
     pub(super) async fn files(&self, key: Option<&str>) -> Result<Value, String> {
         let (all, damaged) = docs::all::<Published>(&self.env.store, FILE).await?;
-        let out: Vec<Value> = all
+        let mut out = Vec::new();
+        for (d, _) in all
             .into_iter()
             .filter(|(d, _)| key.is_none_or(|k| d.lane == k))
-            .map(|(d, _)| {
-                let last = d.versions.last().cloned();
-                let state = match (&last, hash_file(Path::new(&d.path))) {
-                    (Some(l), Ok((sha, _))) if sha == l.sha256 => "current".to_string(),
-                    (_, Ok(_)) => "changed".into(),
-                    (_, Err(e)) => format!("unavailable: {e}"),
-                };
-                json!({ "lane": d.lane, "path": d.path, "latest": last, "versions": d.versions.len(), "state": state })
-            })
-            .collect();
+        {
+            let last = d.versions.last().cloned();
+            let state = match (&last, hash_file(PathBuf::from(&d.path)).await) {
+                (Some(l), Ok((sha, _))) if sha == l.sha256 => "current".to_string(),
+                (_, Ok(_)) => "changed".into(),
+                (_, Err(e)) => format!("unavailable: {e}"),
+            };
+            out.push(json!({ "lane": d.lane, "path": d.path, "latest": last, "versions": d.versions.len(), "state": state }));
+        }
         Ok(json!({ "files": out, "damaged": damaged }))
     }
 
@@ -442,6 +464,45 @@ impl<R: Runtime> Lanes<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_hash_matches_bytes_across_buffer_boundaries() {
+        let dir = crate::sys::fs::tests::scratch("publish-hash");
+        let path = dir.join("file.txt");
+        for size in [0, 3, 64 * 1024, 64 * 1024 + 1, 3 * 64 * 1024 + 37] {
+            let bytes: Vec<u8> = (0..=250).cycle().take(size).collect();
+            std::fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                hash_file(path.clone()).await.unwrap(),
+                (
+                    crate::config::sha256_hex(&bytes),
+                    u64::try_from(size).unwrap()
+                ),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_hash_preserves_refusal_errors() {
+        let dir = crate::sys::fs::tests::scratch("publish-hash-refuse");
+        assert_eq!(
+            hash_file(dir.to_path_buf()).await.unwrap_err(),
+            "not a regular file",
+        );
+        let path = dir.join("file.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(FILE_MAX + 1).unwrap();
+        assert_eq!(
+            hash_file(path.clone()).await.unwrap_err(),
+            "larger than 512 MiB",
+        );
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(hash_file(link).await.unwrap_err(), "not a regular file",);
+        let missing = dir.join("missing.txt");
+        let expected = std::fs::symlink_metadata(&missing).unwrap_err().to_string();
+        assert_eq!(hash_file(missing).await.unwrap_err(), expected);
+    }
 
     #[test]
     fn paths_roots_and_links() {

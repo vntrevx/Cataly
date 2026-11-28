@@ -309,7 +309,7 @@ impl<R: Runtime> VoiceHost for HubVoice<R> {
             method: Method::POST,
             path,
             headers: vec![(AUTHORIZATION, auth)],
-            json: Some(body),
+            json: Some(body.into()),
             kind: Kind::Once,
         };
         let policy = Policy {
@@ -318,8 +318,8 @@ impl<R: Runtime> VoiceHost for HubVoice<R> {
             budget: Duration::ZERO,
         };
         match http::call(&base, &req, policy, |_| {}).await {
-            Outcome::Done(r) => Posted::Done(r.body),
-            Outcome::Rejected(r) => Posted::Rejected(r.status, r.body),
+            Outcome::Done(r) => Posted::Done(r.body.to_vec()),
+            Outcome::Rejected(r) => Posted::Rejected(r.status, r.body.to_vec()),
             Outcome::RateLimited(_) => Posted::Rejected(429, Vec::new()),
             Outcome::Uncertain(why) => Posted::Uncertain(why),
             Outcome::Failed(why) => Posted::Failed(why),

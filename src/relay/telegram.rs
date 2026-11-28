@@ -142,7 +142,7 @@ impl Api {
             method: Method::POST,
             path: &path,
             headers: Vec::new(),
-            json: Some(body.to_string().into_bytes()),
+            json: Some(body.to_string().into_bytes().into()),
             kind,
         };
         let error = |status, why: String, uncertain| ApiError {

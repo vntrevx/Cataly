@@ -400,7 +400,7 @@ async fn follow(
         tokio::select! {
             received = live.recv() => match received {
                 Ok(event) if event.id > last => {
-                    if !emit(writer, id, &event, &mut last).await {
+                    if !emit(writer, id, event.as_ref(), &mut last).await {
                         return;
                     }
                 }

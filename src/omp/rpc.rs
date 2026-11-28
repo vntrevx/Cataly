@@ -570,16 +570,18 @@ async fn read_loop<R: AsyncRead + Unpin>(
         };
         match frame.kind {
             Kind::Response => {
-                let Some(id) = frame.value.get("id").and_then(Value::as_str) else {
+                let Value::Object(mut value) = frame.value else {
                     continue;
                 };
-                let success = frame.value.get("success").and_then(Value::as_bool) == Some(true);
-                let command = frame.value.get("command").and_then(Value::as_str);
-                let data = frame.value.get("data").cloned();
+                let Some(Value::String(id)) = value.remove("id") else {
+                    continue;
+                };
+                let success = value.get("success").and_then(Value::as_bool) == Some(true);
+                let command = value.get("command").and_then(Value::as_str);
                 if success
                     && command == Some("negotiate_protocol")
-                    && data
-                        .as_ref()
+                    && value
+                        .get("data")
                         .and_then(|d| d.get("protocolVersion"))
                         .and_then(Value::as_u64)
                         == Some(2)
@@ -589,18 +591,20 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 }
                 let reply = Reply {
                     success,
-                    data,
-                    error: frame
-                        .value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    command: command.map(str::to_string),
+                    data: value.remove("data"),
+                    error: match value.remove("error") {
+                        Some(Value::String(error)) => Some(error),
+                        _ => None,
+                    },
+                    command: match value.remove("command") {
+                        Some(Value::String(command)) => Some(command),
+                        _ => None,
+                    },
                 };
                 let waiter = pending
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .remove(id);
+                    .remove(&id);
                 if let Some(waiter) = waiter {
                     let _ = waiter.send(Ok(reply));
                 }
@@ -761,6 +765,88 @@ pub(crate) mod tests {
             Some("nope") => json!({"success": false, "error": "Unknown command: nope"}),
             _ => json!({"success": true, "data": {"echo": cmd["type"]}}),
         }
+    }
+
+    #[tokio::test]
+    async fn replies_preserve_absent_null_and_malformed_fields() {
+        for (fields, success, data, error, command) in [
+            (
+                json!({"success": true, "command": "get_state"}),
+                true,
+                None,
+                None,
+                Some("get_state"),
+            ),
+            (
+                json!({"success": true, "data": null, "error": null, "command": null}),
+                true,
+                Some(Value::Null),
+                None,
+                None,
+            ),
+            (
+                json!({"success": "true", "data": {"nested": [1, "two", null]},
+                       "error": 42, "command": ["get_state"]}),
+                false,
+                Some(json!({"nested": [1, "two", null]})),
+                None,
+                None,
+            ),
+            (
+                json!({"success": false, "error": "refused", "command": "get_state"}),
+                false,
+                None,
+                Some("refused"),
+                Some("get_state"),
+            ),
+        ] {
+            let mut response = fields;
+            response["type"] = "response".into();
+            response["id"] = "request".into();
+            let stream = format!("{response}\n");
+            let pending: Pending = Arc::default();
+            let (tx, rx) = oneshot::channel();
+            pending.lock().unwrap().insert("request".into(), tx);
+            read_loop(
+                Frames::new(stream.as_bytes()),
+                pending,
+                None,
+                Arc::new(AtomicU64::new(0)),
+            )
+            .await;
+            let reply = rx.await.unwrap().unwrap();
+            assert_eq!(reply.success, success);
+            assert_eq!(reply.data, data);
+            assert_eq!(reply.error.as_deref(), error);
+            assert_eq!(reply.command.as_deref(), command);
+        }
+    }
+
+    #[tokio::test]
+    async fn negotiation_enables_chunking_without_a_waiter() {
+        let response = json!({"type": "response", "id": "request", "success": true,
+                              "command": "get_state", "data": {"nested": [1, 2, 3]}});
+        let payload = serde_json::to_vec(&response).unwrap();
+        let stream = format!(
+            "{}\n{}",
+            json!({"type": "response", "id": "gone", "success": true,
+                   "command": "negotiate_protocol", "data": {"protocolVersion": 2}}),
+            chunks(&payload, payload.len() / 2).concat()
+        );
+        let pending: Pending = Arc::default();
+        let (tx, rx) = oneshot::channel();
+        pending.lock().unwrap().insert("request".into(), tx);
+        read_loop(
+            Frames::new(stream.as_bytes()),
+            pending,
+            None,
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await;
+        let reply = rx.await.unwrap().unwrap();
+        assert!(reply.success);
+        assert_eq!(reply.data.as_ref(), response.get("data"));
+        assert_eq!(reply.command.as_deref(), Some("get_state"));
     }
 
     #[tokio::test]

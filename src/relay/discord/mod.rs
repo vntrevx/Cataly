@@ -326,7 +326,7 @@ impl Rest {
             method,
             path,
             headers,
-            json: bytes,
+            json: bytes.map(Into::into),
             kind,
         };
         http::call(&self.base, &req, Policy::RELAY, |resp| {
