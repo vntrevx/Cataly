@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::args::Parsed;
 use super::client::{Client, ClientError};
-use super::{Failure, exit, out};
+use super::{Failure, exit, out, owner_language};
 use crate::config::{Config, Language};
 use crate::proto::{Status, method};
 use crate::sys::command::{KILL_GRACE, Output, Spec};
@@ -21,10 +21,15 @@ use crate::sys::package::{Manager, Package};
 use crate::sys::paths::Paths;
 use crate::sys::release::{self, Version};
 
+mod say;
+use say::Say;
+
 /// The daemon socket answer that decides "running" (IR req. 26).
 const HUB_ANSWER: Duration = Duration::from_secs(1);
 /// The orderly stop: asked until accepted, at most this long (IR req. 33).
 const STOP_WAIT: Duration = Duration::from_mins(1);
+/// After a voice call's wind-down, the hub's own end (its socket and lock go) takes at most this.
+const END_MARGIN: Duration = Duration::from_secs(15);
 /// The new hub must answer with its version within this time.
 const START_WAIT: Duration = Duration::from_secs(30);
 /// `omp --version`: 5 s (IR req. 25).
@@ -49,29 +54,39 @@ enum Outcome {
     NeedsAttention(String),
 }
 
-impl From<Outcome> for Result<(), Failure> {
-    fn from(o: Outcome) -> Self {
-        match o {
-            Outcome::Done(m) => {
+impl Outcome {
+    /// The command's result; the outcome's prefix in the owner's language.
+    fn result(self, say: Say) -> Result<(), Failure> {
+        match self {
+            Self::Done(m) => {
                 out::line(&m);
                 Ok(())
             }
-            Outcome::Held(m) => Err(Failure::Status(exit::HELD, format!("held: {m}"))),
-            Outcome::SwitchedBack(m) => Err(Failure::Status(
+            Self::Held(m) => Err(Failure::Status(exit::HELD, format!("{}: {m}", say.held()))),
+            Self::SwitchedBack(m) => Err(Failure::Status(
                 exit::SWITCHED_BACK,
-                format!("switched back: {m}"),
+                format!("{}: {m}", say.switched_back()),
             )),
-            Outcome::NeedsAttention(m) => Err(Failure::Status(
+            Self::NeedsAttention(m) => Err(Failure::Status(
                 exit::NEEDS_ATTENTION,
-                format!("needs attention: {m}"),
+                format!("{}: {m}", say.needs_attention()),
             )),
         }
     }
 }
 
-/// Handles the install verbs; `None` when `p` is not one of them.
+/// The `--help` summary of an install verb in `language`, when it has one other than the command
+/// table's English.
+pub(super) fn help_summary(language: Language, path: &[&str]) -> Option<&'static str> {
+    Say(language).help(path)
+}
+
+/// Handles the install verbs; `None` when `p` is not one of them. `install`, `update` and
+/// `rollback` speak the owner's language; the other verbs speak English.
 pub(crate) fn run(p: &Parsed, paths: &Paths) -> Option<Result<(), Failure>> {
-    let outcome = match p.spec.path {
+    let owner = || Say(owner_language(paths));
+    let english = Say(Language::English);
+    let (outcome, say) = match p.spec.path {
         ["version"] => {
             version(p.flag("--json"));
             return Some(Ok(()));
@@ -82,15 +97,26 @@ pub(crate) fn run(p: &Parsed, paths: &Paths) -> Option<Result<(), Failure>> {
         }
         ["status"] if p.flag("--install") => return Some(status(p)),
         ["check"] => return Some(block_on(check(p, paths))),
-        ["install"] => block_on(install(p, paths)),
-        ["update"] => block_on(update(p, paths)),
-        ["rollback"] => block_on(rollback(p, paths)),
-        ["uninstall"] => block_on(uninstall(p, paths)),
-        ["service", verb @ ("enable" | "disable")] => block_on(service(*verb == "enable", paths)),
-        ["service", "refresh"] => block_on(refresh_service(paths)),
+        ["install"] => {
+            let say = owner();
+            (block_on(install(p, paths, say)), say)
+        }
+        ["update"] => {
+            let say = owner();
+            (block_on(update(p, paths, say)), say)
+        }
+        ["rollback"] => {
+            let say = owner();
+            (block_on(rollback(p, paths, say)), say)
+        }
+        ["uninstall"] => (block_on(uninstall(p, paths)), english),
+        ["service", verb @ ("enable" | "disable")] => {
+            (block_on(service(*verb == "enable", paths)), english)
+        }
+        ["service", "refresh"] => (block_on(refresh_service(paths)), english),
         _ => return None,
     };
-    Some(outcome.into())
+    Some(outcome.result(say))
 }
 
 pub(super) fn block_on<T>(work: impl Future<Output = T>) -> T {
@@ -126,13 +152,11 @@ fn layout(p: &Parsed) -> Result<Layout, String> {
 }
 
 /// Takes the one install lock without waiting (IR req. 22).
-fn take_lock(l: &Layout) -> Result<HubLock, Outcome> {
+fn take_lock(l: &Layout, say: Say) -> Result<HubLock, Outcome> {
     layout_ops::prepare_root(l).map_err(Outcome::Held)?;
     match lock::acquire(&l.lock()) {
         Ok(LockOutcome::Acquired(held)) => Ok(held),
-        Ok(LockOutcome::Held { .. }) => {
-            Err(Outcome::Held("another install operation is running".into()))
-        }
+        Ok(LockOutcome::Held { .. }) => Err(Outcome::Held(say.locked())),
         Err(e) => Err(Outcome::Held(e.to_string())),
     }
 }
@@ -171,8 +195,8 @@ async fn resumed(paths: &Paths) -> Option<crate::proto::Resumed> {
 /// The line `cataly update` and `cataly rollback` add about the sessions the new hub brought back:
 /// how the lead came back (or what holds it) and the lanes. Sessions still recovering are said so,
 /// never as final; the hub posts the final result to the owner's home room.
-async fn sessions_note(paths: &Paths) -> String {
-    let language = owner_language(paths);
+async fn sessions_note(paths: &Paths, say: Say) -> String {
+    let language = say.0;
     let korean = language == Language::Korean;
     match resumed(paths).await {
         Some(r) => {
@@ -202,6 +226,23 @@ async fn sessions_note(paths: &Paths) -> String {
     }
 }
 
+/// The lines `cataly update` and `cataly rollback` add about each worker PC older than the new hub,
+/// or of unknown version, from what that hub already knows of it; no worker is asked.
+fn workers_note(paths: &Paths, say: Say) -> String {
+    let Some(status) = hub_status(paths) else {
+        return String::new();
+    };
+    status
+        .workers
+        .iter()
+        .filter_map(|w| w.standing_note(&status.version, say.0))
+        .fold(String::new(), |mut text, (_, note)| {
+            text.push('\n');
+            text.push_str(&note);
+            text
+        })
+}
+
 /// `omp --version` as `(a, b, c)`, or `None` when OMP is absent or says nothing usable.
 async fn omp_version() -> Option<(u64, u64, u64)> {
     use crate::sys::command::{KILL_GRACE, Output, Spec};
@@ -222,22 +263,20 @@ async fn omp_version() -> Option<(u64, u64, u64)> {
 }
 
 /// IR req. 25: a first install warns; an update or rollback is held while OMP is too old.
-async fn omp_gate(minimum: &str, first: bool) -> Result<(), Outcome> {
+async fn omp_gate(minimum: &str, first: bool, say: Say) -> Result<(), Outcome> {
     let Some(min) = Version::parse(minimum) else {
         return Ok(());
     };
     match omp_version().await {
         None => {
-            out::line("warning: OMP was not found; install it before starting the hub");
+            out::line(&say.warning(&say.omp_missing()));
             Ok(())
         }
         Some(found) if found < min.core => {
             let (a, b, c) = found;
-            let why = format!(
-                "OMP {a}.{b}.{c} is older than the {minimum} this version needs; update OMP first with `omp update`"
-            );
+            let why = say.omp_too_old(&format!("{a}.{b}.{c}"), minimum);
             if first {
-                out::line(&format!("warning: {why}"));
+                out::line(&say.warning(&why));
                 Ok(())
             } else {
                 Err(Outcome::Held(why))
@@ -261,7 +300,7 @@ fn path_note(l: &Layout) {
 
 /// `cataly install --from <folder>`: a first install, a reinstall (no change) or an update from a
 /// local folder of release assets (IR req. 19).
-async fn install(p: &Parsed, paths: &Paths) -> Outcome {
+async fn install(p: &Parsed, paths: &Paths, say: Say) -> Outcome {
     if let Some(candidate) = p.value("--preflight") {
         return preflight(Path::new(candidate), paths).await;
     }
@@ -276,7 +315,7 @@ async fn install(p: &Parsed, paths: &Paths) -> Outcome {
     if let Err(e) = layout_ops::check_links(&l) {
         return Outcome::Held(e);
     }
-    let _lock = match take_lock(&l) {
+    let _lock = match take_lock(&l, say) {
         Ok(g) => g,
         Err(o) => return o,
     };
@@ -287,7 +326,7 @@ async fn install(p: &Parsed, paths: &Paths) -> Outcome {
         .unwrap_or(from)
         .display()
         .to_string();
-    from_folder(&l, paths, Path::new(&source), &source, false).await
+    from_folder(&l, paths, Path::new(&source), &source, false, say).await
 }
 
 /// Verifies the folder, then installs, reinstalls or updates. Holds the lock.
@@ -297,16 +336,17 @@ async fn from_folder(
     from: &Path,
     source: &str,
     restart: bool,
+    say: Say,
 ) -> Outcome {
     if let Err(e) = layout_ops::check_links(l) {
         return Outcome::Held(e);
     }
     let staged = match layout_ops::stage(l, from, source).await {
         Ok(s) => s,
-        Err(e) => return Outcome::Held(format!("{e}; nothing changed")),
+        Err(e) => return Outcome::Held(say.nothing_changed(&e)),
     };
     let Some(current) = l.current_version() else {
-        return first_install(l, paths, staged).await;
+        return first_install(l, paths, staged, say).await;
     };
     let (new, old) = (
         Version::parse(&staged.record.version),
@@ -316,24 +356,20 @@ async fn from_folder(
         (Some(n), Some(o)) if n == o => {
             let result = layout_ops::place(l, staged).and_then(|_| layout_ops::create_links(l));
             match result {
-                Ok(()) => Outcome::Done(format!(
-                    "cataly {current} is already installed; nothing changed"
-                )),
+                Ok(()) => Outcome::Done(say.already_installed(&current)),
                 Err(e) => Outcome::Held(e),
             }
         }
         (Some(n), Some(o)) if n < o => {
             staged.discard();
-            Outcome::Held(format!(
-                "{n} is older than the installed {o}; only `cataly rollback` goes back"
-            ))
+            Outcome::Held(say.older_than_installed(&n.to_string(), &o.to_string()))
         }
-        _ => switch_to(l, paths, staged, &current, restart).await,
+        _ => switch_to(l, paths, staged, &current, restart, say).await,
     }
 }
 
 /// A first install here. State a removed install left behind is kept, so its store is checked too.
-async fn first_install(l: &Layout, paths: &Paths, staged: Staged) -> Outcome {
+async fn first_install(l: &Layout, paths: &Paths, staged: Staged, say: Say) -> Outcome {
     let report = match release::candidate_report(&staged.binary()).await {
         Ok(report) => Some(report),
         Err(error) => match layout_ops::store_floor(&paths.db_file()) {
@@ -357,7 +393,7 @@ async fn first_install(l: &Layout, paths: &Paths, staged: Staged) -> Outcome {
         return Outcome::Held(why);
     }
     let minimum = report.map_or_default(|r| r.omp_minimum);
-    let _ = omp_gate(&minimum, true).await;
+    let _ = omp_gate(&minimum, true, say).await;
     let version = staged.record.version.clone();
     let result = layout_ops::place(l, staged)
         .and_then(|_| layout_ops::switch(l, &version))
@@ -384,6 +420,7 @@ async fn switch_to(
     staged: Staged,
     current: &str,
     restart: bool,
+    say: Say,
 ) -> Outcome {
     let report = match release::candidate_report(&staged.binary()).await {
         Ok(r) => r,
@@ -392,7 +429,7 @@ async fn switch_to(
             return Outcome::Held(e);
         }
     };
-    if let Err(o) = omp_gate(&report.omp_minimum, false).await {
+    if let Err(o) = omp_gate(&report.omp_minimum, false, say).await {
         staged.discard();
         return o;
     }
@@ -403,7 +440,7 @@ async fn switch_to(
     let answering = hub_version(paths).is_some();
     let running = answering && restart;
     let closed = if running {
-        if let Err(why) = stop_hub(paths).await {
+        if let Err(why) = stop_hub(paths, say).await {
             staged.discard();
             return Outcome::Held(why);
         }
@@ -413,20 +450,17 @@ async fn switch_to(
     };
     let version = staged.record.version.clone();
     if let Err(e) = layout_ops::place(l, staged) {
-        if running && start_and_wait(l, paths, current).await.is_err() {
-            return Outcome::NeedsAttention(format!("{e}; the hub did not start again"));
+        if running && start_and_wait(l, paths, current, say).await.is_err() {
+            return Outcome::NeedsAttention(say.not_started_again(&e));
         }
         return Outcome::Held(e);
     }
     if let Some(closed) = closed {
-        return restart_switch(l, paths, &version, current, closed).await;
+        return restart_switch(l, paths, &version, current, closed, say).await;
     }
     match activate(l, &version, current) {
-        Ok(()) if answering => Outcome::Done(format!(
-            "cataly {current} -> {version}; the running hub stays on {current} until it restarts"
-        )),
-        Ok(()) => Outcome::Done(format!("cataly {current} -> {version}")),
-        Err(e) => Outcome::NeedsAttention(format!("{e}; run `cataly status --install`")),
+        Ok(()) => Outcome::Done(say.switched_files(current, &version, answering)),
+        Err(e) => Outcome::NeedsAttention(say.see_status_install(&e)),
     }
 }
 
@@ -444,54 +478,44 @@ async fn restart_switch(
     version: &str,
     was: &str,
     closed: Instant,
+    say: Say,
 ) -> Outcome {
     if let Err(e) = layout_ops::switch(l, version)
         .and_then(|()| layout_ops::settle_records(l, Some(was)).map(drop))
     {
-        return Outcome::NeedsAttention(format!(
-            "{e}; the hub is stopped; run `cataly status --install`"
-        ));
+        return Outcome::NeedsAttention(say.stopped_see_status_install(&e));
     }
-    match start_and_wait(l, paths, version).await {
+    match start_and_wait(l, paths, version, say).await {
         Ok(()) => {
             let _ = layout_ops::retain(l);
             let answered = closed.elapsed().as_millis();
-            let sessions = sessions_note(paths).await;
+            let sessions = sessions_note(paths, say).await;
             Outcome::Done(format!(
-                "cataly {was} -> {version}; the new hub answered {answered} ms after the old one closed{sessions}"
+                "{}{sessions}{}",
+                say.switched(was, version, answered),
+                workers_note(paths, say)
             ))
         }
         Err(why) => {
-            let _ = stop_hub(paths).await;
+            let _ = stop_hub(paths, say).await;
             match layout_ops::store_floor(&paths.db_file()) {
                 Ok(None) => {}
                 Ok(Some(floor)) if floor <= crate::store::latest_schema() => {}
                 Ok(Some(floor)) => {
-                    return Outcome::NeedsAttention(format!(
-                        "{why}; the store now requires schema {floor}; {was} cannot read it. \
-                     The new version remains selected; restore a compatible store backup or repair the new hub."
-                    ));
+                    return Outcome::NeedsAttention(say.store_moved_on(&why, floor, was));
                 }
                 Err(error) => {
-                    return Outcome::NeedsAttention(format!(
-                        "{why}; automatic switch-back to {was} was refused: {error}"
-                    ));
+                    return Outcome::NeedsAttention(say.switch_back_refused(&why, was, &error));
                 }
             }
             let back = layout_ops::switch(l, was)
                 .and_then(|()| layout_ops::settle_records(l, Some(version)).map(drop));
             if let Err(e) = back {
-                return Outcome::NeedsAttention(format!(
-                    "{why}; switching back to {was} failed: {e}"
-                ));
+                return Outcome::NeedsAttention(say.switch_back_failed(&why, was, &e));
             }
-            match start_and_wait(l, paths, was).await {
-                Ok(()) => Outcome::SwitchedBack(format!(
-                    "{version} did not come up ({why}); {was} runs again"
-                )),
-                Err(e) => Outcome::NeedsAttention(format!(
-                    "{version} did not come up ({why}) and {was} did not either ({e})"
-                )),
+            match start_and_wait(l, paths, was, say).await {
+                Ok(()) => Outcome::SwitchedBack(say.came_back(version, &why, was)),
+                Err(e) => Outcome::NeedsAttention(say.neither_came_up(version, &why, was, &e)),
             }
         }
     }
@@ -500,49 +524,70 @@ async fn restart_switch(
 /// Asks the hub to stop until it accepts, then waits for it to end. A busy session (the lead or a
 /// lane working or waiting on a dialog) refuses; it is never stopped, and after 60 s the owner is
 /// told, in his language, which session the switch waits for. Sessions the owner started with OMP
-/// himself are not the hub's and are never asked.
-async fn stop_hub(paths: &Paths) -> Result<(), String> {
-    stop_hub_within(paths, STOP_WAIT).await
+/// himself are not the hub's and are never asked. A hub that accepts while a voice call runs ends
+/// only once the call has wound down, within the bound its answer names: that bound is waited for,
+/// and the owner told so.
+async fn stop_hub(paths: &Paths, say: Say) -> Result<(), String> {
+    stop_hub_within(paths, STOP_WAIT, END_MARGIN, say).await
 }
 
-/// [`stop_hub`], given up after `wait`.
-async fn stop_hub_within(paths: &Paths, wait: Duration) -> Result<(), String> {
-    let language = owner_language(paths);
-    let deadline = Instant::now() + wait;
+/// [`stop_hub`], given up after `wait`, or after the voice wind-down the accepting hub names plus
+/// `margin` when that is later.
+async fn stop_hub_within(
+    paths: &Paths,
+    wait: Duration,
+    margin: Duration,
+    say: Say,
+) -> Result<(), String> {
+    let mut deadline = Instant::now() + wait;
     let mut said = String::new();
+    let mut voice = None;
     loop {
         let answer = Client::connect(&paths.socket)
             .and_then(|mut c| c.call(method::HUB_STOP, json!({}), Duration::from_secs(5)));
         match answer {
-            Ok(_) | Err(ClientError::NoHub) => break,
+            Ok(reply) => {
+                // An older hub answers `null`: no bound beyond `wait`.
+                let stopping: crate::proto::Stopping =
+                    serde_json::from_value(reply).unwrap_or_default();
+                if let Some(seconds) = stopping.voice_wind_down_s {
+                    out::line(&say.voice_winding_down(seconds));
+                    deadline = deadline.max(Instant::now() + Duration::from_secs(seconds) + margin);
+                    voice = Some(seconds);
+                }
+                break;
+            }
+            Err(ClientError::NoHub) => break,
             // No answer: the hub may have accepted and ended before its answer was read. Only its
             // end, seen in time, shows that it stopped.
             Err(e @ (ClientError::Closed | ClientError::Io(_))) => {
                 return if ended_by(paths, deadline).await {
                     Ok(())
                 } else {
-                    Err(format!("the hub did not stop: {e}; nothing changed"))
+                    Err(say.hub_did_not_stop(&e.to_string()))
                 };
             }
             Err(ClientError::Remote(body)) => {
                 let busy = body.message.trim_start_matches("busy: ").to_string();
                 if Instant::now() >= deadline {
-                    return Err(busy_held(language, &busy));
+                    return Err(say.busy_held(&busy));
                 }
                 if busy != said {
-                    out::line(&busy_waiting(language, &busy));
+                    out::line(&say.busy_waiting(&busy));
                     said = busy;
                 }
             }
-            Err(e) => return Err(format!("the hub did not stop: {e}; nothing changed")),
+            Err(e) => return Err(say.hub_did_not_stop(&e.to_string())),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     if ended_by(paths, deadline).await {
-        Ok(())
-    } else {
-        Err("the hub accepted the stop but did not end in time; nothing changed".into())
+        return Ok(());
     }
+    Err(match voice {
+        Some(seconds) => say.voice_did_not_end(seconds),
+        None => say.hub_did_not_end(),
+    })
 }
 
 /// Waits until the hub has ended or `deadline` has passed; whether it ended.
@@ -572,41 +617,12 @@ fn hub_gone(paths: &Paths) -> bool {
     }
 }
 
-/// The owner's language from the config file; the default when it is absent or invalid.
-fn owner_language(paths: &Paths) -> Language {
-    loaded(paths).map_or(Config::default().hub.language, |c| c.hub.language)
-}
-
 /// The config file, when it exists and is valid.
 fn loaded(paths: &Paths) -> Option<Config> {
     if !paths.config_file.exists() {
         return None;
     }
     crate::config::load(&paths.config_file).ok()
-}
-
-/// Said once per distinct reason while a busy session holds the switch.
-fn busy_waiting(language: Language, busy: &str) -> String {
-    match language {
-        Language::Korean => {
-            format!("작업 중인 세션을 기다리는 중입니다 ({busy}). 최대 60초 기다립니다.")
-        }
-        Language::English => format!("waiting for a busy session ({busy}), up to 60 s"),
-    }
-}
-
-/// Why the switch is held after 60 s of a busy session.
-fn busy_held(language: Language, busy: &str) -> String {
-    match language {
-        Language::Korean => format!(
-            "업데이트가 작업 중인 세션을 기다리고 있습니다 ({busy}). 작업 중인 세션은 멈추지 않습니다. \
-             작업이 끝나면 다시 실행해주세요. 아무것도 바뀌지 않았습니다."
-        ),
-        Language::English => format!(
-            "the update is waiting for a busy session ({busy}); busy sessions are never stopped. \
-             Run it again once that work is done. Nothing changed."
-        ),
-    }
 }
 
 /// A reported capability is authoritative; otherwise only an exact known release is admitted.
@@ -738,7 +754,7 @@ async fn preflight(candidate: &Path, paths: &Paths) -> Outcome {
 }
 
 /// Starts the hub through the user service Cataly created, else detached, and waits for it.
-async fn start_and_wait(l: &Layout, paths: &Paths, version: &str) -> Result<(), String> {
+async fn start_and_wait(l: &Layout, paths: &Paths, version: &str, say: Say) -> Result<(), String> {
     if l.service_marker().exists() {
         rewrite_service(l, version).await?;
         crate::sys::service::start().await?;
@@ -751,7 +767,7 @@ async fn start_and_wait(l: &Layout, paths: &Paths, version: &str) -> Result<(), 
             .stderr(Stdio::null())
             .process_group(0)
             .spawn()
-            .map_err(|e| format!("the hub did not start: {e}"))?;
+            .map_err(|e| say.hub_not_started(&e.to_string()))?;
     }
     let deadline = Instant::now() + START_WAIT;
     while Instant::now() < deadline {
@@ -760,7 +776,7 @@ async fn start_and_wait(l: &Layout, paths: &Paths, version: &str) -> Result<(), 
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    Err(format!("no hub reported {version} within 30 s"))
+    Err(say.no_hub_reported(version, START_WAIT.as_secs()))
 }
 
 /// How long `version`'s binary may take to rewrite the service definition.
@@ -816,22 +832,20 @@ async fn rewrite_service(l: &Layout, version: &str) -> Result<(), String> {
 }
 
 /// `cataly update [--from <folder> | --tag <tag>] [--no-restart]`.
-async fn update(p: &Parsed, paths: &Paths) -> Outcome {
+async fn update(p: &Parsed, paths: &Paths, say: Say) -> Outcome {
     let l = match layout(p) {
         Ok(l) => l,
         Err(e) => return Outcome::Held(e),
     };
-    let _lock = match take_lock(&l) {
+    let _lock = match take_lock(&l, say) {
         Ok(g) => g,
         Err(o) => return o,
     };
     if let Some(package) = &l.package {
-        return package_update(&l, package, p, paths).await;
+        return package_update(&l, package, p, paths, say).await;
     }
     let Some(current) = l.current_version() else {
-        return Outcome::Held(
-            "Cataly is not installed here; use install.sh, npm or Bun first".into(),
-        );
+        return Outcome::Held(say.not_installed());
     };
     let restart = !p.flag("--no-restart");
     if let Err(e) = layout_ops::clear_staging(&l) {
@@ -840,28 +854,25 @@ async fn update(p: &Parsed, paths: &Paths) -> Outcome {
     if let Some(from) = p.value("--from") {
         let source = std::fs::canonicalize(from)
             .map_or_else(|_| from.to_string(), |p| p.display().to_string());
-        return from_folder(&l, paths, Path::new(&source), &source, restart).await;
+        return from_folder(&l, paths, Path::new(&source), &source, restart, say).await;
     }
-    let release = match fetch(paths, p.value("--tag")).await {
+    let release = match fetch(paths, p.value("--tag"), say).await {
         Ok(r) => r,
         Err(e) => return Outcome::Held(e),
     };
     if Version::parse(&current).is_some_and(|c| release.version <= c) {
-        return Outcome::Done(format!(
-            "cataly {current} is up to date ({} is the release)",
-            release.tag
-        ));
+        return Outcome::Done(say.up_to_date(&current, &release.tag));
     }
     let dir = match download(&l, &release).await {
         Ok(d) => d,
-        Err(e) => return Outcome::Held(format!("{e}; nothing changed")),
+        Err(e) => return Outcome::Held(say.nothing_changed(&e)),
     };
     let source = format!(
         "https://github.com/{}/releases/tag/{}",
         release::REPOSITORY,
         release.tag
     );
-    let outcome = from_folder(&l, paths, &dir, &source, restart).await;
+    let outcome = from_folder(&l, paths, &dir, &source, restart, say).await;
     let _ = std::fs::remove_dir_all(&dir);
     outcome
 }
@@ -870,149 +881,143 @@ async fn update(p: &Parsed, paths: &Paths) -> Outcome {
 /// that installed this binary installs the release's version over it, with the same ordered stop,
 /// restart and wait as a switch. When the new version cannot run here, the earlier one is
 /// installed again the same way.
-async fn package_update(l: &Layout, package: &Package, p: &Parsed, paths: &Paths) -> Outcome {
+async fn package_update(
+    l: &Layout,
+    package: &Package,
+    p: &Parsed,
+    paths: &Paths,
+    say: Say,
+) -> Outcome {
     let Some(manager) = &package.manager else {
-        return Outcome::Held(format!(
-            "this Cataly runs from {}, which no global npm or Bun install made; update it with \
-             the package manager that put it there",
-            package.dir.display()
-        ));
+        return Outcome::Held(say.foreign_package(&package.dir.display().to_string()));
     };
     if p.value("--from").is_some() {
-        return Outcome::Held(format!(
-            "this Cataly was installed with {}; --from is for install.sh installs, so run \
-             `cataly update` without it",
-            manager.name()
-        ));
+        return Outcome::Held(say.package_from(manager.name()));
     }
     let current = release::VERSION;
-    let release = match fetch(paths, p.value("--tag")).await {
+    let release = match fetch(paths, p.value("--tag"), say).await {
         Ok(r) => r,
         Err(e) => return Outcome::Held(e),
     };
     if Version::parse(current).is_some_and(|c| release.version <= c) {
-        return Outcome::Done(format!(
-            "cataly {current} is up to date ({} is the release)",
-            release.tag
-        ));
+        return Outcome::Done(say.up_to_date(current, &release.tag));
     }
     let version = release.version.to_string();
     let answering = hub_version(paths).is_some();
     let running = answering && !p.flag("--no-restart");
     let closed = if running {
-        if let Err(why) = stop_hub(paths).await {
+        if let Err(why) = stop_hub(paths, say).await {
             return Outcome::Held(why);
         }
         Some(Instant::now())
     } else {
         None
     };
-    out::line(&format!(
-        "installing cataly {version} with {}",
-        manager.name()
-    ));
+    out::line(&say.installing(&version, manager.name()));
+    let back = Back {
+        l,
+        package,
+        manager,
+        paths,
+        current,
+        say,
+    };
     let installed = match manager.install(&version).await {
-        Ok(()) => installed_report(package, &version).await,
+        Ok(()) => installed_report(package, &version, say).await,
         Err(e) => Err(e),
     };
     let report = match installed {
         Ok(r) => r,
-        Err(why) => return package_back(l, package, manager, paths, current, running, why).await,
+        Err(why) => return back.go(running, why).await,
     };
-    if let Err(Outcome::Held(why)) = omp_gate(&report.omp_minimum, false).await {
-        return match reinstall(l, package, manager, paths, current, running).await {
-            Ok(()) => Outcome::Held(format!("{why}; {current} was installed again")),
-            Err(e) => {
-                Outcome::NeedsAttention(format!("{why}; installing {current} again failed: {e}"))
-            }
+    if let Err(Outcome::Held(why)) = omp_gate(&report.omp_minimum, false, say).await {
+        return match back.reinstall(running).await {
+            Ok(()) => Outcome::Held(say.installed_again(&why, current)),
+            Err(e) => Outcome::NeedsAttention(say.install_again_failed(&why, current, &e)),
         };
     }
     let Some(closed) = closed else {
-        return if answering {
-            Outcome::Done(format!(
-                "cataly {current} -> {version}; the running hub stays on {current} until it restarts"
-            ))
-        } else {
-            Outcome::Done(format!("cataly {current} -> {version}"))
-        };
+        return Outcome::Done(say.switched_files(current, &version, answering));
     };
-    match start_and_wait(l, paths, &version).await {
+    match start_and_wait(l, paths, &version, say).await {
         Ok(()) => {
             let answered = closed.elapsed().as_millis();
-            let sessions = sessions_note(paths).await;
+            let sessions = sessions_note(paths, say).await;
             Outcome::Done(format!(
-                "cataly {current} -> {version}; the new hub answered {answered} ms after the old one closed{sessions}"
+                "{}{sessions}{}",
+                say.switched(current, &version, answered),
+                workers_note(paths, say)
             ))
         }
         Err(why) => {
-            let _ = stop_hub(paths).await;
-            let why = format!("{version} did not come up ({why})");
-            package_back(l, package, manager, paths, current, true, why).await
+            let _ = stop_hub(paths, say).await;
+            back.go(true, say.did_not_come_up(&version, &why)).await
         }
     }
 }
 
 /// The version report of the package's binary, which must be `version`.
-async fn installed_report(package: &Package, version: &str) -> Result<release::Report, String> {
+async fn installed_report(
+    package: &Package,
+    version: &str,
+    say: Say,
+) -> Result<release::Report, String> {
     let report = release::candidate_report(&package.binary()).await?;
     if report.version == version {
         Ok(report)
     } else {
-        Err(format!(
-            "the package manager installed cataly {}, not {version}",
-            report.version
-        ))
+        Err(say.wrong_package_version(&report.version, version))
     }
 }
 
-/// After a failed package update: `current` installed again (unless it is still in place) and,
-/// when the hub ran, started again.
-async fn package_back(
-    l: &Layout,
-    package: &Package,
-    manager: &Manager,
-    paths: &Paths,
-    current: &str,
-    running: bool,
-    why: String,
-) -> Outcome {
-    let in_place = installed_report(package, current).await.is_ok();
-    let back = if in_place {
-        if running {
-            start_and_wait(l, paths, current).await
+/// The way back to `current` after a failed package update.
+struct Back<'a> {
+    l: &'a Layout,
+    package: &'a Package,
+    manager: &'a Manager,
+    paths: &'a Paths,
+    current: &'a str,
+    say: Say,
+}
+
+impl Back<'_> {
+    /// `current` installed again (unless it is still in place) and, when the hub ran, started
+    /// again.
+    async fn go(&self, running: bool, why: String) -> Outcome {
+        let (say, current) = (self.say, self.current);
+        let in_place = installed_report(self.package, current, say).await.is_ok();
+        let back = if in_place {
+            if running {
+                start_and_wait(self.l, self.paths, current, say).await
+            } else {
+                Ok(())
+            }
         } else {
-            Ok(())
+            self.reinstall(running).await
+        };
+        match back {
+            Ok(()) if in_place && running => Outcome::Held(say.runs_again(&why, current)),
+            Ok(()) if in_place => Outcome::Held(say.nothing_changed(&why)),
+            Ok(()) if running => Outcome::SwitchedBack(say.runs_again(&why, current)),
+            Ok(()) => Outcome::SwitchedBack(say.installed_again(&why, current)),
+            Err(e) => Outcome::NeedsAttention(say.did_not_come_back(
+                &why,
+                current,
+                &e,
+                &self.manager.install_hint(current),
+            )),
         }
-    } else {
-        reinstall(l, package, manager, paths, current, running).await
-    };
-    match back {
-        Ok(()) if in_place && running => Outcome::Held(format!("{why}; {current} runs again")),
-        Ok(()) if in_place => Outcome::Held(format!("{why}; nothing changed")),
-        Ok(()) if running => Outcome::SwitchedBack(format!("{why}; {current} runs again")),
-        Ok(()) => Outcome::SwitchedBack(format!("{why}; {current} was installed again")),
-        Err(e) => Outcome::NeedsAttention(format!(
-            "{why}; {current} did not come back ({e}); install it with `{}`",
-            manager.install_hint(current)
-        )),
     }
-}
 
-/// Installs `version` again through the package manager and, when `start`, starts its hub.
-async fn reinstall(
-    l: &Layout,
-    package: &Package,
-    manager: &Manager,
-    paths: &Paths,
-    version: &str,
-    start: bool,
-) -> Result<(), String> {
-    manager.install(version).await?;
-    installed_report(package, version).await?;
-    if start {
-        start_and_wait(l, paths, version).await?;
+    /// Installs `current` again through the package manager and, when `start`, starts its hub.
+    async fn reinstall(&self, start: bool) -> Result<(), String> {
+        self.manager.install(self.current).await?;
+        installed_report(self.package, self.current, self.say).await?;
+        if start {
+            start_and_wait(self.l, self.paths, self.current, self.say).await?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// `cataly uninstall` of an npm or Bun install, after the service went: the extension link goes;
@@ -1036,11 +1041,11 @@ fn package_uninstall(package: &Package) -> Outcome {
 }
 
 /// Release metadata through the config's API base (a loopback fake in tests).
-async fn fetch(paths: &Paths, tag: Option<&str>) -> Result<release::Release, String> {
+async fn fetch(paths: &Paths, tag: Option<&str>, say: Say) -> Result<release::Release, String> {
     let settings = loaded(paths).map_or_default(|c| c.update);
     match release::fetch_release(&settings.api()?, tag).await? {
         Some(r) if r.version.stable() || tag.is_some() => Ok(r),
-        _ => Err("no stable release is published yet; name one with --tag v<version>".into()),
+        _ => Err(say.no_stable_release()),
     }
 }
 
@@ -1061,44 +1066,38 @@ async fn download(l: &Layout, r: &release::Release) -> Result<PathBuf, String> {
 }
 
 /// `cataly rollback [--expect <version>] [--no-restart]` (IR req. 30).
-async fn rollback(p: &Parsed, paths: &Paths) -> Outcome {
+async fn rollback(p: &Parsed, paths: &Paths, say: Say) -> Outcome {
     let l = match layout(p) {
         Ok(l) => l,
         Err(e) => return Outcome::Held(e),
     };
-    let _lock = match take_lock(&l) {
+    let _lock = match take_lock(&l, say) {
         Ok(g) => g,
         Err(o) => return o,
     };
     if let Some(manager) = l.package.as_ref().and_then(|p| p.manager.as_ref()) {
-        return Outcome::Held(format!(
-            "this Cataly was installed with {}, which keeps no previous version; install the one \
-             you want with `{}`",
-            manager.name(),
-            manager.install_hint("<version>")
-        ));
+        return Outcome::Held(
+            say.package_keeps_no_previous(manager.name(), &manager.install_hint("<version>")),
+        );
     }
     let (Some(current), Some(previous)) = (l.current_version(), layout_ops::role(&l, "previous"))
     else {
-        return Outcome::Held("there is no previous version to roll back to".into());
+        return Outcome::Held(say.no_previous());
     };
     if let Some(expect) = p.value("--expect")
         && expect.trim_start_matches('v') != previous.version
     {
-        return Outcome::Held(format!(
-            "the previous version is {}, not {expect}",
-            previous.version
-        ));
+        return Outcome::Held(say.previous_is(&previous.version, expect));
     }
     if let Err(e) = layout_ops::verify_files(&l, &previous) {
-        return Outcome::Held(format!("{e}; nothing changed"));
+        return Outcome::Held(say.nothing_changed(&e));
     }
     let binary = l.version_dir(&previous.version).join(layout_ops::BINARY);
     let report = match release::candidate_report(&binary).await {
         Ok(r) => r,
         Err(e) => return Outcome::Held(e),
     };
-    if let Err(o) = omp_gate(&report.omp_minimum, false).await {
+    if let Err(o) = omp_gate(&report.omp_minimum, false, say).await {
         return o;
     }
     if let Err(why) = store_preflight(paths, &report, &current) {
@@ -1106,32 +1105,25 @@ async fn rollback(p: &Parsed, paths: &Paths) -> Outcome {
     }
     let answering = hub_version(paths).is_some();
     let running = answering && !p.flag("--no-restart");
-    if running && let Err(why) = stop_hub(paths).await {
+    if running && let Err(why) = stop_hub(paths, say).await {
         return Outcome::Held(why);
     }
     // Only now is the restart known not to be held: the version rolled back from is never
     // announced again (IR req. 37).
     if let Err(e) = crate::sys::fs::write_atomic(&l.silenced(), current.as_bytes()) {
-        if running && start_and_wait(&l, paths, &current).await.is_err() {
-            return Outcome::NeedsAttention(format!("{e}; the hub did not start again"));
+        if running && start_and_wait(&l, paths, &current, say).await.is_err() {
+            return Outcome::NeedsAttention(say.not_started_again(&e.to_string()));
         }
         return Outcome::Held(e.to_string());
     }
     if running {
-        return restart_switch(&l, paths, &previous.version, &current, Instant::now()).await;
+        return restart_switch(&l, paths, &previous.version, &current, Instant::now(), say).await;
     }
     match layout_ops::switch(&l, &previous.version)
         .and_then(|()| layout_ops::settle_records(&l, Some(&current)).map(drop))
     {
-        Ok(()) if answering => Outcome::Done(format!(
-            "rolled back: cataly {current} -> {}; the running hub stays on {current} until it restarts",
-            previous.version
-        )),
-        Ok(()) => Outcome::Done(format!(
-            "rolled back: cataly {current} -> {}",
-            previous.version
-        )),
-        Err(e) => Outcome::NeedsAttention(format!("{e}; run `cataly status --install`")),
+        Ok(()) => Outcome::Done(say.rolled_back_files(&current, &previous.version, answering)),
+        Err(e) => Outcome::NeedsAttention(say.see_status_install(&e)),
     }
 }
 
@@ -1141,7 +1133,7 @@ async fn uninstall(p: &Parsed, paths: &Paths) -> Outcome {
         Ok(l) => l,
         Err(e) => return Outcome::Held(e),
     };
-    let lock = match take_lock(&l) {
+    let lock = match take_lock(&l, Say(Language::English)) {
         Ok(g) => g,
         Err(o) => return o,
     };
@@ -1200,10 +1192,17 @@ async fn service(enable: bool, paths: &Paths) -> Outcome {
         && !Path::new(&config.omp.path).is_absolute()
     {
         let value = omp.display().to_string();
-        if let Err(e) = super::setup::write_one(paths, "omp", "path", &value) {
+        let rendered = crate::config::file::toml_string(&value);
+        if let Err(e) = super::setup::write_one(paths, "omp", "path", &rendered) {
             return Outcome::Held(e);
         }
         notes.push(format!("[omp] path set to {value}"));
+    }
+    if !config.setup.service {
+        match super::setup::write_one(paths, "setup", "service", "true") {
+            Ok(()) => notes.push("[setup] service set to true".into()),
+            Err(e) => return Outcome::Held(e),
+        }
     }
     match enable_service(&l, paths, &config).await {
         Ok((file, more)) => {
@@ -1334,7 +1333,7 @@ async fn check(p: &Parsed, paths: &Paths) -> Result<(), Failure> {
         .ok()
         .and_then(|l| l.current_version())
         .unwrap_or_else(|| release::VERSION.to_string());
-    let r = fetch(paths, p.value("--tag"))
+    let r = fetch(paths, p.value("--tag"), Say(Language::English))
         .await
         .map_err(Failure::Refused)?;
     let mine = Version::parse(&installed)
@@ -1476,9 +1475,14 @@ mod tests {
             drop(held);
             request
         });
-        stop_hub_within(&paths, Duration::from_secs(10))
-            .await
-            .unwrap();
+        stop_hub_within(
+            &paths,
+            Duration::from_secs(10),
+            END_MARGIN,
+            Say(Language::English),
+        )
+        .await
+        .unwrap();
         assert!(hub.join().unwrap().contains(method::HUB_STOP));
     }
 
@@ -1490,7 +1494,8 @@ mod tests {
         let (listener, _held) = fake_hub(&paths);
         let hub = std::thread::spawn(move || close_unanswered(&listener));
         let started = Instant::now();
-        let held = stop_hub_within(&paths, Duration::from_millis(500))
+        let english = Say(Language::English);
+        let held = stop_hub_within(&paths, Duration::from_millis(500), END_MARGIN, english)
             .await
             .unwrap_err();
         assert!(started.elapsed() >= Duration::from_millis(500));
@@ -1499,6 +1504,87 @@ mod tests {
             "the hub did not stop: control socket: the hub closed the connection; nothing changed"
         );
         assert!(hub.join().unwrap().contains(method::HUB_STOP));
+    }
+
+    /// Accepts the stop as a hub does while a voice call runs: its answer names the call's
+    /// wind-down bound. Returns the request.
+    fn accept_with_voice(listener: &UnixListener, seconds: u64) -> String {
+        use std::io::Write as _;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut request)
+            .unwrap();
+        let reply = json!({
+            "v": crate::proto::VERSION,
+            "id": 1,
+            "ok": crate::proto::Stopping { voice_wind_down_s: Some(seconds) },
+        });
+        writeln!(stream, "{reply}").unwrap();
+        request
+    }
+
+    /// A hub stopped during a voice call ends only once the call has wound down. The update waits
+    /// for the bound the hub named, not its own shorter wait: an end 1.2 s after the stop, within
+    /// a 1 s wind-down and its margin, completes the stop.
+    #[tokio::test]
+    async fn a_voice_wind_down_within_its_bound_completes_the_stop() {
+        let dir = scratch("stop-voice");
+        let paths = paths_in(&dir);
+        let (listener, held) = fake_hub(&paths);
+        let socket = paths.socket.clone();
+        let hub = std::thread::spawn(move || {
+            let request = accept_with_voice(&listener, 1);
+            std::thread::sleep(Duration::from_millis(1200));
+            std::fs::remove_file(&socket).unwrap();
+            drop(held);
+            request
+        });
+        let wait = Duration::from_millis(100);
+        stop_hub_within(&paths, wait, Duration::from_secs(1), Say(Language::Korean))
+            .await
+            .unwrap();
+        assert!(hub.join().unwrap().contains(method::HUB_STOP));
+    }
+
+    /// A wind-down beyond the hub's bound holds the update with nothing changed, saying why.
+    #[tokio::test]
+    async fn a_voice_wind_down_beyond_its_bound_holds_the_update() {
+        let dir = scratch("stop-voice");
+        let paths = paths_in(&dir);
+        let (listener, _held) = fake_hub(&paths);
+        let hub = std::thread::spawn(move || accept_with_voice(&listener, 1));
+        let started = Instant::now();
+        let margin = Duration::from_millis(300);
+        let held = stop_hub_within(
+            &paths,
+            Duration::from_millis(100),
+            margin,
+            Say(Language::Korean),
+        )
+        .await
+        .unwrap_err();
+        assert!(started.elapsed() >= Duration::from_millis(1300));
+        assert_eq!(
+            held,
+            "허브가 멈추기로 했지만 음성 통화 정리 시간(1초)이 지나도 끝나지 않았습니다. 아무것도 \
+             바뀌지 않았습니다. 허브가 멈춘 뒤 다시 실행하세요."
+        );
+        assert!(hub.join().unwrap().contains(method::HUB_STOP));
+        let english = Say(Language::English);
+        assert_eq!(
+            english.voice_did_not_end(90),
+            "the hub accepted the stop but had not ended after its voice call's 90 s wind-down; \
+             nothing changed. Run it again once the hub has stopped."
+        );
+        assert_eq!(
+            Say(Language::Korean).voice_winding_down(90),
+            "음성 통화를 정리하는 중이에요 (최대 90초)"
+        );
+        assert_eq!(
+            english.voice_winding_down(90),
+            "winding down the voice call (up to 90 s)"
+        );
     }
 
     /// A candidate's report: version 0.2.5, reading up to `reader` (none: a report from before the
@@ -1675,7 +1761,7 @@ mod tests {
                     },
                 };
                 let before = std::fs::read(paths.db_file()).ok();
-                let outcome = first_install(&layout, &paths, staged).await;
+                let outcome = first_install(&layout, &paths, staged, Say(Language::English)).await;
                 if retained {
                     let Outcome::Held(reason) = outcome else {
                         panic!("unverified candidate installed over retained state: {text}");
@@ -1727,7 +1813,8 @@ mod tests {
         };
         layout_ops::prepare_root(&layout).unwrap();
         // Missing binaries reproduce the two start errors without running another hub.
-        let outcome = restart_switch(&layout, &paths, "new", "old", Instant::now()).await;
+        let english = Say(Language::English);
+        let outcome = restart_switch(&layout, &paths, "new", "old", Instant::now(), english).await;
         let Outcome::NeedsAttention(reason) = outcome else {
             panic!("an incompatible automatic rollback must need owner attention");
         };
@@ -1735,6 +1822,110 @@ mod tests {
         assert!(
             reason.contains("store") && reason.contains("old"),
             "{reason}"
+        );
+    }
+
+    /// The main outcomes of `cataly update` and `cataly rollback`, in both of the owner's
+    /// languages: switched, already current, busy then held, switched back, and each outcome's
+    /// prefix. The store refusal is pinned above.
+    #[test]
+    fn update_texts_follow_the_owner_language() {
+        let (ko, en) = (Say(Language::Korean), Say(Language::English));
+        assert_eq!(
+            ko.switched("0.2.7", "0.2.8", 441),
+            "cataly 0.2.7 -> 0.2.8 전환을 마쳤습니다. 새 허브가 이전 허브가 닫힌 뒤 441ms 만에 \
+             응답했습니다."
+        );
+        assert_eq!(
+            en.switched("0.2.7", "0.2.8", 441),
+            "cataly 0.2.7 -> 0.2.8; the new hub answered 441 ms after the old one closed"
+        );
+        assert_eq!(
+            ko.up_to_date("0.2.8", "v0.2.8"),
+            "cataly 0.2.8 버전이 최신입니다 (최신 릴리스 v0.2.8)."
+        );
+        assert_eq!(
+            en.up_to_date("0.2.8", "v0.2.8"),
+            "cataly 0.2.8 is up to date (v0.2.8 is the release)"
+        );
+        assert_eq!(
+            ko.already_installed("0.2.8"),
+            "cataly 0.2.8 버전이 이미 설치되어 있습니다. 아무것도 바뀌지 않았습니다."
+        );
+        assert_eq!(
+            en.already_installed("0.2.8"),
+            "cataly 0.2.8 is already installed; nothing changed"
+        );
+        let busy = "리드가 작업 중";
+        assert_eq!(
+            ko.busy_waiting(busy),
+            "작업 중인 세션을 기다리는 중입니다 (리드가 작업 중). 최대 60초 기다립니다."
+        );
+        assert!(ko.busy_held(busy).ends_with("아무것도 바뀌지 않았습니다."));
+        assert_eq!(
+            en.busy_waiting("the lead is working"),
+            "waiting for a busy session (the lead is working), up to 60 s"
+        );
+        assert!(
+            en.busy_held("the lead is working")
+                .starts_with("the update is waiting for a busy session (the lead is working)")
+        );
+        assert_eq!(
+            ko.came_back("0.2.8", "no answer", "0.2.7"),
+            "0.2.8 버전이 올라오지 않아 (no answer) 0.2.7 버전으로 되돌렸습니다. 0.2.7 버전이 \
+             다시 실행 중입니다."
+        );
+        assert_eq!(
+            en.came_back("0.2.8", "no answer", "0.2.7"),
+            "0.2.8 did not come up (no answer); 0.2.7 runs again"
+        );
+        for (say, held, back, attention) in [
+            (ko, "보류: x", "되돌림: x", "확인 필요: x"),
+            (en, "held: x", "switched back: x", "needs attention: x"),
+        ] {
+            let said = |o: Outcome| match o.result(say) {
+                Err(Failure::Status(_, m)) => m,
+                _ => panic!("a failure status expected"),
+            };
+            assert_eq!(said(Outcome::Held("x".into())), held);
+            assert_eq!(said(Outcome::SwitchedBack("x".into())), back);
+            assert_eq!(said(Outcome::NeedsAttention("x".into())), attention);
+        }
+    }
+
+    /// `--help` of `update` and `rollback` in both languages; other commands keep the table's
+    /// English in both.
+    #[test]
+    fn update_and_rollback_help_follows_the_owner_language() {
+        let spec = |path: &[&str]| {
+            super::super::args::COMMANDS
+                .iter()
+                .find(|c| c.path == path)
+                .unwrap()
+        };
+        let help = |path: &[&str], language| super::super::help(Some(spec(path)), language);
+        assert!(
+            help(&["update"], Language::Korean).starts_with(
+                "cataly update [--from <value>] [--tag <value>] [--prefix <value>] \
+                 [--no-restart]\n  최신 안정 릴리스"
+            ),
+            "{}",
+            help(&["update"], Language::Korean)
+        );
+        assert!(
+            help(&["rollback"], Language::Korean)
+                .contains("\n  이전 버전으로 되돌리고(--expect <버전>으로 어느 버전인지 확인)")
+        );
+        for path in [&["update"][..], &["rollback"]] {
+            assert_eq!(
+                help(path, Language::English),
+                super::super::args::usage(Some(spec(path)))
+            );
+        }
+        assert!(help(&["update"], Language::English).contains("\n  install the latest stable"));
+        assert_eq!(
+            help(&["check"], Language::Korean),
+            super::super::args::usage(Some(spec(&["check"])))
         );
     }
 }

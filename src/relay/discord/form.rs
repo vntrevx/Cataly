@@ -57,6 +57,7 @@ pub(crate) struct Field {
     pub(crate) name: String,
     pub(crate) label: String,
     pub(crate) kind: FieldKind,
+    /// Enabled choices only, so disabled options cannot become defaults or answers.
     pub(crate) choices: Vec<Choice>,
     /// Default text, or a hidden field's value.
     pub(crate) value: String,
@@ -305,7 +306,8 @@ struct Reader {
     /// Text collected for the open label, legend, option or textarea.
     label: Option<String>,
     legend: Option<String>,
-    option: Option<(String, bool, String)>,
+    /// The open option's value, selected/disabled flags and text.
+    option: Option<(Option<String>, bool, bool, String)>,
     textarea: Option<(String, String, bool, Limits)>,
     /// The open select's field name.
     select: Option<String>,
@@ -315,7 +317,7 @@ struct Reader {
 
 impl Reader {
     fn text(&mut self, words: &str) {
-        if let Some((_, _, w)) = self.option.as_mut() {
+        if let Some((_, _, _, w)) = self.option.as_mut() {
             w.push_str(words);
         } else if let Some((_, w, _, _)) = self.textarea.as_mut() {
             w.push_str(words);
@@ -351,19 +353,19 @@ impl Reader {
                 self.text.push('\n');
             }
             "option" => {
-                let (value, selected, words) = self.option.take().ok_or("malformed nesting")?;
+                let (value, selected, disabled, words) =
+                    self.option.take().ok_or("malformed nesting")?;
                 let name = self.select.as_ref().ok_or("an option outside a select")?;
                 let field = self
                     .fields
                     .iter_mut()
                     .find(|f| f.name == *name)
                     .ok_or("malformed select")?;
+                if disabled {
+                    return Ok(());
+                }
                 let words = words.trim().to_string();
-                let value = if value.is_empty() {
-                    words.clone()
-                } else {
-                    value
-                };
+                let value = value.unwrap_or_else(|| words.clone());
                 field.choices.push(Choice {
                     value,
                     label: words,
@@ -439,8 +441,8 @@ impl Reader {
                 if self.select.is_none() {
                     return Err("an option outside a select".into());
                 }
-                let value = t.attr("value").unwrap_or_default().to_string();
-                self.option = Some((value, t.has("selected"), String::new()));
+                let value = t.attr("value").map(str::to_string);
+                self.option = Some((value, t.has("selected"), t.has("disabled"), String::new()));
             }
             "textarea" => {
                 let name = field_name(t)?;
@@ -608,6 +610,80 @@ fn legend_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_options_keep_explicit_empty_values() {
+        let html = r#"<form><select name="size"><option value="" selected> None </option><option> Small &amp; light </option><option value="l"> Large </option></select></form>"#;
+        let f = read(html).unwrap();
+        assert_eq!(
+            f.fields[0].choices,
+            vec![
+                Choice {
+                    value: String::new(),
+                    label: "None".into(),
+                    selected: true,
+                },
+                Choice {
+                    value: "Small & light".into(),
+                    label: "Small & light".into(),
+                    selected: false,
+                },
+                Choice {
+                    value: "l".into(),
+                    label: "Large".into(),
+                    selected: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn disabled_options_are_not_choices_or_defaults() {
+        for multiple in ["", " multiple"] {
+            for selected in ["", " selected"] {
+                let html = format!(
+                    r#"<form><select name="env"{multiple}>
+                        <option value="prod" disabled selected>Production</option>
+                        <option value="dev">Development</option>
+                        <option value="stage"{selected}>Staging</option>
+                        <option disabled="false">Unavailable</option>
+                    </select></form>"#
+                );
+                let f = read(&html).unwrap();
+                let [field] = f.editable()[..] else { panic!() };
+                assert_eq!(
+                    field.choices,
+                    [
+                        Choice {
+                            value: "dev".into(),
+                            label: "Development".into(),
+                            selected: false,
+                        },
+                        Choice {
+                            value: "stage".into(),
+                            label: "Staging".into(),
+                            selected: !selected.is_empty(),
+                        },
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_options_leave_no_choices_when_all_are_disabled() {
+        for multiple in ["", " multiple"] {
+            let html = format!(
+                r#"<form><select name="env"{multiple}>
+                    <option value="prod" disabled selected>Production</option>
+                    <option disabled>Unavailable</option>
+                </select></form>"#
+            );
+            let f = read(&html).unwrap();
+            let [field] = f.editable()[..] else { panic!() };
+            assert_eq!(field.choices, [] as [Choice; 0]);
+        }
+    }
 
     #[test]
     fn reads_omp_ask_forms_and_refuses_the_rest() {

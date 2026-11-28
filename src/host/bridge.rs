@@ -21,7 +21,7 @@ use crate::proto::Response;
 use crate::sys::now_ms;
 use crate::{log, proto::ToolCapabilities};
 
-/// A launch token is good for one hello within this time of the launch.
+/// A launch token is good for one hello identity within this time of the launch.
 const TOKEN_LIFE_MS: i64 = 10 * 60 * 1000;
 /// Tokens kept at most (a hub starts few sessions).
 const TOKENS_MAX: usize = 64;
@@ -52,6 +52,8 @@ struct Issued {
     fresh: bool,
     at_ms: i64,
     life_ms: i64,
+    /// A token is claimed by one session and its private hello ID until the reply is acknowledged.
+    hello: Option<(String, String)>,
 }
 
 struct Link {
@@ -132,19 +134,40 @@ impl Links {
                 fresh: matches!(spec.target, Target::Fresh(_)),
                 at_ms: now,
                 life_ms,
+                hello: None,
             },
         );
     }
 
-    /// Uses a token, once (EXT req. 5): the session it was issued for, and whether that launch
-    /// started a new conversation.
-    pub(crate) fn redeem(&self, token: &str) -> Option<(String, Role, bool)> {
-        let issued = self.lock().tokens.remove(token)?;
-        (now_ms() - issued.at_ms < issued.life_ms).then_some((
-            issued.handle,
-            issued.role,
-            issued.fresh,
-        ))
+    /// Claims a token for one hello (EXT req. 5, 10). Its private ID permits retrying a lost
+    /// answer, not a nested process inheriting the token. Older bridges remain single-use.
+    pub(crate) fn redeem(
+        &self,
+        token: &str,
+        session: &str,
+        hello_id: &str,
+    ) -> Option<(String, Role, bool)> {
+        let mut inner = self.lock();
+        let issued = inner.tokens.get_mut(token)?;
+        if now_ms() - issued.at_ms >= issued.life_ms {
+            return None;
+        }
+        if let Some((s, id)) = &issued.hello {
+            if s != session || id != hello_id || hello_id.is_empty() || session.is_empty() {
+                return None;
+            }
+        } else if hello_id.is_empty() || session.is_empty() {
+            let issued = inner.tokens.remove(token)?;
+            return Some((issued.handle, issued.role, issued.fresh));
+        } else {
+            issued.hello = Some((session.to_string(), hello_id.to_string()));
+        }
+        Some((issued.handle.clone(), issued.role, issued.fresh))
+    }
+
+    /// The bridge sent a request after its welcome, so the launch token is no longer needed.
+    pub(crate) fn confirm(&self, token: &str) {
+        self.lock().tokens.remove(token);
     }
 
     /// Whether an accepted lead hello begins the lead's context, so the recap goes in front of it
@@ -457,12 +480,18 @@ mod tests {
         let links = Links::default();
         let fresh = super::super::testing::spec("h1", None);
         links.issue("t1", &fresh);
-        assert_eq!(links.redeem("t1"), Some(("h1".into(), Role::Lead, true)));
-        assert_eq!(links.redeem("t1"), None);
-        assert_eq!(links.redeem("nope"), None);
+        assert_eq!(
+            links.redeem("t1", "s1", ""),
+            Some(("h1".into(), Role::Lead, true))
+        );
+        assert_eq!(links.redeem("t1", "s1", ""), None);
+        assert_eq!(links.redeem("nope", "s1", ""), None);
         let resume = super::super::testing::spec("h2", Some(("A", "/x/a.jsonl".into())));
         links.issue("t2", &resume);
-        assert_eq!(links.redeem("t2"), Some(("h2".into(), Role::Lead, false)));
+        assert_eq!(
+            links.redeem("t2", "s2", ""),
+            Some(("h2".into(), Role::Lead, false))
+        );
         links.connect("h1", Role::Lead, "k1", "s1");
         assert_eq!(links.by_key("k1"), Some(("h1".into(), Role::Lead)));
         assert_eq!(links.by_key(""), None);
@@ -484,6 +513,31 @@ mod tests {
         );
         assert_eq!(links.place(&[41, 40]), Some(("h1".into(), Role::Lead)));
         assert_eq!(links.place(&[41, 1]), None);
+    }
+
+    #[test]
+    fn an_unanswered_hello_reuses_only_its_own_unexpired_launch_identity() {
+        let links = Links::default();
+        let spec = super::super::testing::spec("h1", None);
+        links.issue("t1", &spec);
+        let accepted = Some(("h1".into(), Role::Lead, true));
+        assert_eq!(links.redeem("t1", "s1", "private-id"), accepted);
+        // The welcome can be lost after the hub has already accepted and closed the link.
+        links.connect("h1", Role::Lead, "lost-key", "s1");
+        links.disconnect("h1", "lost-key");
+        assert_eq!(links.redeem("t1", "s1", "private-id"), accepted);
+        assert_eq!(links.redeem("t1", "s1", "nested-id"), None);
+        assert_eq!(links.redeem("t1", "other-session", "private-id"), None);
+        assert_eq!(links.redeem("t1", "s1", ""), None);
+        assert_eq!(links.redeem("t1", "s1", "private-id"), accepted);
+        links.confirm("t1");
+        assert_eq!(links.redeem("t1", "s1", "private-id"), None);
+
+        links.issue("expired", &spec);
+        assert_eq!(links.redeem("expired", "s1", "private-id"), accepted);
+        // Move issuance back, rather than sleeping: retries never extend the token's lifetime.
+        links.lock().tokens.get_mut("expired").unwrap().at_ms -= TOKEN_LIFE_MS;
+        assert_eq!(links.redeem("expired", "s1", "private-id"), None);
     }
 
     /// A hello is a connection, not a new conversation: only a new conversation, or the lead's

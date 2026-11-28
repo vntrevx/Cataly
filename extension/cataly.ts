@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import type {
 	AgentToolResult, BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionAskDialogQuestion, ExtensionContext,
 	MessageEndEvent, SessionStopEventResult, ToolCallEvent, ToolCallEventResult, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent,
+	ToolExecutionUpdateEvent,
 } from "@oh-my-pi/pi-coding-agent";
 
 const PROTOCOL = 1;
@@ -39,10 +40,11 @@ export interface Deps {
 export async function unixConnect(path: string, onLine: (line: string) => void, onClose: () => void): Promise<Wire> {
 	if (!privateDir(dirname(path), process.getuid?.() ?? -1)) throw new Error("the hub socket's directory is not private");
 	let buf = "";
+	const utf8 = new TextDecoder(); // streaming: a character split across chunks is kept until its last byte
 	let closed = false;
 	const end = () => void (closed || ((closed = true), onClose()));
 	const data = (s: { end(): void }, chunk: Uint8Array) => {
-		buf += chunk.toString();
+		buf += utf8.decode(chunk, { stream: true });
 		if (buf.length > LINE_MAX * 2) return void ((buf = ""), s.end());
 		for (let at = buf.indexOf("\n"); at >= 0; at = buf.indexOf("\n")) {
 			const line = buf.slice(0, at);
@@ -105,7 +107,7 @@ export function fingerprint(tool: string, result: Json | undefined): string {
 	return hasher.digest("hex");
 }
 
-interface Call { tool: string; cwd: string; starts: number; command?: string; fingerprint?: string; error?: boolean }
+interface Call { tool: string; cwd: string; starts: number; command?: string; fingerprint?: string; error?: boolean; running?: boolean }
 
 /** The model OMP runs for this context, `provider/id`, or "" when unknown. */
 function modelOf(ctx: Ctx): string {
@@ -153,7 +155,7 @@ export class Bridge {
 	wire: Wire | undefined;
 	connecting = false; shutting = false;
 	next = 1; seq = 0;
-	pending = new Map<number, (v: Json | undefined) => void>();
+	pending = new Map<number, (v: Json | undefined, refused?: boolean) => void>();
 	queue: string[] = [];
 	queued = 0; dropped = 0;
 	lastRx = 0; attempt = 0;
@@ -167,6 +169,7 @@ export class Bridge {
 	forms = new Map<string, (answer: unknown) => void>();
 	token: string | undefined; parent = "";
 	private reportedCapabilities: string | undefined;
+	private helloId: string | undefined; // Private to this bridge, never inherited with the launch token.
 
 	constructor(readonly pi: Pi, readonly deps: Deps) {
 		this.token = deps.env.CATALY_LAUNCH || undefined;
@@ -219,20 +222,19 @@ export class Bridge {
 		if (this.connecting || this.shutting) return;
 		this.connecting = true;
 		this.wire = await this.deps.connect(socketPath(this.deps), line => this.receive(line), () => this.closed()).catch(() => undefined);
-		this.connecting = false;
-		if (!this.wire) return this.retry();
+		if (!this.wire) return void ((this.connecting = false), this.retry());
 		this.lastRx = Date.now();
 		const [cwd, agent, mode] = [this.ctx.cwd ?? "", this.ctx.agent?.kind ?? "main", this.ctx.mode ?? ""].map(String);
 		const ids = { version: VERSION, token: this.token, key: this.key, session: this.session, file: this.file(), parent: this.parent };
-		const caps = { model_resolution_version: MODEL_RESOLUTION };
+		const caps = { model_resolution_version: MODEL_RESOLUTION, hello_id: this.helloId ??= crypto.randomUUID() };
 		const hello = { ext: PROTOCOL, ...ids, ...caps, pid: process.pid, cwd, agent, mode, marker: marked(this.ctx), ...this.facts(this.ctx) };
 		const answer = await this.request("bridge.hello", hello, TOOL_MS, true);
+		if (!answer) return void (this.wire?.close(), (this.connecting = false), this.retry());
 		this.token = undefined;
-		if (!answer) return this.wire?.close();
 		if (answer.role !== "lead" && answer.role !== "lane") {
 			// Role none: inert for this session (EXT req. 4).
 			[this.role, this.key] = ["none", undefined];
-			return void (this.wire?.close(), (this.wire = undefined));
+			return void (this.wire?.close(), (this.wire = undefined), (this.connecting = false));
 		}
 		[this.attempt, this.key] = [0, String(answer.key ?? "")];
 		owners.set(String(this.ctx.agent?.id), this.parent || this.session);
@@ -243,7 +245,8 @@ export class Bridge {
 		this.reportedCapabilities = undefined; // A new connection needs its own snapshot, including after a hub restart.
 		this.capabilities();
 		this.status(answer.status as string | undefined);
-		this.warned = false;
+		this.warned = this.connecting = false;
+		if (!this.wire) this.retry();
 	}
 
 	apply(answer: Json | undefined): void {
@@ -281,7 +284,7 @@ export class Bridge {
 		this.wire = undefined;
 		for (const resolve of this.pending.values()) resolve(undefined);
 		this.pending.clear();
-		if (this.wired && !this.shutting) this.retry();
+		if (this.wired && !this.connecting && this.role !== "none" && !this.shutting) this.retry();
 	}
 
 	receive(line: string): void {
@@ -289,7 +292,7 @@ export class Bridge {
 		const msg = safe(() => JSON.parse(line) as Json);
 		if (!msg) return;
 		const resolve = this.pending.get(Number(msg.id ?? 0));
-		if (resolve) return resolve(msg.err ? undefined : ((msg.ok as Json) ?? {}));
+		if (resolve) return resolve(msg.err ? undefined : ((msg.ok as Json) ?? {}), Boolean(msg.err));
 		const item = msg.item as Json | undefined;
 		const cmd = item?.cmd as Json | undefined;
 		if (cmd && this.tern && cmd.op === "form") {
@@ -324,13 +327,14 @@ export class Bridge {
 		}
 	}
 
-	/** A request answered by the hub, or `undefined` on timeout or disconnect. */
+	/** A request answered by the hub, or `undefined` on timeout or disconnect. An early hello's explicit error
+	 * is an empty role answer (inert), not an unreachable hub; other requests still fail closed on errors. */
 	request(method: string, params: Json, ms: number, early = false): Promise<Json | undefined> {
 		if (!this.wire || (!early && !this.key)) return Promise.resolve(undefined);
 		const id = this.next++;
 		const { promise, resolve } = Promise.withResolvers<Json | undefined>();
 		const timer = setTimeout(() => this.pending.get(id)?.(undefined), ms);
-		this.pending.set(id, v => (this.pending.delete(id), clearTimeout(timer), resolve(v)));
+		this.pending.set(id, (v, refused) => (this.pending.delete(id), clearTimeout(timer), resolve(refused && early ? {} : v)));
 		this.wire.write(this.line(method, params, id));
 		return promise;
 	}
@@ -372,14 +376,14 @@ export class Bridge {
 		const names = tools.map(def => String(def.name ?? "")).filter(Boolean);
 		for (const def of tools.filter(def => def.name)) {
 			const name = String(def.name);
-			// The hub sets each tool's answer deadline (a lane report reads evidence files).
-			const ms = Number(def.timeout_ms) || TOOL_MS;
+			// The hub sets each tool's answer deadline (a lane report reads evidence files), and longer ones per op (a review).
+			const ms = Number(def.timeout_ms) || TOOL_MS, ops = (def.op_timeout_ms ?? {}) as Json;
 			const parameters = (def.parameters ?? { type: "object" }) as ToolDefinition["parameters"];
 			const [label, description] = [String(def.label ?? name), String(def.description ?? "")];
 			// The hub checks every operation, so OMP need not ask (extension API `approval`; a user deny still wins). An
 			// `essential` tool stays a direct call, never a bash command, where the outer bash approval would ask.
 			const approval = { tier: "write", policy: "allow" } as const;
-			const execute: ToolDefinition["execute"] = (callId, params, _s, _u, ctx) => this.tool(name, ms, callId, params as Json, ctx);
+			const execute: ToolDefinition["execute"] = (callId, params, _s, _u, ctx) => this.tool(name, Number(ops[String((params as Json)?.op)]) || ms, callId, params as Json, ctx);
 			pi.registerTool({ name, label, description, parameters, approval, loadMode: "essential", execute });
 		}
 		this.toolsActive = Promise.resolve(safe(() => pi.setActiveTools?.([...(pi.getActiveTools?.() ?? []).filter((n: string) => !names.includes(n)), ...names]))).catch(() => undefined);
@@ -399,6 +403,7 @@ export class Bridge {
 		pi.on("message_end", (e, ctx) => this.message(e, ctx));
 		pi.on("tool_execution_start", (e, ctx) => this.toolStart(e, ctx));
 		pi.on("tool_execution_end", (e, ctx) => this.toolEnd(e, ctx));
+		pi.on("tool_execution_update", (e, ctx) => this.toolUpdate(e, ctx));
 		// The main agent's events the hub follows, each with the fields it reads; payloads differ across OMP versions.
 		const dialog = (e: Json) => ({ call: e.toolCallId ?? e.reviewId, tool: e.toolName, choice: e.choice });
 		const goal = (e: Json) => ({ status: (e.goal as Json)?.status ?? e.status, objective: (e.goal as Json)?.objective ?? e.objective });
@@ -592,9 +597,29 @@ export class Bridge {
 		const id = String(e.toolCallId ?? "");
 		const call = this.calls.get(id);
 		const result = e.result as Json | undefined;
-		if (call) [call.error, call.fingerprint] = [Boolean(e.isError), fingerprint(call.tool, result)];
-		const job = (result?.details as Json | undefined)?.jobId;
-		this.event("tool_execution_end", { call: id, tool: e.toolName, error: Boolean(e.isError), job });
+		// OMP backgrounds a long call and ends it at once with `details.async.state: "running"`: no result yet (EVR req. 11).
+		const async = (result?.details as Json | undefined)?.async as Json | undefined;
+		const running = async?.state === "running";
+		if (call) [call.error, call.running] = [Boolean(e.isError), running];
+		if (call) call.fingerprint = running ? undefined : fingerprint(call.tool, result);
+		const [job, state] = [async?.jobId, async?.state];
+		this.event("tool_execution_end", { call: id, tool: e.toolName, error: Boolean(e.isError), job, state });
+	}
+
+	/** A backgrounded call's job settles in a later update for the same call (EXT req. 23): completed gives the final
+	 * result's fingerprint; failed or cancelled marks the call as an error. Earlier frames and other calls change nothing. */
+	toolUpdate(e: ToolExecutionUpdateEvent, ctx: Ctx): void {
+		if (!this.main(ctx)) return;
+		const id = String(e.toolCallId ?? "");
+		const call = this.calls.get(id);
+		const result = e.partialResult as Json | undefined;
+		const async = (result?.details as Json | undefined)?.async as Json | undefined;
+		if (!call?.running || !async || async.state === "running") return;
+		[call.running, call.error] = [false, async.state !== "completed"];
+		// Job bookkeeping is not part of the foreground result's evidence identity.
+		const { async: _, ...details } = result?.details as Json;
+		call.fingerprint = call.error ? undefined : fingerprint(call.tool, { ...result, details });
+		this.event("tool_job_end", { call: id, tool: e.toolName, job: async.jobId, state: async.state });
 	}
 
 	/** Forwards one tool call with its recorded call facts (EXT req. 18, 21-22); the hub judges them. */

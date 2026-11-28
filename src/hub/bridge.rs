@@ -58,6 +58,8 @@ one op per call; its result needs no redirection, `head` or separators. This is 
 struct Hello {
     ext: u64,
     token: Option<String>,
+    #[serde(rename = "hello_id")]
+    nonce: String,
     key: Option<String>,
     session: String,
     agent: String,
@@ -113,7 +115,7 @@ async fn decide(hub: &Hub, hello: &Hello) -> Result<(String, Role, bool), String
     if let Some(token) = hello.token.as_deref().filter(|t| !t.is_empty()) {
         return hub
             .links
-            .redeem(token)
+            .redeem(token, &hello.session, &hello.nonce)
             .ok_or_else(|| "a used or unknown launch token".into());
     }
     if let Some(found) = hello.key.as_deref().and_then(|k| hub.links.by_key(k)) {
@@ -284,6 +286,7 @@ pub(crate) async fn serve<R, W>(
         &[("session", &hello.session), ("handle", &handle)],
     );
     let mut session = hello.session.clone();
+    let mut launch_token = if sub { None } else { hello.token };
     if !sub && port.is_none() {
         // The hub's read-only model query goes over this connection; a terminal port owns its own.
         hub.links.open_query(&handle, &key, &raw, tx.clone());
@@ -300,6 +303,9 @@ pub(crate) async fn serve<R, W>(
         let Ok(request) = crate::proto::decode(&line) else {
             continue;
         };
+        if let Some(token) = launch_token.take() {
+            hub.links.confirm(&token);
+        }
         let form = terminal(port.as_ref(), &request);
         let method = request.method.clone();
         match method.as_str() {

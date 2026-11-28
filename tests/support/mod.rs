@@ -61,7 +61,97 @@ pub fn output_of(cmd: &mut Command) -> Output {
 pub const ADMISSION: &str = "\n[jobs.test-admission]\nkind = \"pressure\"\nenabled = false\n\
     min_free_memory = 0\nmin_free_disk_gb = 0\nmax_sessions = 0\n";
 
-/// A hub sandbox: short root under /tmp (socket paths have a 103-byte limit on macOS).
+/// A fresh path `/tmp/<prefix>-<pid>-<n>`, short because socket paths have a 103-byte limit on
+/// macOS. Whatever an earlier process of the same PID left there is removed.
+pub fn unique_root(prefix: &str) -> PathBuf {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let root = PathBuf::from(format!(
+        "/tmp/{prefix}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    remove_tree(&root).unwrap();
+    root
+}
+
+/// Removes `path` and everything under it. Folders are opened up first: an install leaves its
+/// version folders read-only (0555), which `remove_dir_all` alone cannot empty. An absent path is
+/// already removed.
+pub fn remove_tree(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fn unlock(path: &Path) {
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+            for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+                unlock(&entry.path());
+            }
+        }
+    }
+    unlock(path);
+    match std::fs::remove_dir_all(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// Removes a test's directory once the test is done with it (its processes stopped first). A
+/// failed test's directory stays when `CATALY_TEST_KEEP=1`, and its path is printed. A directory
+/// that cannot be removed fails a test that passed, so none is left behind unnoticed; a writer
+/// that has not quite stopped gets a few retries first.
+pub fn release(dir: &Path) {
+    let failed = std::thread::panicking();
+    if failed && std::env::var_os("CATALY_TEST_KEEP").is_some_and(|v| v == "1") {
+        eprintln!("CATALY_TEST_KEEP=1: kept {}", dir.display());
+        return;
+    }
+    let mut left = Ok(());
+    for _ in 0..5 {
+        left = remove_tree(dir);
+        if left.is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Err(e) = left {
+        let text = format!("test directory left behind: {}: {e}", dir.display());
+        if failed {
+            eprintln!("{text}");
+        } else {
+            panic!("{text}");
+        }
+    }
+}
+
+/// A `unique_root` directory, created owner-only and released when the guard drops.
+pub struct TempRoot(PathBuf);
+
+impl TempRoot {
+    pub fn new(prefix: &str) -> Self {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let root = unique_root(prefix);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        Self(root)
+    }
+}
+
+impl std::ops::Deref for TempRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        release(&self.0);
+    }
+}
+
+/// A hub sandbox under a `unique_root`. Dropping it stops the hub and every block it left, then
+/// releases the root.
 pub struct TestHub {
     pub root: PathBuf,
     pub child: Option<Child>,
@@ -71,13 +161,7 @@ pub struct TestHub {
 
 impl TestHub {
     pub fn new(config: &str) -> Self {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let root = PathBuf::from(format!(
-            "/tmp/cy-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = unique_root("cy");
         for dir in ["home", "config/cataly", "state", "run"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -615,7 +699,7 @@ impl Drop for TestHub {
                 );
             }
         }
-        let _ = std::fs::remove_dir_all(&self.root);
+        release(&self.root);
         if !left.is_empty() {
             let text = format!("left running after the hub was dropped (killed): {left:?}");
             if std::thread::panicking() {

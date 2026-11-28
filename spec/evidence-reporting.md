@@ -95,7 +95,11 @@ lane lifecycle area consumes the completion checker, the step records and the pu
    with symlinks resolved. It must be a regular file of at most 1 GiB. The daemon hashes its bytes with SHA-256 and
    compares device, inode, size and modification time before and after reading. A difference refuses the report
    with "file was being modified; retry after it settles". A missing path, a non-regular file, a symlink loop and an
-   unreadable file are each refused with their own reason.
+   unreadable file are each refused with their own reason. A worker lane's working directory is on its worker:
+   there the file is resolved, sized and read through the worker's `stat` and `read`, at most 8 MiB (larger files
+   are refused), and a changed resolved path or size between the `stat` before and after the read refuses the report
+   the same way. On a worker the path must stay within the worker's root without `..`, and a symlink loop or an
+   unreadable directory reads as missing (the worker's `stat` does not tell the reason).
 10. Tool evidence: each ID must name a tool call on the session's current branch whose result is present, not an
     error, and not pruned, and whose result belongs to the same tool. The extension, not the lane, reads the branch.
 11. When a tool call only launched background work, it counts only if the extension saw OMP report that work as completed
@@ -264,9 +268,13 @@ lane lifecycle area consumes the completion checker, the step records and the pu
 58. Policy pass: every commit's author and committer email equals the repository's configured identity (case
     insensitive), except that a merge commit's committer may be GitHub's no-reply address; and if any fix-type commit
     changes source files, the pull request adds or changes a test file or its description gives an explicit no-test
-    reason. The pull request head, description and commit count are read before and after; any change fails with
-    "moved while being checked". More than 3000 files in a commit or the pull request fails. A repository without a
-    configured identity fails.
+    reason. All commit and file pages are read; their totals must match the pull request's commit and changed-file
+    counts, or the check fails as incomplete. Pull requests with more than 250 commits are refused because GitHub
+    lists at most 250 commits. The head, description and both counts are read before and after; any change fails
+    with "moved while being checked". Both snapshots and every page share one 120 s read deadline: each call gets
+    only the remaining time, and expiry fails with a deadline reason. More than 3000 files in a commit or the
+    pull request fails.
+    A repository without a configured identity fails.
 
 ### Message from the lead to a lane (EVR-33, EVR-34)
 

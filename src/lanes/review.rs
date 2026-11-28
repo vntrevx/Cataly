@@ -20,6 +20,7 @@ use tokio::sync::Semaphore;
 use super::Lanes;
 use super::docs::{self, VERDICT};
 use crate::host::Runtime;
+use crate::jobs::owner::gh_list;
 use crate::log;
 use crate::omp::launch::write_overlay;
 use crate::omp::tools::{self, Role as ToolRole};
@@ -29,6 +30,15 @@ use crate::sys::now_ms;
 
 /// A review may take this long.
 const REVIEW_LIMIT: Duration = Duration::from_mins(30);
+/// The lead's bridge waits this long for `lane.review`, which answers only once the review ends:
+/// up to four GitHub reads first (`head`, `review_file`), the review, each with its kill grace,
+/// and a minute for the rest.
+pub(crate) const REVIEW_WAIT: Duration = super::checks::LIMIT
+    .saturating_add(KILL_GRACE)
+    .saturating_mul(4)
+    .saturating_add(REVIEW_LIMIT)
+    .saturating_add(KILL_GRACE)
+    .saturating_add(Duration::from_mins(1));
 const REVIEW_CAP: u64 = 4 * 1024 * 1024;
 const KEEP_CHARS: usize = 4000;
 const DIAG_LINES: usize = 200;
@@ -408,13 +418,20 @@ impl<R: Runtime> Lanes<R> {
         if !v.approve {
             return Err(format!("refused: the verdict at {head} rejects"));
         }
-        let runs =
-            super::checks::gh(&format!("repos/{repo}/commits/{head}/check-runs"), &cwd).await?;
-        let runs = runs
-            .get("check_runs")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let incomplete = |why: String| format!("refused: incomplete checks from GitHub: {why}");
+        let dir = cwd.as_path();
+        let (runs, total) = gh_list(
+            &format!("repos/{repo}/commits/{head}/check-runs"),
+            Some("check_runs"),
+            None,
+            |p| async move { super::checks::gh(&p, dir).await },
+        )
+        .await
+        .map_err(incomplete)?;
+        let total = total.ok_or_else(|| incomplete("missing total_count".into()))?;
+        if runs.len() != total {
+            return Err(incomplete(format!("received {} of {total}", runs.len())));
+        }
         if runs.is_empty() {
             return Err("refused: GitHub reports no checks".into());
         }

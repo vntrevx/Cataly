@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
 use crate::jobs::Jobs;
@@ -27,6 +27,10 @@ const LINE_MAX: usize = 64 * 1024;
 const JOBS_MAX: usize = 16;
 const ARGV_MAX: usize = 64;
 const STDERR_CAP: u64 = 256 * 1024;
+/// How much output one read takes; a line in memory never exceeds `LINE_MAX` plus this.
+const CHUNK: usize = 8 * 1024;
+/// The most of one long line its file keeps (WS req. 72); the rest is counted, not saved.
+const SPILL_MAX: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Spec {
@@ -299,8 +303,9 @@ impl Streams {
         mut child: command::Attached,
         stopped: &mut watch::Receiver<bool>,
     ) -> Option<String> {
-        let stdout = child.take_stdout()?;
-        let mut lines = BufReader::new(stdout).lines();
+        let mut stdout = child.take_stdout()?;
+        let mut chunk = vec![0u8; CHUNK];
+        let mut line = Line::new(self.files.join("streams"), &spec.name);
         let silence = spec.silence_m.map(|m| Duration::from_secs(m * 60));
         let mut quiet_since = Instant::now();
         let mut alerted = false;
@@ -309,8 +314,8 @@ impl Streams {
                 s.saturating_sub(quiet_since.elapsed())
                     .max(Duration::from_secs(1))
             });
-            let line = tokio::select! {
-                line = lines.next_line() => line,
+            let read = tokio::select! {
+                read = stdout.read(&mut chunk) => read,
                 () = tokio::time::sleep(wait) => {
                     if let Some(s) = silence && !alerted && quiet_since.elapsed() >= s {
                         alerted = true;
@@ -320,41 +325,29 @@ impl Streams {
                     continue;
                 }
                 _ = stopped.changed() => {
+                    line.discard();
                     child.close(Duration::ZERO, KILL_GRACE).await;
                     return None;
                 }
             };
-            let Ok(Some(line)) = line else { break };
+            let Some(output) = read.ok().filter(|&n| n > 0).and_then(|n| chunk.get(..n)) else {
+                break;
+            };
             quiet_since = Instant::now();
             alerted = false;
-            if line.len() > LINE_MAX {
-                let path = self.files.join("streams").join(format!(
-                    "{}-{}.txt",
-                    spec.name,
-                    crate::sys::now_ms()
-                ));
-                let note = match crate::sys::fs::write_atomic(&path, line.as_bytes()) {
-                    Ok(()) => format!(
-                        "a line of {} bytes, saved in {}",
-                        line.len(),
-                        path.display()
-                    ),
-                    Err(e) => format!(
-                        "a line of {} bytes that could not be saved: {e}",
-                        line.len()
-                    ),
-                };
-                self.emit(EventKind::StreamLine, spec, !spec.low, &note)
-                    .await;
-            } else if filter.is_match(&line) {
-                self.emit(
-                    EventKind::StreamLine,
-                    spec,
-                    !spec.low,
-                    &one_line(&line, 300),
-                )
-                .await;
+            let mut parts = output.split(|&b| b == b'\n');
+            if let Some(first) = parts.next() {
+                line.push(first);
             }
+            for part in parts {
+                self.line_ended(spec, filter, line.finish()).await;
+                line.push(part);
+            }
+        }
+        if !line.is_empty() {
+            // Only LF makes a pending CR part of a line ending; at EOF it is data.
+            line.flush_cr();
+            self.line_ended(spec, filter, line.finish()).await;
         }
         let (exit, _) = child.close(Duration::from_secs(5), KILL_GRACE).await;
         Some(match exit {
@@ -362,6 +355,164 @@ impl Streams {
             Exit::Signal(s) => format!("signal {s}"),
             Exit::Unknown => "unknown status".into(),
         })
+    }
+
+    async fn line_ended(&self, spec: &Spec, filter: &regex::Regex, ended: Ended) {
+        match ended {
+            Ended::Text(text) if filter.is_match(&text) => {
+                self.emit(
+                    EventKind::StreamLine,
+                    spec,
+                    !spec.low,
+                    &one_line(&text, 300),
+                )
+                .await;
+            }
+            Ended::Text(_) => {}
+            Ended::Saved(note) => {
+                self.emit(EventKind::StreamLine, spec, !spec.low, &note)
+                    .await;
+            }
+        }
+    }
+}
+
+/// A line that ended: its text, or the note about the private file a long line went to.
+enum Ended {
+    Text(String),
+    Saved(String),
+}
+
+/// The output line being read. Up to `LINE_MAX` bytes stay in memory; a longer line continues in a
+/// private file (WS req. 72), so output without line ends never grows the hub's memory. The file
+/// keeps the first `SPILL_MAX` bytes; the rest is only counted.
+struct Line {
+    dir: PathBuf,
+    name: String,
+    bytes: Vec<u8>,
+    /// Held outside the length and file until another byte or EOF proves it is not CRLF.
+    pending_cr: bool,
+    spill: Option<Spill>,
+}
+
+struct Spill {
+    /// The file and its path; `Err` once it could not be made or written (no file is left then).
+    file: Result<(std::fs::File, PathBuf), String>,
+    len: usize,
+}
+
+impl Line {
+    fn new(dir: PathBuf, name: &str) -> Self {
+        Self {
+            dir,
+            name: name.into(),
+            bytes: Vec::new(),
+            pending_cr: false,
+            spill: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty() && !self.pending_cr && self.spill.is_none()
+    }
+
+    fn push(&mut self, part: &[u8]) {
+        if part.is_empty() {
+            return;
+        }
+        self.flush_cr();
+        let part = if let Some(prefix) = part.strip_suffix(b"\r") {
+            self.pending_cr = true;
+            prefix
+        } else {
+            part
+        };
+        self.write(part);
+    }
+
+    fn flush_cr(&mut self) {
+        if std::mem::take(&mut self.pending_cr) {
+            self.write(b"\r");
+        }
+    }
+
+    fn write(&mut self, part: &[u8]) {
+        if let Some(spill) = &mut self.spill {
+            spill.write(part);
+            return;
+        }
+        self.bytes.extend_from_slice(part);
+        if self.bytes.len() > LINE_MAX {
+            let path = self
+                .dir
+                .join(format!("{}-{}.txt", self.name, crate::sys::unique_stem()));
+            let file = crate::sys::fs::create_private(&path)
+                .map(|file| (file, path))
+                .map_err(|e| e.to_string());
+            let mut spill = Spill { file, len: 0 };
+            spill.write(&std::mem::take(&mut self.bytes));
+            self.spill = Some(spill);
+        }
+    }
+
+    /// Ends a line at LF; at EOF the pending CR must be flushed as data first.
+    fn finish(&mut self) -> Ended {
+        self.pending_cr = false;
+        let Some(spill) = self.spill.take() else {
+            let bytes = std::mem::take(&mut self.bytes);
+            return Ended::Text(String::from_utf8_lossy(&bytes).into_owned());
+        };
+        let len = spill.len;
+        let saved = spill.file.and_then(|(file, path)| {
+            let synced = file
+                .sync_all()
+                .map_err(|e| format!("sync file: {e}"))
+                .and_then(|()| {
+                    crate::sys::fs::sync_dir(&self.dir).map_err(|e| format!("sync directory: {e}"))
+                });
+            if let Err(e) = synced {
+                let _ = std::fs::remove_file(&path);
+                return Err(e);
+            }
+            Ok(path)
+        });
+        Ended::Saved(match saved {
+            Ok(path) if len > SPILL_MAX => format!(
+                "a line of {len} bytes, the first {SPILL_MAX} saved in {}",
+                path.display()
+            ),
+            Ok(path) => format!("a line of {len} bytes, saved in {}", path.display()),
+            Err(e) => format!("a line of {len} bytes that could not be saved: {e}"),
+        })
+    }
+
+    /// Drops a line cut short by a stop, with its unfinished file.
+    fn discard(&mut self) {
+        if let Some(Spill {
+            file: Ok((_, path)),
+            ..
+        }) = self.spill.take()
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Spill {
+    fn write(&mut self, part: &[u8]) {
+        use std::io::Write as _;
+        let room = SPILL_MAX.saturating_sub(self.len);
+        self.len += part.len();
+        let Ok((file, path)) = &mut self.file else {
+            return;
+        };
+        let Some(kept) = part.get(..part.len().min(room)) else {
+            return;
+        };
+        if let Err(e) = file.write_all(kept) {
+            let _ = std::fs::remove_file(&*path);
+            self.file = Err(e.to_string());
+        }
     }
 }
 
@@ -377,5 +528,222 @@ mod tests {
         assert!(spec_of(&json!({"name": "x", "argv": []})).is_err());
         assert!(spec_of(&json!({"name": "x", "argv": ["a"], "filter": "("})).is_err());
         assert!(spec_of(&json!({"name": "x", "argv": ["a"], "restarts": 101})).is_err());
+    }
+
+    fn saved_path(ended: Ended) -> (String, PathBuf) {
+        let Ended::Saved(note) = ended else {
+            panic!("not saved")
+        };
+        let path = PathBuf::from(note.rsplit(" saved in ").next().unwrap());
+        (note, path)
+    }
+
+    #[test]
+    fn a_crlf_line_at_the_limit_stays_text() {
+        let dir = crate::sys::fs::tests::scratch("streams-crlf-limit");
+        let mut input = vec![b'x'; LINE_MAX];
+        input.push(b'\r');
+        for chunk_size in [LINE_MAX, LINE_MAX + 1] {
+            let mut line = Line::new(dir.to_path_buf(), "limit");
+            for part in input.chunks(chunk_size) {
+                line.push(part);
+            }
+            // The next read can start with the LF, giving an empty part before finish.
+            line.push(b"");
+            assert!(line.spill.is_none(), "the CRLF must not force a spill");
+            let Ended::Text(text) = line.finish() else {
+                panic!("the line should still be filtered")
+            };
+            assert_eq!(text.len(), LINE_MAX);
+            assert!(text.bytes().all(|b| b == b'x'));
+            assert!(line.is_empty());
+            line.push(b"next");
+            assert!(matches!(line.finish(), Ended::Text(text) if text == "next"));
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_spilled_crlf_line_drops_only_its_final_cr() {
+        let dir = crate::sys::fs::tests::scratch("streams-crlf-spill");
+        for len in [LINE_MAX + 1, SPILL_MAX] {
+            let mut expected = vec![b'x'; len];
+            expected[LINE_MAX - 1] = b'\r';
+            *expected.last_mut().unwrap() = b'\r';
+            let mut input = expected.clone();
+            input.push(b'\r');
+            for chunk_size in [CHUNK, len, len + 1] {
+                let mut line = Line::new(dir.to_path_buf(), "crlf");
+                for part in input.chunks(chunk_size) {
+                    line.push(part);
+                }
+                line.push(b"");
+                let (note, path) = saved_path(line.finish());
+                assert_eq!(
+                    note,
+                    format!("a line of {len} bytes, saved in {}", path.display())
+                );
+                assert_eq!(std::fs::read(path).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn a_spill_directory_sync_failure_is_reported() {
+        let dir = crate::sys::fs::tests::scratch("streams-dir-sync");
+        let mut line = Line::new(dir.to_path_buf(), "sync");
+        let len = LINE_MAX + 1;
+        line.push(&vec![b'x'; len]);
+        let path = line
+            .spill
+            .as_ref()
+            .unwrap()
+            .file
+            .as_ref()
+            .unwrap()
+            .1
+            .clone();
+        // The file can be synced, but opening this path for the directory sync fails.
+        line.dir = dir.join("missing");
+        let Ended::Saved(note) = line.finish() else {
+            panic!("the oversized line needs a note")
+        };
+        assert!(
+            note.starts_with(&format!(
+                "a line of {len} bytes that could not be saved: sync directory:"
+            )),
+            "{note}"
+        );
+        assert!(!path.exists(), "an unsynced file must not be left behind");
+    }
+
+    #[tokio::test]
+    async fn a_bare_cr_at_eof_remains_part_of_the_line() {
+        let (ctx, _stop, dir) = crate::jobs::tests::ctx_with("", "streams-eof-cr");
+        let streams = Streams::new(
+            crate::jobs::tests::jobs_of(&ctx),
+            ctx.store.clone(),
+            dir.to_path_buf(),
+            dir.join("files"),
+        );
+        let spec = spec_of(&json!({
+            "name": "eof",
+            "argv": ["sh", "-c", "printf 'ignored\\r\\ntail\\r'"],
+            "filter": "tail\\r$",
+        }))
+        .unwrap();
+        let filter = regex::Regex::new(&spec.filter).unwrap();
+        let child = command::attach(&spec.argv, Some(&dir), &[], None, 0).unwrap();
+        let (_stop_tx, mut stop_rx) = watch::channel(false);
+        assert_eq!(
+            streams
+                .watch_output(&spec, &filter, child, &mut stop_rx)
+                .await
+                .as_deref(),
+            Some("status 0")
+        );
+        let events = ctx.store.read(|r| r.events_after(0, 10)).await.unwrap();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(format!("{:?}", events[0]).contains("tail"), "{events:?}");
+    }
+
+    /// WS req. 72: the file keeps the first `SPILL_MAX` bytes; the event gives the whole length.
+    #[test]
+    fn a_long_line_file_is_capped() {
+        let dir = crate::sys::fs::tests::scratch("streams-cap");
+        let mut line = Line::new(dir.to_path_buf(), "cap");
+        let chunk = vec![b'x'; CHUNK];
+        for _ in 0..(5 * 1024 * 1024 / CHUNK) {
+            line.push(&chunk);
+        }
+        line.push(b"\r");
+        let (note, path) = saved_path(line.finish());
+        assert!(
+            note.starts_with("a line of 5242880 bytes, the first 4194304 saved in "),
+            "{note}"
+        );
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 4_194_304);
+    }
+
+    /// A line cut short by a stop leaves no file behind.
+    #[test]
+    fn a_stopped_line_leaves_no_file() {
+        let dir = crate::sys::fs::tests::scratch("streams-stop");
+        let mut line = Line::new(dir.to_path_buf(), "cut");
+        line.push(&vec![b'z'; LINE_MAX + 1]);
+        line.discard();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// WS req. 72: a line without an end goes to its file while it grows, not into memory first.
+    #[tokio::test]
+    async fn a_long_line_goes_to_a_file_before_it_ends() {
+        let (ctx, _stop, dir) = crate::jobs::tests::ctx_with("", "streams-long-line");
+        let files = dir.join("files");
+        let streams = Streams::new(
+            crate::jobs::tests::jobs_of(&ctx),
+            ctx.store.clone(),
+            dir.to_path_buf(),
+            files.clone(),
+        );
+        crate::sys::fs::ensure_private_dir(&files.join("streams")).unwrap();
+        let gate = dir.join("gate");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&gate)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // 200 KiB without a line end, then the line stays open until the test opens the gate.
+        let spec = spec_of(&json!({
+            "name": "long",
+            "argv": ["sh", "-c", "head -c 204800 /dev/zero | tr '\\0' x; cat \"$0\"", gate],
+        }))
+        .unwrap();
+        let filter = regex::Regex::new(&spec.filter).unwrap();
+        let child = command::attach(&spec.argv, Some(&dir), &[], None, 0).unwrap();
+        let (_stop_tx, mut stop_rx) = watch::channel(false);
+        let reader = Arc::clone(&streams);
+        let watching = tokio::spawn(async move {
+            reader
+                .watch_output(&spec, &filter, child, &mut stop_rx)
+                .await
+        });
+
+        let mut polls = 0;
+        let saved = loop {
+            let found = std::fs::read_dir(files.join("streams"))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > LINE_MAX as u64));
+            if let Some(path) = found {
+                break path;
+            }
+            assert!(!watching.is_finished(), "the job ended early");
+            polls += 1;
+            assert!(polls < 500, "no file while the line is still open");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let events = |ctx: &Arc<crate::jobs::Ctx>| {
+            let store = ctx.store.clone();
+            async move { store.read(|r| r.events_after(0, 10)).await.unwrap() }
+        };
+        assert!(
+            events(&ctx).await.is_empty(),
+            "no event before the line ends"
+        );
+
+        let opened = gate.clone();
+        tokio::task::spawn_blocking(move || std::fs::write(opened, b"tail\r\n"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(watching.await.unwrap().as_deref(), Some("status 0"));
+        let events = events(&ctx).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let note = format!("a line of 204804 bytes, saved in {}", saved.display());
+        assert!(format!("{:?}", events[0]).contains(&note), "{events:?}");
+        assert_eq!(std::fs::metadata(&saved).unwrap().len(), 204_804);
     }
 }

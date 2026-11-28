@@ -3,7 +3,9 @@
 # appends each call to `gh-data/calls.log`. It never contacts GitHub.
 #   gh pr list ...        -> gh-data/pr-list.json
 #   gh api [-H h] PATH    -> gh-data/<PATH without query, leading / dropped, / as _>.json
-#                            pages after the first answer []; a missing fixture answers HTTP 404
+#                            later pages use <PATH>.page-N.json, or [] when absent
+#                            a missing first-page fixture answers HTTP 404
+#   <response file>.delay -> sleep this many seconds before returning the response
 #   gh repo create O/N --private -> writes repos_O_N.json as a private repository
 dir=$(cd "$(dirname "$0")" && pwd)/gh-data
 printf '%s\n' "$*" >> "$dir/calls.log"
@@ -22,17 +24,22 @@ repo)
     ;;
 api)
     for last in "$@"; do :; done
-    case "$last" in
-    *"page="*)
-        case "$last" in
-        *"&page=1" | *"?page=1") ;;
-        *) echo '[]'; exit 0 ;;
-        esac
-        ;;
-    esac
     path=${last%%\?*}
     path=${path#/}
     file="$dir/$(printf '%s' "$path" | tr '/' '_').json"
+    case "$last" in
+    *"?page="* | *"&page="*)
+        page=${last##*[?&]page=}
+        page=${page%%&*}
+        if [ "$page" != 1 ]; then
+            file="${file%.json}.page-$page.json"
+            if [ ! -f "$file" ]; then
+                echo '[]'
+                exit 0
+            fi
+        fi
+        ;;
+    esac
     ;;
 *)
     echo "fake gh: unsupported command $1" >&2
@@ -40,6 +47,9 @@ api)
     ;;
 esac
 if [ -f "$file" ]; then
+    if [ -f "$file.delay" ]; then
+        sleep "$(cat "$file.delay")"
+    fi
     cat "$file"
 else
     case "$1" in
