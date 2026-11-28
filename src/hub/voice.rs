@@ -264,6 +264,11 @@ impl<R: Runtime> Voice<R> {
         let _ = self.calling.subscribe().wait_for(|calling| !*calling).await;
     }
 
+    /// How long a running call may take to wind down once told to stop; `None` without a call.
+    pub(crate) fn wind_down(&self) -> Option<Duration> {
+        (*self.calling.borrow()).then_some(WIND_DOWN)
+    }
+
     /// The supervised task: one call at a time while the settings allow it.
     pub(crate) async fn run(
         self: Arc<Self>,
