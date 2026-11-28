@@ -1,5 +1,6 @@
 //! Cron expressions with an IANA time zone (WS req. 52): five fields, names for months and weekdays,
-//! lists, ranges and steps; day-of-month and day-of-week combine with OR when both are restricted. A
+//! lists, ranges and steps; day-of-month and day-of-week combine with OR when neither field starts with
+//! `*`, and with AND when either does (so `*/2` in one day field still restricts it). A
 //! local time that does not exist (DST gap) does not fire; a repeated local time (DST fold) fires once,
 //! at its first occurrence.
 
@@ -7,8 +8,9 @@ use jiff::Timestamp;
 use jiff::civil::{Date, DateTime};
 use jiff::tz::{AmbiguousOffset, TimeZone};
 
-/// Days searched for the next occurrence; eight years always include a 29 February.
-const SEARCH_DAYS: u32 = 366 * 8;
+/// Days searched for the next occurrence. A date-and-weekday pair can be 40 years apart:
+/// 29 February falls on a Sunday in 2088 and next in 2128 because 2100 is not a leap year.
+const SEARCH_DAYS: u32 = 366 * 40;
 
 /// A parsed five-field cron expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,15 +171,15 @@ impl Cron {
             u64::from(self.weekdays),
             date.weekday().to_sunday_zero_offset(),
         );
-        match (self.days_star, self.weekdays_star) {
-            (false, false) => dom || dow,
-            (true, false) => dow,
-            (false, true) => dom,
-            (true, true) => true,
+        // Vixie cron: a day field starting with `*` (including `*/n`) makes the two combine with AND.
+        if self.days_star || self.weekdays_star {
+            dom && dow
+        } else {
+            dom || dow
         }
     }
 
-    /// The first occurrence strictly after `after`, in `tz`; `None` if none exists within eight years.
+    /// The first occurrence strictly after `after`, in `tz`; `None` if none exists within 40 years.
     pub(crate) fn next_after(&self, tz: &TimeZone, after: Timestamp) -> Option<Timestamp> {
         let start = after.to_zoned(tz.clone()).datetime();
         let mut date = start.date();
@@ -295,6 +297,60 @@ mod tests {
         assert_eq!(
             next_n(&c, &TimeZone::UTC, ts("2026-11-12T00:00:00Z"), 1),
             ["2026-11-13T00:00:00Z"]
+        );
+    }
+
+    #[test]
+    fn star_steps_in_day_fields_restrict_days() {
+        let utc = TimeZone::UTC;
+        let c = parse("0 0 */2 * *").unwrap();
+        assert_eq!(
+            next_n(&c, &utc, ts("2026-01-01T00:00:00Z"), 2),
+            ["2026-01-03T00:00:00Z", "2026-01-05T00:00:00Z"]
+        );
+        // 2026-11-29 is a Sunday; every second weekday is Sun, Tue, Thu, Sat.
+        let c = parse("0 0 * * */2").unwrap();
+        assert_eq!(
+            next_n(&c, &utc, ts("2026-11-29T00:00:00Z"), 3),
+            [
+                "2026-12-01T00:00:00Z",
+                "2026-12-03T00:00:00Z",
+                "2026-12-05T00:00:00Z"
+            ]
+        );
+        // Odd days that are Mondays: 2026-11-09, 11-23, 12-07.
+        let c = parse("0 0 */2 * mon").unwrap();
+        assert_eq!(
+            next_n(&c, &utc, ts("2026-11-01T00:00:00Z"), 3),
+            [
+                "2026-11-09T00:00:00Z",
+                "2026-11-23T00:00:00Z",
+                "2026-12-07T00:00:00Z"
+            ]
+        );
+        let every = parse("0 0 * * *").unwrap();
+        assert_eq!(
+            next_n(&every, &utc, ts("2026-01-01T00:00:00Z"), 2),
+            ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"]
+        );
+    }
+
+    #[test]
+    fn rare_day_and_weekday_is_found() {
+        // 29 February on a Sunday: after 2032 the next is 2060.
+        let c = parse("0 0 29 2 */7").unwrap();
+        assert_eq!(
+            next_n(&c, &TimeZone::UTC, ts("2033-01-01T00:00:00Z"), 1),
+            ["2060-02-29T00:00:00Z"]
+        );
+    }
+
+    #[test]
+    fn leap_day_sunday_across_non_leap_century_is_found() {
+        let c = parse("0 0 29 2 */7").unwrap();
+        assert_eq!(
+            c.next_after(&TimeZone::UTC, ts("2088-02-29T00:00:00Z")),
+            Some(ts("2128-02-29T00:00:00Z"))
         );
     }
 

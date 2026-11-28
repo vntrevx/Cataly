@@ -467,6 +467,46 @@ fn offline_workers_and_serve_refusals() {
     assert!(!out.status.success() && stderr(&out).contains("runs only Cataly worker mode"));
 }
 
+/// Worker PCs older than this hub are named once in `cataly status` and `cataly health`, with the
+/// command to run there; a current one is not, and an unreachable one is unknown, not outdated.
+/// The hub uses only what each worker's `hello` said, also a refused one.
+#[test]
+fn outdated_worker_pcs_are_named_once() {
+    let mut hub = hub();
+    let old = WorkerBox::new(&hub, "old", 22);
+    let new = WorkerBox::new(&hub, "new", 22);
+    enrol(&hub, &old, "dev@old", &[]);
+    enrol(&hub, &new, "dev@new", &[]);
+    // From now on the old PC answers as 0.2.6 did, in worker protocol 1.
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(old.data_file(""))
+        .unwrap();
+    writeln!(env, "CATALY_WORKER_AS=1 0.2.6").unwrap();
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{config}\n[workers.gone]\ndestination = \"dev@gone\"\n"
+    ));
+    hub.start();
+    let doctor = hub.cli(&["worker", "doctor", "old"]);
+    assert!(
+        stdout(&doctor).contains("speaks worker protocol 1"),
+        "{doctor:?}"
+    );
+    let doctor = hub.cli(&["worker", "doctor", "new"]);
+    assert!(doctor.status.success(), "{doctor:?}");
+    assert!(!hub.cli(&["worker", "doctor", "gone"]).status.success());
+
+    let named = "다른 PC old는 아직 0.2.6이에요. 그 PC에서 `cataly update`를 실행하세요.";
+    let unknown = "다른 PC gone에 연결되지 않아 버전을 알 수 없어요.";
+    for args in [&["status"][..], &["health"]] {
+        let said = stdout(&hub.cli(args));
+        assert_eq!(said.matches(named).count(), 1, "{args:?}: {said}");
+        assert_eq!(said.matches(unknown).count(), 1, "{args:?}: {said}");
+        assert!(!said.contains("다른 PC new"), "{args:?}: {said}");
+    }
+}
+
 // Phase 2: lanes on workers.
 
 impl WorkerBox {
