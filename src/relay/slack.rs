@@ -686,6 +686,7 @@ impl Relay for SlackRelay {
     const NAME: &'static str = NAME;
     const REPEATABLE: bool = false;
     const LIVE_ONCE: bool = false;
+    const REFUSED_FALLBACK: bool = false;
 
     fn parts(&self, answer: &str) -> Result<Vec<String>, String> {
         let answer = answer.trim();
@@ -731,6 +732,19 @@ impl Relay for SlackRelay {
             data: Vec::new(),
             attachments,
         })
+    }
+
+    /// A request at the top of a channel is answered in its own thread, every part and every
+    /// later turn; the first part there still counts as the linked reply.
+    fn answer_room(
+        &self,
+        room: &str,
+        source: &str,
+    ) -> impl Future<Output = Result<Option<String>, String>> + Send {
+        std::future::ready(Ok(match room_of(room) {
+            Some((channel, None)) if valid_ts(source) => Some(format!("{channel}:{source}")),
+            _ => None,
+        }))
     }
 
     async fn post(

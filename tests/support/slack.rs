@@ -38,6 +38,8 @@ struct State {
     history: HashMap<String, Vec<Value>>,
     next_ts: u64,
     hang: bool,
+    /// The next `chat.postMessage` calls answered 429 asking for more than the client waits.
+    limited: u32,
     upload_url: String,
     connections: usize,
     socket: Option<mpsc::UnboundedSender<Value>>,
@@ -136,6 +138,11 @@ impl FakeSlack {
 
     pub fn set_hang(&self, on: bool) {
         self.state.lock().unwrap().hang = on;
+    }
+
+    /// Answers the next `n` `chat.postMessage` calls with a 429 beyond the client's retry budget.
+    pub fn limit_posts(&self, n: u32) {
+        self.state.lock().unwrap().limited = n;
     }
 
     pub fn set_upload_url(&self, url: &str) {
@@ -238,6 +245,22 @@ fn ok(mut body: Value) -> Response<Full<Bytes>> {
     reply(200, &body)
 }
 
+fn take_limit(state: &Mutex<State>) -> bool {
+    let mut s = state.lock().unwrap();
+    let limited = s.limited > 0;
+    s.limited = s.limited.saturating_sub(1);
+    limited
+}
+
+/// A 429 asking for longer than the client waits out.
+fn limited() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(429)
+        .header("retry-after", "61")
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+}
+
 fn arg(query: &str, key: &str) -> Option<String> {
     query
         .split('&')
@@ -287,6 +310,7 @@ async fn answer(
         "apps.connections.open" => {
             ok(json!({"url": format!("ws://127.0.0.1:{ws_port}/link/?ticket=t1")}))
         }
+        "chat.postMessage" if take_limit(&state) => limited(),
         "chat.postMessage" => {
             let channel = body["channel"].as_str().unwrap_or("").to_string();
             let ts = {

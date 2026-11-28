@@ -363,6 +363,64 @@ fn slack_threads_allowlist_acks_and_uploads() {
     assert!(hub.stop().success());
 }
 
+/// A long answer to a mention at the top of a channel, and the lead's later turn, all go into the
+/// request's thread: no part reaches the channel top level.
+#[test]
+fn a_long_slack_answer_and_its_later_turn_stay_in_the_request_thread() {
+    long_answer_in_thread(0);
+}
+
+/// A rate limit beyond the client's retry budget on the first part keeps the answer in the
+/// request's thread once Slack takes posts again.
+#[test]
+fn a_rate_limited_slack_answer_stays_in_the_request_thread() {
+    long_answer_in_thread(1);
+}
+
+/// A long answer and a later turn to a top-level mention, the first `limited` posts answered 429.
+fn long_answer_in_thread(limited: u32) {
+    let slack = FakeSlack::start();
+    slack.limit_posts(limited);
+    let mut hub = relay_hub(None, Some(&slack), "");
+    let long = "word ".repeat(1800);
+    hub.fixture("omp", "answer.json", Some(&json!(long).to_string()));
+    hub.fixture("omp", "followup", Some("\"the backup finished\""));
+    hub.start();
+    ready(&hub, &["slack"]);
+    lead_idle(&hub);
+    let root = slack.say(
+        GEN,
+        fake_slack::OWNER,
+        &format!("<@{}> back up, then answer at length", fake_slack::ACCOUNT),
+        None,
+    );
+    slack.wait(WAIT, |f| {
+        f.calls("chat.postMessage")
+            .into_iter()
+            .any(|s| s.body["text"] == "the backup finished")
+            .then_some(())
+    });
+    hub.until(WAIT, || {
+        let s = status(&hub, "slack");
+        (s["counts"]["owed_settled"] == 1 && s["counts"]["answers_waiting"] == 0).then_some(())
+    });
+    let posts: Vec<Value> = slack
+        .calls("chat.postMessage")
+        .into_iter()
+        .filter(|s| s.body["channel"] == GEN)
+        .map(|s| s.body)
+        .collect();
+    assert!(
+        posts.len() >= 4,
+        "three or more parts and the later turn: {posts:?}"
+    );
+    assert_eq!(posts.last().unwrap()["text"], "the backup finished");
+    for post in &posts {
+        assert_eq!(post["thread_ts"], root.as_str(), "{post}");
+    }
+    assert!(hub.stop().success());
+}
+
 /// Check 1, start-up: a webhook or a non-bot identity keeps intake off and nothing is polled.
 #[test]
 fn telegram_refuses_a_webhook_and_a_non_bot() {

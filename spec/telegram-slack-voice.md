@@ -227,7 +227,8 @@ Totals: KEEP 36, SIMPLIFY 12, MERGE 3, DROP 11 (62 capabilities).
 45. SLACK-09 A post first checks thread memory is readable. The response must carry a channel and a
     digits.digits timestamp (and, for a qualified destination, the same channel), else uncertain.
     If the post is confirmed but recording the thread fails, the outcome is confirmed plus a
-    local-tracking error; do not repost.
+    local-tracking error; do not repost. An answer to a request outside a thread goes, every part
+    and every later turn, into the thread under the request.
 46. SLACK-09 An edit target must be digits.digits, else refused before any request. A 2xx with no
     boolean success field, or with an internal, fatal, timeout or unavailable error, is uncertain.
 47. SLACK-10 Upload: request a ticket (name, byte length); its file ID must be "F" then upper-case

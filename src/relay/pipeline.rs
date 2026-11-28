@@ -1545,7 +1545,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                 }
                 // Nothing was created there and nothing is in doubt: the first part goes as the
                 // linked reply in the request's room after all, with the same nonce.
-                PartOutcome::Rejected(why) if bound && part.idx == 0 => {
+                PartOutcome::Rejected(why) if bound && part.idx == 0 && R::REFUSED_FALLBACK => {
                     log::warn(
                         "answer room refused the answer; replying in the request's room",
                         &[("message", &h.message), ("reason", &why)],
