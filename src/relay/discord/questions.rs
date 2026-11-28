@@ -4,8 +4,9 @@
 //! by pressing a button or by replying; anyone else gets an ephemeral refusal. Whichever answer comes
 //! first wins: a local answer closes the Discord question, and a press after that is refused. A
 //! single recommended choice is submitted explicitly after the configured quiet time (3 minutes by
-//! default). Tool approvals are posted only when the owner turned remote approvals on, as a reply to
-//! the request that started the run, and deny on any doubt.
+//! default); its timer ends when the card is removed or intake stops. Tool approvals are posted only
+//! when the owner turned remote approvals on, as a reply to the request that started the run, and
+//! deny on any doubt.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -123,13 +124,41 @@ pub(crate) struct Cards(Mutex<Inner>);
 #[derive(Default)]
 struct Inner {
     open: HashMap<String, Card>,
+    timers: HashMap<String, tokio::task::JoinHandle<()>>,
     /// Dialogs answered locally only (not convertible, no route, or a failed post).
     skipped: HashSet<String>,
+}
+
+/// Cancels card timers even when the intake future itself is dropped.
+pub(super) struct RunningCards<'a>(&'a Cards);
+
+impl Drop for RunningCards<'_> {
+    fn drop(&mut self) {
+        let mut inner = self.0.lock();
+        for (_, timer) in inner.timers.drain() {
+            timer.abort();
+        }
+        inner.open.clear();
+    }
 }
 
 impl Cards {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn running(&self) -> RunningCards<'_> {
+        RunningCards(self)
+    }
+
+    fn timer(&self, dialog: &str, timer: tokio::task::JoinHandle<()>) {
+        let mut inner = self.lock();
+        // An answer may remove the card while its messages are still being posted.
+        if !inner.open.contains_key(dialog) {
+            timer.abort();
+        } else if let Some(old) = inner.timers.insert(dialog.to_string(), timer) {
+            old.abort();
+        }
     }
 
     /// Moves a card from open to taking; `None` when it is gone or already being answered.
@@ -150,7 +179,11 @@ impl Cards {
     }
 
     fn remove(&self, dialog: &str) -> Option<Card> {
-        self.lock().open.remove(dialog)
+        let mut inner = self.lock();
+        if let Some(timer) = inner.timers.remove(dialog) {
+            timer.abort();
+        }
+        inner.open.remove(dialog)
     }
 
     /// Forgets local-only dialogs that are no longer open, so the set holds only open dialogs.
@@ -991,9 +1024,7 @@ impl<T: Runtime> Intake<T> {
         }
         self.post_parts(&dialog.id, channel, &stamp, pages).await;
         if let Some(index) = recommended {
-            let me = Arc::clone(self);
-            let id = dialog.id.clone();
-            tokio::spawn(async move { me.recommended_after(&id, index).await });
+            self.arm_recommended(&dialog.id, index);
         }
     }
 
@@ -1030,6 +1061,14 @@ impl<T: Runtime> Intake<T> {
         }
     }
 
+    /// Starts a posted card's recommended-answer timer; it ends with the card or with intake.
+    fn arm_recommended(self: &Arc<Self>, dialog: &str, index: usize) {
+        let me = Arc::clone(self);
+        let id = dialog.to_string();
+        let timer = tokio::spawn(async move { me.recommended_after(&id, index).await });
+        self.cards.timer(dialog, timer);
+    }
+
     /// The single recommended choice after the quiet time, submitted explicitly (DESIGN 12.2 C11).
     async fn recommended_after(&self, dialog: &str, index: usize) {
         let quiet = self.settings().form_default_after;
@@ -1058,7 +1097,12 @@ impl<T: Runtime> Intake<T> {
             ),
             Err(e) => format!("Closed: {}", neutral(&e)),
         };
-        self.cards.remove(dialog);
+        {
+            let mut inner = self.cards.lock();
+            // This timer is finishing: detach it rather than aborting its closing edit.
+            inner.timers.remove(dialog);
+            inner.open.remove(dialog);
+        }
         self.edit_closing(
             card.channel,
             card.message,
@@ -1373,6 +1417,91 @@ mod tests {
         assert!(cards.lock().skipped.contains("d999"));
         cards.keep_skipped(&HashSet::new());
         assert!(cards.lock().skipped.is_empty());
+    }
+
+    /// A recommended timer retains the same cards as its intake and claims the card before
+    /// producing the answer. The channel observes either that answer or cancellation of the task.
+    fn recommended_timer(
+        cards: &Arc<Cards>,
+        quiet: Duration,
+    ) -> tokio::sync::oneshot::Receiver<Option<Value>> {
+        let dialog = ask(Some(1), false);
+        cards.lock().open.insert(dialog.id.clone(), card(&dialog));
+        let old = Arc::clone(cards);
+        let id = dialog.id.clone();
+        let deadline = tokio::time::Instant::now() + quiet;
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let answer = old
+                .take(&dialog.id)
+                .and_then(|card| answer_of(&card, &dialog, 1));
+            let _ = sent.send(answer);
+        });
+        cards.timer(&id, timer);
+        received
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recommended_timers_stop_when_intake_ends() {
+        let old = Arc::new(Cards::default());
+        let retained = Arc::downgrade(&old);
+        let running = old.running();
+        let answer = recommended_timer(&old, Duration::from_secs(180));
+        tokio::time::advance(Duration::from_secs(30)).await;
+
+        // `serve` drops this guard on config reload, shutdown, failure or task cancellation.
+        drop(running);
+        drop(old);
+        let current = Arc::new(Cards::default());
+        let _running = current.running();
+        let mut later = recommended_timer(&current, Duration::from_secs(3600));
+        tokio::time::advance(Duration::from_secs(150)).await;
+        let old_answer = answer.await;
+        assert!(
+            old_answer.is_err(),
+            "the old intake's recommended timer must be cancelled, not answer at three minutes: {old_answer:?}"
+        );
+        assert!(retained.upgrade().is_none(), "the old intake is released");
+        assert_eq!(
+            later.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        tokio::time::advance(Duration::from_secs(3450)).await;
+        assert_eq!(
+            later.await.unwrap(),
+            Some(json!({"answers": [{"id": "q1", "selectedOptions": ["Blue"]}]})),
+            "only the current intake's one-hour timer may answer"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn removing_a_card_cancels_its_recommended_timer() {
+        let cards = Arc::new(Cards::default());
+        let _running = cards.running();
+        let answer = recommended_timer(&cards, Duration::from_secs(180));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        cards.remove("d1");
+        tokio::time::advance(Duration::from_secs(150)).await;
+        assert!(answer.await.is_err(), "a removed card's timer must end");
+        // A reused dialog ID can still get its own timer.
+        let later = recommended_timer(&cards, Duration::from_secs(3600));
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert!(later.await.unwrap().is_some());
+
+        // A card can also disappear while its post is still awaiting Discord.
+        let (sent, received) = tokio::sync::oneshot::channel();
+        cards.timer(
+            "gone",
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(180)).await;
+                let _ = sent.send(());
+            }),
+        );
+        assert!(
+            received.await.is_err(),
+            "do not attach a timer to a gone card"
+        );
     }
 
     fn ask(recommended: Option<u64>, multi: bool) -> Dialog {

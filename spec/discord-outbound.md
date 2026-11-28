@@ -336,7 +336,9 @@ Totals: KEEP 12, SIMPLIFY 8, MERGE 4, DROP 4.
 75. On finish the question is edited (3 s budget, best effort) to remove buttons and append a status:
     answered, recommended choice used after the timeout, or closed. A failed edit is only logged.
 76. Open questions live in daemon memory and do not survive a restart; on start the daemon edits any
-    question it had left open to "closed" (see state section).
+    question it had left open to "closed" (see state section). Removing a card or ending intake also
+    cancels its recommended-answer timer. After an intake restart, a newly posted question uses the
+    current configured waiting time, never the old card's timer.
 
 ### Owner questions: routing (DISC-OUT-18)
 
