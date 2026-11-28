@@ -11,7 +11,10 @@
 //!   threads the account posted in (thread memory: one room per thread, `<channel>:<root ts>`, whose
 //!   position is the seen timestamp). Every envelope is acknowledged within 3 s, after the event was
 //!   admitted or dropped. After start and every reconnect, remembered threads and DMs are read from
-//!   their positions (200 at most, oldest first). Own and bot messages are dropped; a reply whose
+//!   their positions (200 at most, oldest first), alongside socket reads and durable admission.
+//!   Each recovering room waits for its history before hand-off; other rooms keep running.
+//!   Transient read failures reconnect; permanent read failures hold only the unreadable room.
+//!   Own and bot messages are dropped; a reply whose
 //!   channel or root disagrees with where it was read stops that read. Only allowlisted senders are
 //!   admitted (owner decision 10: the owner alone by default).
 //! - Posts (SLACK req. 45-47): a post answers in the request's thread and records that thread; the
@@ -42,7 +45,7 @@ use crate::config::relays::{SlackRole, slack_channel};
 use crate::host::Runtime;
 use crate::log;
 use crate::store::Store;
-use crate::store::relay::{Arrived, QueueRow, RelayWrite};
+use crate::store::relay::{Arrived, PositionRow, QueueRow, RelayWrite};
 use crate::sys::now_ms;
 
 /// The relay's store key.
@@ -118,6 +121,15 @@ pub(crate) struct ApiError {
     /// Slack's error code, or a transport reason.
     pub(crate) why: String,
     pub(crate) uncertain: bool,
+}
+
+impl ApiError {
+    fn retry_catch_up(&self) -> bool {
+        self.status
+            .is_none_or(|status| matches!(status, 408 | 429 | 500..=599))
+            || self.why == "ratelimited"
+            || UNCERTAIN_ERRORS.contains(&self.why.as_str())
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -887,6 +899,8 @@ async fn start<T: Runtime>(
         env.store.clone(),
         Arc::clone(&env.lead),
     ));
+    // A queue retained across restart must not overtake history either.
+    round.recovering(None).await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     {
         let socket = Socket {
@@ -993,6 +1007,7 @@ impl<T: Runtime> Socket<T> {
     }
 
     async fn connect(&self) -> Down {
+        self.round.recovering(None).await;
         let opened = match self
             .api
             .call("apps.connections.open", &json!({}), Kind::Once, true)
@@ -1015,9 +1030,28 @@ impl<T: Runtime> Socket<T> {
             Err(e) => return Down::Again(e),
         };
         let established = Instant::now();
-        let mut caught_up = false;
+        let mut greeted = false;
+        let mut catching_up = false;
+        // Completed or permanently held rooms release their catch-up fence. A transient error
+        // keeps unread rooms fenced until the next connection resets the scope.
+        let catch_up = self.catch_up();
+        tokio::pin!(catch_up);
         loop {
-            let frame = match ws.next().await {
+            let frame = tokio::select! {
+                frame = ws.next() => frame,
+                result = &mut catch_up, if catching_up => {
+                    catching_up = false;
+                    match result {
+                        Ok(()) => {
+                            self.shared.catch_up_latency.record(established.elapsed());
+                            self.shared.set(|h| h.caught_up = true);
+                        }
+                        Err(e) => return Down::Again(format!("catch-up read: {e}")),
+                    }
+                    continue;
+                }
+            };
+            let frame = match frame {
                 Some(Ok(f)) => f,
                 Some(Err(e)) => return Down::Again(format!("socket read: {e}")),
                 None => return Down::Again("socket closed".into()),
@@ -1038,19 +1072,9 @@ impl<T: Runtime> Socket<T> {
                         h.connected_ms = Some(now_ms());
                         h.reason = None;
                     });
-                    if !caught_up {
-                        caught_up = true;
-                        match self.catch_up().await {
-                            Ok(()) => {
-                                self.shared.catch_up_latency.record(established.elapsed());
-                                self.shared.set(|h| h.caught_up = true);
-                            }
-                            Err(e) => {
-                                log::warn("Slack catch-up read failed", &[("error", &e)]);
-                                self.shared
-                                    .set(|h| h.last_error = Some(format!("catch-up read: {e}")));
-                            }
-                        }
+                    if !greeted {
+                        greeted = true;
+                        catching_up = true;
                     }
                 }
                 Some("disconnect") => {
@@ -1164,57 +1188,94 @@ impl<T: Runtime> Socket<T> {
             .map_err(|e| e.to_string())?;
         let threads = positions.iter().filter(|p| p.room.contains(':')).count();
         self.shared.set(|h| h.followed_threads = threads);
+        self.round
+            .recovering(Some(
+                positions
+                    .iter()
+                    .filter(|p| {
+                        p.held.is_none()
+                            && room_of(&p.room).is_some_and(|(channel, root)| {
+                                root.is_some() || channel.starts_with('D')
+                            })
+                    })
+                    .map(|p| p.room.clone())
+                    .collect(),
+            ))
+            .await;
         for p in positions.iter().filter(|p| p.held.is_none()) {
-            let Some((channel, root)) = room_of(&p.room) else {
-                continue;
-            };
-            let oldest = seq_ts(p.position);
-            let (method, args) = match root {
-                Some(root) => (
-                    "conversations.replies",
-                    json!({"channel": channel, "ts": root, "oldest": oldest, "limit": CATCH_UP_MAX}),
-                ),
-                None if channel.starts_with('D') => (
-                    "conversations.history",
-                    json!({"channel": channel, "oldest": oldest, "limit": CATCH_UP_MAX}),
-                ),
-                None => continue,
-            };
-            let v = self
-                .api
-                .call(method, &args, Kind::Read, false)
-                .await
-                .map_err(|e| e.to_string())?;
-            let mut messages: Vec<Value> = v
-                .get("messages")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            messages.retain(|m| {
-                m.get("ts")
-                    .and_then(Value::as_str)
-                    .and_then(ts_seq)
-                    .is_some_and(|s| s > p.position)
-            });
-            messages.sort_by_key(|m| m.get("ts").and_then(Value::as_str).and_then(ts_seq));
-            messages.truncate(CATCH_UP_MAX);
-            // A reply whose stated channel or root disagrees stops this read (SLACK req. 43).
-            let consistent = messages.iter().all(|m| {
-                let ch = m.get("channel").and_then(Value::as_str);
-                let rt = m.get("thread_ts").and_then(Value::as_str);
-                ch.is_none_or(|c| c == channel) && root.is_none_or(|r| rt == Some(r))
-            });
-            if !consistent {
+            self.catch_up_room(p).await?;
+            self.round.recovered(&p.room).await;
+        }
+        Ok(())
+    }
+
+    /// A permanent read error holds only this room; transient errors leave its catch-up pending.
+    async fn catch_up_room(&self, p: &PositionRow) -> Result<(), String> {
+        let Some((channel, root)) = room_of(&p.room) else {
+            return Ok(());
+        };
+        let oldest = seq_ts(p.position);
+        let (method, args) = match root {
+            Some(root) => (
+                "conversations.replies",
+                json!({"channel": channel, "ts": root, "oldest": oldest, "limit": CATCH_UP_MAX}),
+            ),
+            None if channel.starts_with('D') => (
+                "conversations.history",
+                json!({"channel": channel, "oldest": oldest, "limit": CATCH_UP_MAX}),
+            ),
+            None => return Ok(()),
+        };
+        let v = match self.api.call(method, &args, Kind::Read, false).await {
+            Ok(v) => v,
+            Err(e) if e.retry_catch_up() => return Err(format!("{}: {e}", p.room)),
+            Err(e) => {
+                let reason = format!("catch-up read: {e}");
+                self.store
+                    .relay(RelayWrite::Hold {
+                        relay: NAME.into(),
+                        room: p.room.clone(),
+                        reason: Some(reason.clone()),
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
                 log::warn(
-                    "Slack read stopped: inconsistent thread data",
-                    &[("room", &p.room)],
+                    "Slack catch-up room held",
+                    &[("room", &p.room), ("error", &e)],
                 );
-                continue;
+                self.shared.set(|h| h.last_error = Some(reason));
+                return Ok(());
             }
-            let now = Instant::now();
-            for m in &messages {
-                self.take(channel, m, root.is_none(), now).await;
-            }
+        };
+        let mut messages: Vec<Value> = v
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        messages.retain(|m| {
+            m.get("ts")
+                .and_then(Value::as_str)
+                .and_then(ts_seq)
+                .is_some_and(|s| s > p.position)
+        });
+        messages.sort_by_key(|m| m.get("ts").and_then(Value::as_str).and_then(ts_seq));
+        messages.truncate(CATCH_UP_MAX);
+        // A reply whose stated channel or root disagrees stops this read (SLACK req. 43).
+        let consistent = messages.iter().all(|m| {
+            let ch = m.get("channel").and_then(Value::as_str);
+            let rt = m.get("thread_ts").and_then(Value::as_str);
+            ch.is_none_or(|c| c == channel) && root.is_none_or(|r| rt == Some(r))
+        });
+        if !consistent {
+            log::warn(
+                "Slack read stopped: inconsistent thread data",
+                &[("room", &p.room)],
+            );
+            return Ok(());
+        }
+        let now = Instant::now();
+        for m in &messages {
+            self.take(channel, m, root.is_none(), now).await;
         }
         Ok(())
     }
@@ -1223,6 +1284,44 @@ impl<T: Runtime> Socket<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catch_up_errors_retry_only_when_transient() {
+        for (status, why) in [
+            (None, "send failed"),
+            (Some(408), "refused"),
+            (Some(429), "rate limited"),
+            (Some(500), "refused"),
+            (Some(503), "refused"),
+            (Some(599), "refused"),
+            (Some(200), "ratelimited"),
+        ]
+        .into_iter()
+        .chain(UNCERTAIN_ERRORS.map(|why| (Some(200), why)))
+        {
+            let error = ApiError {
+                status,
+                why: why.into(),
+                uncertain: false,
+            };
+            assert!(error.retry_catch_up(), "{error}");
+        }
+        for (status, why) in [
+            (200, "thread_not_found"),
+            (200, "channel_not_found"),
+            (200, "not_in_channel"),
+            (200, "missing_scope"),
+            (403, "refused"),
+            (404, "refused"),
+        ] {
+            let error = ApiError {
+                status: Some(status),
+                why: why.into(),
+                uncertain: false,
+            };
+            assert!(!error.retry_catch_up(), "{error}");
+        }
+    }
 
     #[test]
     fn timestamps_rooms_and_urls() {

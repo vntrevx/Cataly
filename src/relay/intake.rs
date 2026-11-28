@@ -4,12 +4,13 @@
 //! its live source (Gateway, long poll, Socket Mode) and its start-up checks; one stalled relay never
 //! delays another, since each runs in its own task with its own queue (MSG req. 2).
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{Notify, RwLock, broadcast, watch};
 
 use super::Relay;
 use super::pipeline::{Arrival, Pipeline, Step};
@@ -207,6 +208,8 @@ pub(crate) struct Round<R: Relay, T: Runtime> {
     turn_running: AtomicBool,
     /// A turn ended (no continuation) since the last turn start.
     turn_ended: AtomicBool,
+    /// Rooms awaiting history; None fences every room until the source lists them.
+    recovering: RwLock<Option<HashSet<String>>>,
 }
 
 impl<R: Relay, T: Runtime> Round<R, T> {
@@ -218,7 +221,23 @@ impl<R: Relay, T: Runtime> Round<R, T> {
             wake: Notify::new(),
             turn_running: AtomicBool::new(false),
             turn_ended: AtomicBool::new(false),
+            recovering: RwLock::new(Some(HashSet::new())),
         }
+    }
+
+    /// Changes the rooms whose hand-offs wait for catch-up, without blocking durable arrivals.
+    /// The write lock waits out any drain using an older queue snapshot.
+    pub(crate) async fn recovering(&self, rooms: Option<HashSet<String>>) {
+        *self.recovering.write().await = rooms;
+        self.wake.notify_one();
+    }
+
+    /// Releases one room after its history is durably queued.
+    pub(crate) async fn recovered(&self, room: &str) {
+        if let Some(rooms) = self.recovering.write().await.as_mut() {
+            rooms.remove(room);
+        }
+        self.wake.notify_one();
     }
 
     /// Queues an owner message durably (MSG req. 4): its position moves only after hand-off.
@@ -311,13 +330,26 @@ impl<R: Relay, T: Runtime> Round<R, T> {
 
     async fn round(self: &Arc<Self>) {
         let me = Arc::clone(self);
+        // Keep the fence through the queue snapshot and its drain: releasing a room must
+        // trigger a fresh snapshot, which includes the older messages just found by catch-up.
+        let recovering = self.recovering.read().await;
         let drained = self
             .pipeline
-            .drain(move |row| {
+            .drain(|row| {
                 let me = Arc::clone(&me);
-                async move { me.handle(&row).await }
+                let blocked = recovering
+                    .as_ref()
+                    .is_none_or(|rooms| rooms.contains(&row.room));
+                async move {
+                    if blocked {
+                        Ok(Step::Deferred)
+                    } else {
+                        me.handle(&row).await
+                    }
+                }
             })
             .await;
+        drop(recovering);
         if let Err(e) = drained {
             log::warn(
                 "relay queue not drained",

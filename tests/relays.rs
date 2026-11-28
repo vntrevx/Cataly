@@ -363,6 +363,206 @@ fn slack_threads_allowlist_acks_and_uploads() {
     assert!(hub.stop().success());
 }
 
+/// A held history response must not occupy the socket's three-second ack window. Live
+/// messages commit immediately, but only rooms still catching up wait to reach the lead.
+#[test]
+fn slack_acks_during_catch_up_without_overtaking_history() {
+    let slack = FakeSlack::start();
+    let mut hub = relay_hub(None, Some(&slack), "");
+    hub.start();
+    ready(&hub, &["slack"]);
+    let seed = slack.say(DM, fake_slack::OWNER, "catch-up seed", None);
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &seed).pop());
+    lead_idle(&hub);
+    assert!(hub.stop().success());
+
+    // This message exists only in history when the next connection opens.
+    let missed = slack.say(DM, fake_slack::OWNER, "catch-up older", None);
+    let reads = slack.calls("conversations.history").len();
+    let release_history = slack.hold_history();
+    hub.start();
+    slack.wait(WAIT, |f| {
+        (f.calls("conversations.history").len() > reads).then_some(())
+    });
+    let live = slack.ts();
+    let envelope = slack.push(json!({"type": "message", "channel": DM,
+        "user": fake_slack::OWNER, "ts": live, "text": "catch-up live"}));
+    let ack = slack.wait(WAIT, |f| {
+        f.acks().into_iter().find(|(id, _)| id == &envelope)
+    });
+    assert!(ack.1 < Duration::from_secs(3), "late catch-up ack: {ack:?}");
+    // The socket can acknowledge before the restarted lead has bound its transcript.
+    hub.until(WAIT, || {
+        (hub.json(&["lead", "status", "--json"])["phase"] == "live").then_some(())
+    });
+    assert_eq!(
+        requests(&hub, &format!("[slack {DM}/{live}]")),
+        Vec::<String>::new()
+    );
+    assert_eq!(status(&hub, "slack")["counts"]["queued"], 1);
+
+    // An unrelated room need not wait for the slow room's history.
+    let other = slack.say("D0OTHER", fake_slack::OWNER, "independent room", None);
+    slack.wait(WAIT, |f| slack_posts_in(f, "D0OTHER", &other).pop());
+    assert_eq!(
+        requests(&hub, &format!("[slack {DM}/{live}]")),
+        Vec::<String>::new()
+    );
+
+    release_history.send(true).unwrap();
+    hub.until(WAIT, || {
+        (requests(&hub, &format!("[slack {DM}/{live}]")).len() == 1).then_some(())
+    });
+    let delivered = requests(&hub, &format!("[slack {DM}/"));
+    let ids: Vec<_> = delivered
+        .iter()
+        .filter_map(|text| {
+            [&seed, &missed, &live]
+                .into_iter()
+                .find(|ts| text.contains(&format!("[slack {DM}/{ts}]")))
+        })
+        .collect();
+    assert_eq!(ids, [&seed, &missed, &live], "{delivered:?}");
+    assert!(hub.stop().success());
+}
+
+/// A permanently unreadable C-channel thread must not fence the DMs read after it. Its
+/// durable hold survives a restart without retrying that room or handing off its live messages.
+#[test]
+fn slack_catch_up_holds_an_unreadable_thread_and_recovers_later_dms() {
+    let slack = FakeSlack::start();
+    let mut hub = relay_hub(None, Some(&slack), "");
+    hub.start();
+    ready(&hub, &["slack"]);
+    let root = slack.say(
+        GEN,
+        fake_slack::OWNER,
+        &format!("<@{}> remember this thread", fake_slack::ACCOUNT),
+        None,
+    );
+    slack.wait(WAIT, |f| slack_posts_in(f, GEN, &root).pop());
+    let seed = slack.say(DM, fake_slack::OWNER, "remember this DM", None);
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &seed).pop());
+    lead_idle(&hub);
+    assert!(hub.stop().success());
+
+    let missed = slack.say(DM, fake_slack::OWNER, "DM while disconnected", None);
+    slack.fail_reads(GEN, "thread_not_found", None);
+    hub.start();
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &missed).pop());
+    hub.until(WAIT, || {
+        let s = status(&hub, "slack");
+        (s["health"]["caught_up"] == true && s["counts"]["held"] == 1).then_some(())
+    });
+    let reads: Vec<_> = slack
+        .seen()
+        .into_iter()
+        .filter(|s| {
+            matches!(
+                s.method.as_str(),
+                "conversations.replies" | "conversations.history"
+            )
+        })
+        .collect();
+    assert_eq!(reads[0].method, "conversations.replies");
+    assert!(
+        reads[0].query.contains(&format!("channel={GEN}")),
+        "{reads:?}"
+    );
+    assert_eq!(requests(&hub, &format!("[slack {DM}/{missed}]")).len(), 1);
+
+    let blocked = slack.say(GEN, fake_slack::OWNER, "held thread reply", Some(&root));
+    let live = slack.say(DM, fake_slack::OWNER, "DM still live", None);
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &live).pop());
+    assert_eq!(
+        requests(&hub, &format!("[slack {GEN}:{root}/{blocked}]")),
+        Vec::<String>::new()
+    );
+    assert_eq!(status(&hub, "slack")["counts"]["queued"], 1);
+    assert!(hub.stop().success());
+
+    let failed_reads = slack
+        .calls("conversations.replies")
+        .iter()
+        .filter(|s| s.query.contains(&format!("channel={GEN}")))
+        .count();
+    let next = slack.say(DM, fake_slack::OWNER, "DM across another restart", None);
+    hub.start();
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &next).pop());
+    assert_eq!(
+        slack
+            .calls("conversations.replies")
+            .iter()
+            .filter(|s| s.query.contains(&format!("channel={GEN}")))
+            .count(),
+        failed_reads
+    );
+    assert_eq!(status(&hub, "slack")["counts"]["held"], 1);
+    assert_eq!(status(&hub, "slack")["counts"]["queued"], 1);
+    assert_eq!(
+        requests(&hub, &format!("[slack {GEN}:{root}/{blocked}]")),
+        Vec::<String>::new()
+    );
+    assert!(hub.stop().success());
+}
+
+/// A transient Slack error reconnects while retaining the live queue and its older cursor.
+#[test]
+fn slack_catch_up_reconnects_after_a_transient_failure() {
+    let slack = FakeSlack::start();
+    let mut hub = relay_hub(None, Some(&slack), "");
+    hub.start();
+    ready(&hub, &["slack"]);
+    let seed = slack.say(DM, fake_slack::OWNER, "transient catch-up seed", None);
+    slack.wait(WAIT, |f| slack_posts_in(f, DM, &seed).pop());
+    lead_idle(&hub);
+    assert!(hub.stop().success());
+
+    let missed = slack.say(DM, fake_slack::OWNER, "older DM in history", None);
+    let connections = slack.connections();
+    let reads = slack.calls("conversations.history").len();
+    slack.fail_reads(DM, "ratelimited", Some(1));
+    let release_history = slack.hold_history();
+    hub.start();
+    slack.wait(WAIT, |f| {
+        (f.calls("conversations.history").len() > reads).then_some(())
+    });
+    let live = slack.ts();
+    let envelope = slack.push(json!({"type": "message", "channel": DM,
+        "user": fake_slack::OWNER, "ts": live, "text": "live DM during failed catch-up"}));
+    let ack = slack.wait(WAIT, |f| {
+        f.acks().into_iter().find(|(id, _)| id == &envelope)
+    });
+    assert!(ack.1 < Duration::from_secs(3), "late catch-up ack: {ack:?}");
+    assert_eq!(status(&hub, "slack")["counts"]["queued"], 1);
+    release_history.send(true).unwrap();
+
+    slack.wait(WAIT, |f| {
+        (f.connections() >= connections + 2 && f.calls("conversations.history").len() >= reads + 2)
+            .then_some(())
+    });
+    let history = slack.calls("conversations.history");
+    assert_eq!(history[reads].query, history[reads + 1].query);
+    hub.until(WAIT, || {
+        (hub.json(&["lead", "status", "--json"])["phase"] == "live").then_some(())
+    });
+    hub.until(WAIT, || {
+        (requests(&hub, &format!("[slack {DM}/{live}]")).len() == 1).then_some(())
+    });
+    let delivered = requests(&hub, &format!("[slack {DM}/"));
+    assert_eq!(delivered.len(), 3, "{delivered:?}");
+    assert!(
+        delivered[1].contains(&format!("[slack {DM}/{missed}]")),
+        "{delivered:?}"
+    );
+    assert!(
+        delivered[2].contains(&format!("[slack {DM}/{live}]")),
+        "{delivered:?}"
+    );
+    assert_eq!(status(&hub, "slack")["counts"]["held"], 0);
+    assert!(hub.stop().success());
+}
+
 /// Check 1, start-up: a webhook or a non-bot identity keeps intake off and nothing is polled.
 #[test]
 fn telegram_refuses_a_webhook_and_a_non_bot() {

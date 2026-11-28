@@ -214,7 +214,12 @@ Totals: KEEP 36, SIMPLIFY 12, MERGE 3, DROP 11 (62 capabilities).
     admitted or dropped. Reconnect backoff 1 s doubling to 60 s.
 39. SLACK-05 After start and every reconnect: for each remembered thread read replies newer than
     its seen position (at most 200, oldest first); for each DM with a position read newer history.
-    Dedupe key is channel plus message timestamp, shared with live events.
+    Dedupe key is channel plus message timestamp, shared with live events. Catch-up HTTP reads do
+    not stop socket reads or acknowledgements: live events enter the durable queue immediately,
+    while hand-off waits only for that room's catch-up read. A restart repeats catch-up before
+    draining an existing queue. A transient read failure reconnects without releasing unread rooms.
+    A permanent read failure holds only its room, preserving its position while catch-up continues
+    for the other rooms.
 40. SLACK-06 Every post records its thread (channel, root timestamp) with seen position = the post's
     timestamp, keyed by workspace and account. An already recorded thread keeps its older position.
 41. SLACK-06 Replies in remembered threads are admitted without a mention. Seen positions only move
