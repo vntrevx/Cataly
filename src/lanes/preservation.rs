@@ -39,7 +39,8 @@ impl<R: Runtime> Lanes<R> {
         if self.delivery_doubt(&saved).await.is_some() || self.undelivered(&rec.key).await > 0 {
             return Err("input is pending or uncertain".into());
         }
-        if self.holds_published(path).await {
+        let place = saved.place();
+        if self.holds_published(&place, path).await {
             return Err("it holds a published file".into());
         }
         if let Some(id) = &saved.session_id
@@ -47,7 +48,6 @@ impl<R: Runtime> Lanes<R> {
         {
             return Err("session lease is held or unknown".into());
         }
-        let place = saved.place();
         let dir = Path::new(path);
         let limit = Duration::from_secs(60);
         let (ok, status) = git::git(

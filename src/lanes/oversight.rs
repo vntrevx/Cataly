@@ -153,18 +153,7 @@ impl<R: Runtime> Lanes<R> {
             .with("report", &id)
             .with("text", &shown),
         );
-        if new_items > 0 {
-            // New evidence starts a new progress round (COORD req. 7).
-            self.keep(&rec.key, |x| {
-                x.watch.round_ms = now_ms();
-                x.watch.reminders = 0;
-                x.watch.alerted = false;
-                if x.watch.stuck {
-                    x.watch.stuck = false;
-                }
-            })
-            .await;
-        }
+        self.new_round(&rec.key, new_items).await;
         let row = ReportRow {
             key: rec.key.clone(),
             number,
@@ -189,6 +178,19 @@ impl<R: Runtime> Lanes<R> {
             "report {id} recorded at {}; {attached}",
             crate::jobs::instant_text(row.at_ms)
         ))
+    }
+
+    /// New evidence from a report or a step starts a new progress round (COORD req. 7).
+    async fn new_round(&self, key: &str, new_items: i64) {
+        if new_items > 0 {
+            self.keep(key, |x| {
+                x.watch.round_ms = now_ms();
+                x.watch.reminders = 0;
+                x.watch.alerted = false;
+                x.watch.stuck = false;
+            })
+            .await;
+        }
     }
 
     /// Posts a report to the lane's thread by policy (EVR req. 19-24); each report at most once.
@@ -286,6 +288,26 @@ impl<R: Runtime> Lanes<R> {
         {
             return Err("each receipt holds 1 to 500 characters".into());
         }
+        let key = rec.key.clone();
+        let step_name = name.clone();
+        if let Some(earlier) = self
+            .env
+            .store
+            .read(move |r| r.step(&key, &step_name))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            // Repeated steps do not read evidence again (EVR req. 31). The writer still checks
+            // atomically in case another call records this name after the read.
+            return if earlier.result == result
+                && earlier.evidence == evidence_ref
+                && earlier.receipts == receipts
+            {
+                Ok(format!("step '{name}' unchanged (recorded before)"))
+            } else {
+                Err(format!("step '{name}' is recorded with other content"))
+            };
+        }
         let mut items = Vec::new();
         for f in p::FILES.list(input) {
             items.push(evidence::file_item(Path::new(&rec.cwd), &f)?);
@@ -309,14 +331,23 @@ impl<R: Runtime> Lanes<R> {
             .await
             .map_err(|e| e.to_string())?
         {
-            LaneDone::Step(true) => {
+            LaneDone::Step {
+                stored: true,
+                new_items,
+            } => {
+                if !unverified {
+                    // Only a step of the current run moves the last-progress mark.
+                    self.new_round(&rec.key, new_items).await;
+                }
                 self.nudge.notify_one();
                 Ok(format!(
                     "step '{name}' recorded{}",
                     if unverified { " (run unverified)" } else { "" }
                 ))
             }
-            LaneDone::Step(false) => Ok(format!("step '{name}' unchanged (recorded before)")),
+            LaneDone::Step { stored: false, .. } => {
+                Ok(format!("step '{name}' unchanged (recorded before)"))
+            }
             LaneDone::Refused(why) => Err(why),
             other => Err(format!("step not stored: {other:?}")),
         }
