@@ -305,6 +305,73 @@ fn a_hand_set_avatar_is_kept_until_profile_is_asked() {
 }
 
 #[test]
+fn a_configured_ops_destination_is_kept() {
+    let (hub, fake) = sandbox(false);
+    let token = hub.private_file("discord-token", TOKEN);
+    let alerts = "500000000000000012";
+    hub.write_config(&format!(
+        "[discord]\napi_base = \"{}\"\n\n[destinations.cataly-ops]\nkind = \"discord\"\nchannel = \"{alerts}\"\n",
+        fake.base()
+    ));
+    fake.join(GUILD, "home");
+    fake.named(LEAD, "cataly", 0, GUILD);
+    fake.named(alerts, "alerts", 0, GUILD);
+    let mut flags = script(&token);
+    flags.push("--yes".into());
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (ok, done, stderr) = json_run(&hub, &flags);
+    assert!(ok, "{stderr}");
+    assert_eq!(done["applied"], true);
+    assert_eq!(creates(&fake), Vec::<String>::new(), "no #cataly-ops made");
+    let text = read(&hub.config_path());
+    assert!(text.contains(&format!("channel = \"{alerts}\"")), "{text}");
+}
+
+#[test]
+fn a_service_turned_off_stays_off() {
+    let (hub, fake) = sandbox(true);
+    let secrets = config_dir(&hub).join("secrets");
+    std::fs::create_dir(&secrets).unwrap();
+    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(secrets.join("discord-token"), TOKEN).unwrap();
+    std::fs::set_permissions(
+        secrets.join("discord-token"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    fake.join(GUILD, "home");
+    fake.named(LEAD, "cataly", 0, GUILD);
+    fake.named(OPS, "cataly-ops", 0, GUILD);
+    let (ok, _, stderr) = json_run(&hub, &["--yes", "--backup", "off", "--service", "off"]);
+    assert!(ok, "{stderr}");
+    assert!(read(&hub.config_path()).contains("service = false"));
+
+    // A plain re-run keeps it off: no unit, no call to the service manager.
+    let (ok, again, stderr) = json_run(&hub, &["--yes"]);
+    assert!(ok, "{stderr}");
+    let service_item = item(&again, "service");
+    assert_eq!(service_item["change"], false, "{again}");
+    assert!(
+        service_item["value"]
+            .as_str()
+            .unwrap()
+            .contains("you turned it off"),
+        "{service_item}"
+    );
+    assert_eq!(service(&hub), (String::new(), String::new()));
+
+    // `--service on` turns it on again; `service disable` removes it without recording an off.
+    let (ok, _, stderr) = json_run(&hub, &["--yes", "--service", "on"]);
+    assert!(ok, "{stderr}");
+    assert!(service(&hub).0.contains("cataly"));
+    assert!(read(&hub.config_path()).contains("service = true"));
+    let off = hub.cli(&["service", "disable"]);
+    assert!(off.status.success(), "{off:?}");
+    assert_eq!(service(&hub).0, "");
+    assert!(read(&hub.config_path()).contains("service = true"));
+}
+
+#[test]
 fn a_script_sets_up_with_yes_and_flags() {
     let (hub, fake) = sandbox(false);
     let token = hub.private_file("discord-token", TOKEN);

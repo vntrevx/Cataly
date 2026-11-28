@@ -59,17 +59,17 @@ struct Sandbox {
     model: FakeModel,
 }
 
-/// The whole profile (agent directory, sessions, home) goes with the sandbox, also when a test fails.
+/// The whole profile (agent directory, sessions, home) goes with the sandbox, also when a test fails
+/// (unless `CATALY_TEST_KEEP=1` keeps a failed one). The OMP processes are dropped before it.
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        support::release(&self.root);
     }
 }
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("cataly-omp-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = support::unique_root(&format!("cataly-omp-{tag}"));
         for dir in ["agent", "home", "work", "sessions"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }

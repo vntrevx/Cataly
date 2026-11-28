@@ -162,7 +162,10 @@ impl Cause {
             Self::Transcript
         } else if has("fresh") && has("did not bind") {
             Self::Fresh
-        } else if has("lease") || has("is held by") {
+        } else if has("unknown lease")
+            || has("is held by a running OMP")
+            || has("is held by another OMP")
+        {
             Self::InUse
         } else if has("changed during recovery") || has("conflicts with --fresh") || has("differs")
         {
@@ -174,7 +177,11 @@ impl Cause {
         } else if has("admission")
             || has("session cap")
             || has("OMP has not been probed")
+            || has("OMP probe failed")
+            || has("no session can start")
             || has("OMP executable")
+            || has("bridge link")
+            || has("the bridge at ")
             || has("hub is stopping")
             || has("[lead]")
             || has("lead cwd")
@@ -587,69 +594,119 @@ mod tests {
         assert!(slow.contains("15초") && slow.contains("보존"), "{slow}");
     }
 
-    /// Every hold reason the hub gives, as each producer words it, has a plain cause told in
-    /// Korean and English that never quotes the raw reason; an unknown reason still gets plain
-    /// words, never the raw text.
-    #[test]
-    fn every_hold_reason_has_a_plain_korean_and_english_text() {
-        // `cause|reason`, one per line, as each producer words its reason.
-        let reasons = "\
-Exhausted|recovery is held (300 s recovery episode has no startup and cleanup budget remaining); explicit owner retry required
+    /// The hold-reason producers' code, without their tests.
+    const PRODUCERS: [&str; 9] = [
+        include_str!("../lead.rs"),
+        include_str!("sleep.rs"),
+        include_str!("startup.rs"),
+        include_str!("../../store/host/anchor.rs"),
+        include_str!("../../store/host/episode.rs"),
+        include_str!("../../store/migrations/0011_lead_anchor.sql"),
+        include_str!("../../store/migrations/0013_lead_anchor_history.sql"),
+        include_str!("../../omp/probe.rs"),
+        include_str!("../../omp/extension.rs"),
+    ];
+
+    /// `cause|reason`, one per line, exactly as the producer's code writes it.
+    const WRITTEN: &str = "\
 Exhausted|300 s recovery episode has no startup and cleanup budget remaining
 Exhausted|300 s recovery episode exhausted; conversation retained
-Exhausted|startup Ready Timeout: no ready frame within 60 s (cleanup: LocalReaped); 300 s recovery episode or five-retry ceiling exhausted; conversation retained, held
-Exhausted|startup Ready Timeout: no ready frame within 60 s (cleanup: LocalReaped)
-Rejected|startup Ready Rejected: wrong protocol (cleanup: LocalReaped)
-Rejected|startup Spawn Rejected: exited 7 before ready (cleanup: NotSpawned)
-Rejected|refused: the hub refused the start
+Exhausted|{error}; 300 s recovery episode or five-retry ceiling exhausted; conversation retained, held
 Stopped|owner stopped recovery
 Stopped|startup retry cancelled
-Ownership|startup Ready Timeout: no ready frame (cleanup: Unknown)
 Ownership|lead exit ownership is unknown; conversation retained, automatic recovery held
 Ownership|an earlier unbound lead attempt has unknown process ownership; held until its exit is reconciled
-Ownership|lead process ownership is not proven terminated: Ok(Unknown); conversation retained
-Restarts|exited 1; more than 5 restarts within 10 minutes, held until `cataly lead start`
+Ownership|lead process ownership is not proven terminated: {evidence:?}; conversation retained
+Restarts|more than {RESTART_LIMIT} restarts within 10 minutes, held until `cataly lead start`
 Ambiguous|ambiguous lead binding history
-Ambiguous|ambiguous lead binding history: lead session s1 is recorded with more than one transcript; conversation retained. `cataly lead start` resumes the anchored transcript /x once it verifies
-Ambiguous|required lead session s1 has 2 proven transcripts; held, never substituted
-Binding|binding could not be committed: lead binding conflicts with previously proven identity; input held; cleanup Ok(..)
+Ambiguous|'ambiguous lead binding history: lead session '
+Ambiguous|required lead session {id} has {files} proven transcripts; held, never substituted
+Binding|binding could not be committed: {error}; input held; cleanup {stopped:?}
 Binding|lead binding conflicts with previously proven identity
-Transcript|the transcript of lead session s1 did not verify for an exact resume: header; conversation retained
-Transcript|the transcript for lead s1 is missing or is not a regular file: /x; retained, never replaced
+Transcript|the transcript of lead session {id} did not verify for an exact resume: {detail}; conversation retained
+Transcript|the transcript for lead {id} is missing or is not a regular file: {file}; retained, never replaced
 Fresh|a fresh lead attempt did not bind; the old conversation is retained and held. Choose `cataly lead start --fresh` to retry fresh or `cataly lead start` to resume old
 Fresh|fresh start did not bind; choose `lead start --fresh` or `lead start` to resume old
-InUse|lead session s1 is held by a running OMP; conversation retained
-InUse|lead session s1 has an unknown lease; conversation retained
-InUse|the lead's session s1 is held by another OMP; not restarted, held for the owner
-InUse|the lead's session s1 has an unknown lease; not restarted, held for the owner
+InUse|lead session {id} is held by a running OMP; conversation retained
+InUse|lead session {id} has an unknown lease; conversation retained
+InUse|is held by another OMP
+InUse|has an unknown lease
 Target|lead target changed during recovery; scheduled retry cancelled
 Target|lead anchor changed during recovery; held
-Target|session_id=s1 conflicts with --fresh; remove the pin before requesting a different conversation
-Target|required lead identity differs from s1; held
-NoAnchor|required lead session s1 has no proven binding
+Target|session_id={id} conflicts with --fresh; remove the pin before requesting a different conversation
+Target|required lead identity differs from {id}; held
+NoAnchor|required lead session {id} has no proven binding
 NoAnchor|the earlier lead has no proven identity; conversation retained, held for the owner
 NoAnchor|no proven lead anchor; held, never automatically replaced
 NoAnchor|no proven lead binding in migrated history
-NoAnchor|no proven binding of lead session s1 to resume
-Runtime|lead session s1 was started on the runtime 'old', which this Cataly does not run; start a fresh lead with `cataly lead start --fresh`
-Admission|memory admission holds the start: memory
-Admission|the session cap of 1 is reached
+Runtime|lead session {id} was started on the runtime '{}', which this Cataly does not run;
+Admission|memory admission holds the start: {}
+Admission|the session cap of {} is reached
 Admission|OMP has not been probed yet
+Admission|OMP probe failed: {e}
+Admission|is below the minimum {}; no session can start
 Admission|the OMP executable was not found
+Admission|the bridge link {} is missing; {hint}
+Admission|{} is not the bridge link; {hint}
+Admission|the bridge link {} is broken ({e}); {hint}
+Admission|the bridge at {} is not this version's; {hint}
 Admission|the hub is stopping
 Admission|no [lead] section in the config
 Admission|no working directory: set [lead] cwd
-Admission|lead cwd: No such file or directory
-Other|recovery accounting failed: disk I/O error; held";
-        let mut seen = std::collections::BTreeSet::new();
-        for line in reasons.lines() {
+Admission|lead cwd: {e}
+Other|recovery accounting failed: {error}; held
+Other|recovery episode was not recorded
+Other|a lead is already running";
+
+    /// Every hold reason the hub gives, as its producer's code words it, has a plain cause told in
+    /// Korean and English that never quotes the raw reason, also inside the "recovery is held (…)"
+    /// a later start reports. Each reason must still be in its producer's code: a reworded or
+    /// removed reason fails here instead of quietly falling to `Other`.
+    #[test]
+    fn every_hold_reason_has_a_plain_korean_and_english_text() {
+        use crate::host::StartError;
+        use crate::host::startup::{Cleanup, StartupOutcome, StartupStage};
+        let code = PRODUCERS.map(|file| file.split("#[cfg(test)]").next().unwrap_or(file));
+        let later = "\"recovery is {}{cause}; explicit owner retry required\"";
+        assert!(code.iter().any(|c| c.contains(later)), "{later}");
+        let mut reasons: Vec<(&str, String)> = [
+            ("Exhausted", StartupOutcome::Timeout, Cleanup::LocalReaped),
+            ("Ownership", StartupOutcome::Timeout, Cleanup::Unknown),
+            ("Rejected", StartupOutcome::Rejected, Cleanup::LocalReaped),
+        ]
+        .map(|(cause, outcome, cleanup)| {
+            let stage = StartupStage::Ready;
+            let detail = "d".into();
+            let error = StartError::Startup {
+                stage,
+                outcome,
+                cleanup,
+                detail,
+            };
+            (cause, error.to_string())
+        })
+        .into();
+        reasons.push(("Rejected", StartError::Refused("r".into()).to_string()));
+        assert_ne!(Cause::of("OMP release notes unavailable"), Cause::InUse);
+        for line in WRITTEN.lines() {
             let (cause, reason) = line.split_once('|').unwrap();
-            assert_eq!(format!("{:?}", Cause::of(reason)), cause, "{reason}");
-            seen.insert(cause.to_string());
-            for language in [Language::Korean, Language::English] {
-                let text = held_text(language, reason, None);
-                assert!(!text.contains(reason), "raw reason in {text}");
+            assert!(
+                code.iter().any(|c| c.contains(reason)),
+                "no producer writes {reason:?} any more"
+            );
+            reasons.push((cause, reason.to_string()));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (cause, reason) in &reasons {
+            let held = format!("recovery is held ({reason}); explicit owner retry required");
+            for reason in [reason.as_str(), held.as_str()] {
+                assert_eq!(format!("{:?}", Cause::of(reason)), *cause, "{reason}");
+                for language in [Language::Korean, Language::English] {
+                    let text = held_text(language, reason, None);
+                    assert!(!text.contains(reason), "raw reason in {text}");
+                }
             }
+            seen.insert(cause.to_string());
         }
         for cause in Cause::ALL {
             assert!(

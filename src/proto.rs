@@ -197,6 +197,14 @@ pub(crate) fn decode(line: &str) -> Result<Incoming, Box<Response>> {
     serde_json::from_value(value).map_err(|e| refuse(id, code::BAD_REQUEST, e.to_string()))
 }
 
+/// `hub.stop` reply: the stop is accepted. An older hub answers `null`, which says no bound.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Stopping {
+    /// A voice call runs: the hub ends only once it has wound down, within this many seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) voice_wind_down_s: Option<u64>,
+}
+
 /// `status` reply.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Status {
