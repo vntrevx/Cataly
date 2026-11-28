@@ -355,27 +355,28 @@ fn question_of(r: &Row<'_>) -> rusqlite::Result<QuestionRow> {
 }
 
 impl Reads {
-    /// Request-log items, newest first: open ones only, or the latest 200.
+    /// All open request-log items, newest first; including closed entries returns the latest 200.
     pub(crate) fn requests(&self, open_only: bool) -> rusqlite::Result<Vec<RequestRow>> {
-        let filter = if open_only {
-            "WHERE closed_ms IS NULL"
+        let (filter, limit) = if open_only {
+            ("WHERE closed_ms IS NULL", "")
         } else {
-            ""
+            ("", " LIMIT 200")
         };
         let sql =
-            format!("SELECT {REQUEST_COLUMNS} FROM requests {filter} ORDER BY id DESC LIMIT 200");
+            format!("SELECT {REQUEST_COLUMNS} FROM requests {filter} ORDER BY id DESC{limit}");
         let mut stmt = self.0.prepare(&sql)?;
         stmt.query_map([], request_of)?.collect()
     }
 
+    /// All open questions, newest first; including settled entries returns the latest 200.
     pub(crate) fn questions(&self, open_only: bool) -> rusqlite::Result<Vec<QuestionRow>> {
-        let filter = if open_only {
-            "WHERE state = 'open'"
+        let (filter, limit) = if open_only {
+            ("WHERE state = 'open'", "")
         } else {
-            ""
+            ("", " LIMIT 200")
         };
         let sql = format!(
-            "SELECT {QUESTION_COLUMNS} FROM questions {filter} ORDER BY created_ms DESC LIMIT 200"
+            "SELECT {QUESTION_COLUMNS} FROM questions {filter} ORDER BY created_ms DESC{limit}"
         );
         let mut stmt = self.0.prepare(&sql)?;
         stmt.query_map([], question_of)?.collect()

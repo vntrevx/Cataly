@@ -2,6 +2,8 @@
 
 ## 0.2.9 (Unreleased)
 
+- Open request and owner-question lists no longer stop at 200 items. Recovery summaries count
+  every omitted item in "and N more", including when a next step or question spans several lines.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
