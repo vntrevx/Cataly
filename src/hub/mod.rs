@@ -208,25 +208,38 @@ impl Hub {
     }
 
     /// Refuses the orderly stop while a session works or waits on a dialog (IR req. 33); busy
-    /// sessions are never stopped. An accepted stop begins with [`Hub::stop`].
+    /// sessions are never stopped. An accepted stop begins with [`Hub::stop`]. The refusal names
+    /// the sessions in the owner's language: `cataly update` shows it to him as it is.
     fn may_stop(&self) -> Result<(), String> {
+        let language = self.config().hub.language;
         let mut busy: Vec<String> = self
             .lead
             .busy()
-            .map(|why| format!("the lead {why}"))
+            .map(|why| busy_session(language, None, why))
             .into_iter()
             .collect();
         busy.extend(
             self.lanes
                 .busy()
                 .into_iter()
-                .map(|(key, why)| format!("lane {key} {why}")),
+                .map(|(key, why)| busy_session(language, Some(&key), why)),
         );
         if busy.is_empty() {
             Ok(())
         } else {
             Err(format!("busy: {}", busy.join("; ")))
         }
+    }
+
+    /// What an accepted stop tells its caller: how long a running voice call may take to wind
+    /// down before the hub ends (`serve` waits for it), so `cataly update` waits that long too.
+    #[cfg_attr(not(feature = "voice"), allow(clippy::unused_self))]
+    fn stopping(&self) -> crate::proto::Stopping {
+        #[cfg(feature = "voice")]
+        let voice_wind_down_s = self.voice.wind_down().map(|d| d.as_secs());
+        #[cfg(not(feature = "voice"))]
+        let voice_wind_down_s = None;
+        crate::proto::Stopping { voice_wind_down_s }
     }
 
     /// Begins the orderly stop `hub.stop` accepted. The control connection calls it only once the
@@ -239,6 +252,24 @@ impl Hub {
     /// The Discord client when a token is set up; `None` otherwise.
     fn discord_rest(&self) -> Option<Arc<crate::relay::discord::Rest>> {
         self.jobs.ctx().discord(&self.config()).ok()
+    }
+}
+
+/// One session that refuses the orderly stop: the lead (`lane` `None`) or a lane, and why.
+fn busy_session(language: config::Language, lane: Option<&str>, why: crate::host::Busy) -> String {
+    use crate::host::Busy;
+    use config::Language;
+    match (language, lane, why) {
+        (Language::Korean, None, Busy::Dialog) => "리드가 대화 상자의 답을 기다리는 중".into(),
+        (Language::Korean, None, Busy::Working) => "리드가 작업 중".into(),
+        (Language::Korean, Some(key), Busy::Dialog) => {
+            format!("레인 {key}이(가) 대화 상자의 답을 기다리는 중")
+        }
+        (Language::Korean, Some(key), Busy::Working) => format!("레인 {key}이(가) 작업 중"),
+        (Language::English, None, Busy::Dialog) => "the lead waits on a dialog".into(),
+        (Language::English, None, Busy::Working) => "the lead is working".into(),
+        (Language::English, Some(key), Busy::Dialog) => format!("lane {key} waits on a dialog"),
+        (Language::English, Some(key), Busy::Working) => format!("lane {key} is working"),
     }
 }
 

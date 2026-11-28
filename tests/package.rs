@@ -284,7 +284,10 @@ fn an_npm_install_updates_through_npm_and_restarts_the_hub() {
     assert!(out.status.success(), "{}", text(&out));
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(said.contains(&format!("cataly {V1} -> {v2}")), "{said}");
-    assert!(said.contains("with npm"), "{said}");
+    assert!(
+        said.contains(&format!("npm(으)로 cataly {v2}을(를) 설치하는 중입니다.")),
+        "{said}"
+    );
     assert!(
         first.wait().unwrap().success(),
         "the old hub stopped in order"
@@ -306,7 +309,7 @@ fn an_npm_install_updates_through_npm_and_restarts_the_hub() {
     let out = run_with(&hub, &binary, &["update"]);
     assert!(out.status.success(), "{}", text(&out));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("is up to date"),
+        String::from_utf8_lossy(&out.stdout).contains(&format!("cataly {v2} 버전이 최신입니다")),
         "{}",
         text(&out)
     );
@@ -320,8 +323,9 @@ fn an_npm_install_updates_through_npm_and_restarts_the_hub() {
 fn a_bun_install_updates_through_bun() {
     let v2 = bump(V1, 1);
     let github = FakeGithub::start();
+    // In English: the npm case above speaks the default Korean.
     let mut hub = TestHub::new(&format!(
-        "[update]\napi_base = \"{}\"\ncheck = false\n",
+        "[hub]\nlanguage = \"en\"\n[update]\napi_base = \"{}\"\ncheck = false\n",
         github.base()
     ));
     trust_test_key(&mut hub);
@@ -345,7 +349,9 @@ fn a_bun_install_updates_through_bun() {
     assert_eq!(out.status.code(), Some(6), "held: {}", text(&out));
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(
-        said.contains("registry down") && said.contains("nothing changed"),
+        said.starts_with("cataly: held: ")
+            && said.contains("registry down")
+            && said.contains("nothing changed"),
         "{said}"
     );
     std::fs::remove_file(hub.root.join("fail")).unwrap();
