@@ -61,7 +61,9 @@ fn ready(hub: &TestHub) {
 
 /// The lead's start recap (EVR req. 48), which its bridge's hello queued as a quiet note, goes out
 /// with an owner note from the command line, so the next owner message is alone in its wake: the
-/// early wake of decision 15 takes only a batch that carries nothing else.
+/// early wake of decision 15 takes only a batch that carries nothing else, into a lead that shows
+/// idle or working. The note's delivery is confirmed once its entry is in the transcript, before
+/// the readback after its turn shows the lead idle again, so that is waited for too.
 fn recap_delivered(hub: &TestHub) {
     hub.until(WAIT, || {
         (hub.json(&["lead", "status", "--json"])["notes"] == 1).then_some(())
@@ -74,7 +76,11 @@ fn recap_delivered(hub: &TestHub) {
     });
     hub.until(WAIT, || {
         let v = hub.json(&["lead", "status", "--json"]);
-        (v["notes"] == 0 && v["sent"] == 0 && v["in_doubt"] == 0).then_some(())
+        (v["notes"] == 0
+            && v["sent"] == 0
+            && v["in_doubt"] == 0
+            && v["session"]["status"] == "idle")
+            .then_some(())
     });
 }
 
@@ -1899,6 +1905,63 @@ fn a_question_button_answers_the_recorded_question_once() {
     assert!(hub.stop().success());
 }
 
+/// Question text and labels are masked before posting or cutting, but an owner's press still
+/// records the original option. Closing the question must not put the secret back on Discord.
+#[test]
+fn a_recorded_question_masks_secrets_without_changing_its_answer() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.start();
+    ready(&hub);
+    let mut lead = ToolBridge::connect(&hub);
+    let body_token = format!("ghp_{}", "a".repeat(36));
+    let label_token = format!("ghp_{}", "b".repeat(36));
+    let prefix = "x".repeat(60);
+    let option = format!("{prefix} {label_token}");
+    let (id, message) = record_question(
+        &mut lead,
+        &json!({ "text": format!("Use {body_token}? token: 3"),
+            "options": [option, "no"], "recommended": 1 }),
+    );
+    let posted = fake
+        .bot_messages(CH)
+        .into_iter()
+        .find(|m| m["id"] == message.as_str())
+        .unwrap();
+    let content = posted["content"].as_str().unwrap();
+    assert!(content.contains(r"Use \[masked\]? token: 3"), "{content}");
+    assert!(
+        content.contains(&format!(r"1. {prefix} \[masked\]")),
+        "{content}"
+    );
+    let first = &posted["components"][0]["components"][0];
+    assert_eq!(first["label"], format!("1. {prefix} [masked]"));
+    assert_eq!(first["custom_id"], format!("cy:{id}:0"));
+    assert_eq!(first["style"], 1);
+
+    fake.press(OWNER, CH, &message, &button(&posted, 0));
+    assert_eq!(callback(&fake, 0).body["type"], 6);
+    let result = hub.until(WAIT, || {
+        let row = ledger(&hub, &id);
+        (row.0 == "answered").then_some(row)
+    });
+    assert!(
+        result
+            .1
+            .unwrap()
+            .ends_with(&format!(": option 1 ({option})"))
+    );
+    let edited = closed(&fake, &message);
+    let content = edited["content"].as_str().unwrap();
+    assert!(content.contains(r"Use \[masked\]? token: 3"), "{content}");
+    assert!(
+        content.ends_with(&format!(r"Answered by Master: 1. {prefix} \[masked\]")),
+        "{content}"
+    );
+    assert!(!content.contains("ghp"), "{content}");
+    assert!(hub.stop().success());
+}
+
 /// A recommended option is never chosen by itself, whatever the quiet time of OMP's questions. A
 /// reply naming an option answers the question and closes its buttons; a press after that is
 /// refused and records nothing.
@@ -2059,6 +2122,41 @@ fn without_gateway_buttons_a_question_is_text_only() {
     });
     assert_eq!(state, "answered");
     assert!(hub.stop().success());
+}
+
+/// DISC-OUT req. 83: approvals have no text-answer fallback. If an interactions endpoint URL
+/// diverts button presses away from the Gateway, deny before posting any approval card.
+#[test]
+fn without_gateway_buttons_an_approval_is_denied_before_posting() {
+    let fake = FakeDiscord::start();
+    fake.set_interactions_url("https://example.org/interactions");
+    let mut hub = relay_hub(&fake, &["approve"], "remote_approvals = true\n");
+    hub.start();
+    ready(&hub);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_432,
+        OWNER,
+        "please APPROVE this",
+    ));
+    // The first linked post must be the completed turn, never an unanswerable approval card.
+    let answer = fake.wait(WAIT, |f| {
+        f.creates()
+            .into_iter()
+            .find(|c| reference(c).as_deref() == Some("800000000000000432"))
+    });
+    assert_eq!(answer.body["content"], "picked cancelled");
+    let responses = std::fs::read_to_string(hub.root.join("bin/omp-data/responses")).unwrap();
+    let responses: Vec<Value> = responses
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        responses,
+        vec![json!({ "type": "extension_ui_response", "id": "approval-1", "value": "Deny" })]
+    );
+    assert!(hub.stop().success());
+    assert_eq!(fake.creates().len(), 1, "no approval card was posted");
 }
 
 /// A press on a question near Discord's size limit (1000 characters, four options of 200): the
@@ -2412,6 +2510,61 @@ fn contents(fake: &FakeDiscord, room: &str) -> Vec<String> {
         .iter()
         .map(|m| m["content"].as_str().unwrap_or_default().to_string())
         .collect()
+}
+
+/// OPC req. 66: the answer and a later turn are masked in the outbox, before any post or retry.
+/// Ordinary prose resembling a key/value pair is not a credential-shaped string.
+#[test]
+fn answers_and_later_turns_mask_secrets_in_the_outbox_and_retries() {
+    let fake = FakeDiscord::start();
+    let token = format!("ghp_{}", "aB12".repeat(9));
+    let answer = format!("the answer: {token}; token: 3");
+    let later = format!("the background result: {token}; token: 3");
+    let mut hub = background_hub(&fake, &answer, Some(&later));
+    hub.start();
+    ready(&hub);
+    // Refuse the first attempt of each turn, then accept its retry from the durable outbox.
+    fake.script_in(CH, &[400, 0, 400, 0]);
+    let source = "800000000000000406";
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_406,
+        OWNER,
+        "answer and report the background result",
+    ));
+    let creates = fake.wait_creates(4, WAIT);
+    hub.until(WAIT, || {
+        (answer_state(&hub, source) == "posted").then_some(())
+    });
+    assert!(hub.stop().success());
+
+    let answer = "the answer: [masked]; token: 3";
+    let later = "the background result: [masked]; token: 3";
+    assert_eq!(contents(&fake, CH), [answer, later]);
+    assert_eq!(creates.len(), 4);
+    for (create, expected) in creates.iter().zip([answer, answer, later, later]) {
+        assert_eq!(create.body["content"], expected);
+        assert!(!create.body.to_string().contains(&token));
+    }
+    assert_eq!(creates[0].body["nonce"], creates[1].body["nonce"]);
+    assert_eq!(creates[2].body["nonce"], creates[3].body["nonce"]);
+
+    let db = rusqlite::Connection::open_with_flags(
+        hub.state().join("cataly.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let parts: Vec<(i64, String)> = db
+        .prepare(
+            "SELECT turn, text FROM outbox_parts \
+             WHERE relay = 'discord' AND room = ?1 AND source = ?2 ORDER BY idx",
+        )
+        .unwrap()
+        .query_map([CH, source], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(parts, [(0, answer.into()), (1, later.into())]);
 }
 
 /// A turn a background job's result starts after the answer never replaces it: the answer is the

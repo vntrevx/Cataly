@@ -265,6 +265,8 @@ pub(crate) enum Plan {
         id: String,
         file: PathBuf,
         note: Option<String>,
+        /// The runtime it was started with: a resume stays on it (HOST req. 91).
+        runtime: RuntimeKind,
     },
     Refuse(String),
 }
@@ -278,6 +280,8 @@ struct Chosen {
     /// A resumed session's recorded working folder, else the default one.
     cwd: PathBuf,
     how: LeadStart,
+    /// A resume's recorded runtime; a fresh session takes the configured one.
+    runtime: Option<RuntimeKind>,
 }
 
 impl Chosen {
@@ -288,6 +292,7 @@ impl Chosen {
             note: None,
             cwd,
             how,
+            runtime: None,
         }
     }
 }
@@ -336,11 +341,19 @@ pub(crate) fn plan(
             "the transcript for lead {id} is missing or is not a regular file: {file}; retained, never replaced"
         ));
     }
+    let Some(runtime) = RuntimeKind::from_name(&row.runtime) else {
+        return Plan::Refuse(format!(
+            "lead session {id} was started on the runtime '{}', which this Cataly does not run; \
+             start a fresh lead with `cataly lead start --fresh`",
+            row.runtime
+        ));
+    };
     match lease {
         Lease::Free => Plan::Resume {
             id: id.clone(),
             file: PathBuf::from(file),
             note: unclean(row),
+            runtime,
         },
         Lease::Held => Plan::Refuse(format!(
             "lead session {id} is held by a running OMP; conversation retained"
@@ -934,10 +947,13 @@ impl<R: Runtime> Lead<R> {
             note,
             cwd,
             how,
+            runtime,
         } = match again {
             Some((id, file)) => self.again(id, file, default).await?,
             None => self.target(&settings, fresh, owner, default).await?,
         };
+        self.overlay(&config)?;
+        // Last before the attempt: a refusal above never spends the recovery episode.
         if let Some(id) = &expected
             && let Err(reason) = self
                 .recovery()
@@ -947,11 +963,7 @@ impl<R: Runtime> Lead<R> {
             self.set_phase(Phase::Held, Some(reason.clone()));
             return Err(reason);
         }
-        self.overlay(&config)?;
-        let kind = match &expected {
-            Some(id) => self.stored_runtime(id).await?,
-            None => config.sessions.runtime,
-        };
+        let kind = runtime.unwrap_or(config.sessions.runtime);
         if kind != config.sessions.runtime {
             log::info(
                 "the lead resumes on the runtime it was started with",
@@ -1098,7 +1110,12 @@ impl<R: Runtime> Lead<R> {
                 log::info("lead starts fresh", &[("reason", &reason)]);
                 Ok(Chosen::fresh(dir, default, how))
             }
-            Plan::Resume { id, file, note } => {
+            Plan::Resume {
+                id,
+                file,
+                note,
+                runtime,
+            } => {
                 let verified = transcript::verify_exact(
                     file.clone(),
                     dir.clone(),
@@ -1117,6 +1134,7 @@ impl<R: Runtime> Lead<R> {
                             note,
                             cwd: saved.cwd,
                             how: LeadStart::Resumed,
+                            runtime: Some(runtime),
                         });
                     }
                     Err(e) => e.to_string(),
@@ -1338,23 +1356,6 @@ impl<R: Runtime> Lead<R> {
                 Err("lead anchor changed during recovery; held".into())
             }
         }
-    }
-
-    /// The runtime the lead session `id` was started with: a resume stays on it whatever the
-    /// config says now (HOST req. 91). Uses the same record as resume target selection.
-    async fn stored_runtime(&self, id: &str) -> Result<RuntimeKind, String> {
-        let last = self
-            .resolve(Some(id.to_string()))
-            .await?
-            .row
-            .ok_or_else(|| format!("no proven binding of lead session {id} to resume"))?;
-        RuntimeKind::from_name(&last.runtime).ok_or_else(|| {
-            format!(
-                "lead session {id} was started on the runtime '{}', which this Cataly does not run; \
-                 start a fresh lead with `cataly lead start --fresh`",
-                last.runtime
-            )
-        })
     }
 
     async fn resolve(
@@ -2211,6 +2212,7 @@ mod tests {
             id: "s1".into(),
             file: file.clone(),
             note: note.map(Into::into),
+            runtime: RuntimeKind::Headless,
         };
         assert!(matches!(
             plan(None, None, false, Lease::Free),
@@ -2261,6 +2263,14 @@ mod tests {
         assert!(matches!(
             plan(Some(&gone), Some("s1"), false, Lease::Free),
             Plan::Refuse(_)
+        ));
+        let old = SessionRow {
+            runtime: "old".into(),
+            ..clean.clone()
+        };
+        assert!(matches!(
+            plan(Some(&old), None, false, Lease::Free),
+            Plan::Refuse(r) if r.contains("runtime 'old'")
         ));
     }
 
