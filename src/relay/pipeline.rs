@@ -4,7 +4,8 @@
 //! reply, finishes the queue item in one transaction once the session file confirms the hand-off
 //! (DISC-IN req. 49), holds the room when the hand-off is in doubt and tells the owner (DESIGN 9.3),
 //! and posts the lead's final answer as a linked reply in parts from a durable outbox (DISC-OUT req.
-//! 20-29, DESIGN 12.2 A16).
+//! 20-29, DESIGN 12.2 A16). Answers and later turns have credential-shaped strings masked before
+//! splitting and storage, so retries use the same safe parts (OPC req. 66).
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +31,7 @@ use crate::store::relay::{
     Arrived, HandoffRow, OWED_WINDOW_MS, PartRow, QueueRow, RelayDone, RelayWrite, done_mark,
 };
 use crate::sys::latency::Latency;
-use crate::sys::now_ms;
+use crate::sys::{now_ms, secrets};
 
 /// Delivered text over this size goes to a private file (DISC-IN req. 45).
 const SPILL_BYTES: usize = 64 * 1024;
@@ -1190,7 +1191,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             answer: answer.into(),
         };
         match reply {
-            Reply::Answer { text, more, .. } => match self.relay.parts(&text) {
+            Reply::Answer { text, more, .. } => match self.relay.parts(&secrets::mask(&text)) {
                 Ok(parts) => {
                     self.remember(&h.room, &format!("{}:answer", h.message), "lead", &text)
                         .await;
@@ -1279,7 +1280,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
         let mut start = last.idx + 1;
         let done = usize::try_from(done).unwrap_or(usize::MAX);
         for (turn, text) in (1..).zip(more).skip(done) {
-            let split = match self.relay.parts(text) {
+            let split = match self.relay.parts(&secrets::mask(text)) {
                 Ok(split) => split,
                 Err(why) => {
                     let mut later = self.later();

@@ -440,3 +440,102 @@ test("a session without Tern answers model.resolve and still takes no other comm
 	expect(await ask({ op: "model", model: "fake/second" })).toBeUndefined();
 	expect(calls).toEqual([]);
 });
+
+test("a call OMP moved to the background is refused while running and bound to its job's outcome (EVR req. 11, EXT req. 23)", async () => {
+	const pi = fakePi();
+	const sent: any[] = [];
+	bridge(pi, { env: { CATALY_LAUNCH: "tok", CATALY_SOCKET: "/x.sock" }, connect: fakeHub("lead", sent, { n: 0 }), uid: () => 1 });
+	const ctx = ctxOf(pi);
+	await pi.emit("session_start", {}, ctx);
+	await pi.emit("tool_execution_start", { toolCallId: "b1", toolName: "bash", args: { command: "cargo test" } }, ctx);
+	const details = { async: { state: "running", jobId: "j1", type: "bash" } };
+	await pi.emit("tool_execution_end", { toolCallId: "b1", toolName: "bash", isError: false, result: { content: [{ type: "text", text: "started" }], details } }, ctx);
+	expect(sent.find(m => m.params?.kind === "tool_execution_end").params).toMatchObject({ call: "b1", job: "j1", state: "running" });
+	const facts = async (call: string) => {
+		await pi.tools[0].execute("t1", { op: "done", calls: [call] }, undefined, undefined, ctx);
+		return sent.filter(m => m.method === "bridge.tool").at(-1).params.facts[0];
+	};
+	const running = await facts("b1");
+	expect(running).toMatchObject({ call: "b1", seen: true, running: true });
+	expect(running.fingerprint).toBeUndefined();
+	// OMP reports the settled job as a later update for the same call (19.1.1 tools/bash.ts, onDetachedToolUpdate).
+	const update = (call: string, state: string, text: string) =>
+		pi.emit("tool_execution_update", { toolCallId: call, toolName: "bash", partialResult: { content: [{ type: "text", text }], details: { async: { state, jobId: `j-${call}`, type: "bash" } } } }, ctx);
+	await update("b1", "running", "compiling");
+	expect((await facts("b1")).running).toBe(true);
+	await update("b1", "completed", "test result: ok");
+	const done = await facts("b1");
+	expect(done).toMatchObject({ running: false, error: false });
+	expect(done.fingerprint).toBe(fingerprint("bash", { content: [{ type: "text", text: "test result: ok" }], details: {} }));
+	expect(sent.find(m => m.params?.kind === "tool_job_end").params).toMatchObject({ call: "b1", job: "j-b1", state: "completed" });
+	// A failed job stays refused; an update for a call that never ran in the background changes nothing.
+	await pi.emit("tool_execution_start", { toolCallId: "b2", toolName: "bash", args: { command: "cargo build" } }, ctx);
+	await pi.emit("tool_execution_end", { toolCallId: "b2", toolName: "bash", isError: false, result: { content: [], details: { async: { state: "running", jobId: "j-b2" } } } }, ctx);
+	await update("b2", "failed", "error[E0308]");
+	const failed = await facts("b2");
+	expect(failed).toMatchObject({ running: false, error: true });
+	expect(failed.fingerprint).toBeUndefined();
+	await pi.emit("tool_execution_start", { toolCallId: "b3", toolName: "bash", args: { command: "ls" } }, ctx);
+	await pi.emit("tool_execution_end", { toolCallId: "b3", toolName: "bash", isError: false, result: { content: [{ type: "text", text: "a" }] } }, ctx);
+	const before = (await facts("b3")).fingerprint;
+	await update("b3", "completed", "other");
+	expect((await facts("b3")).fingerprint).toBe(before);
+});
+
+test.each([{}, { exitCode: 0, build: { state: "passed", type: "debug", async: "result data" } }])(
+	"completed background calls share foreground fingerprints without mutating result details (%j)", async details => {
+		const pi = fakePi();
+		const sent: { method: string; params: { facts?: { fingerprint?: string }[] } }[] = [];
+		bridge(pi, { env: { CATALY_LAUNCH: "tok", CATALY_SOCKET: "/x.sock" }, connect: fakeHub("lead", sent, { n: 0 }), uid: () => 1 });
+		const ctx = ctxOf(pi);
+		await pi.emit("session_start", {}, ctx);
+		for (const call of ["foreground", "background"])
+			await pi.emit("tool_execution_start", { toolCallId: call, toolName: "bash", args: { command: "cargo test" } }, ctx);
+		const result = { content: [{ type: "text", text: "test result: ok" }], details };
+		await pi.emit("tool_execution_end", { toolCallId: "foreground", toolName: "bash", isError: false, result }, ctx);
+		const async = { state: "running", jobId: "j1", type: "bash" };
+		await pi.emit("tool_execution_end", {
+			toolCallId: "background", toolName: "bash", isError: false,
+			result: { content: [{ type: "text", text: "started" }], details: { async } },
+		}, ctx);
+		const completed = { ...result, details: { ...details, async: { ...async, state: "completed" } } };
+		await pi.emit("tool_execution_update", { toolCallId: "background", toolName: "bash", partialResult: completed }, ctx);
+		await pi.tools[0].execute("t1", { op: "done", calls: ["foreground", "background"] }, undefined, undefined, ctx);
+		const [foreground, background] = sent.filter(m => m.method === "bridge.tool").at(-1)!.params.facts!;
+		expect(foreground.fingerprint).toBe(fingerprint("bash", result));
+		expect(background).toMatchObject({ running: false, error: false, fingerprint: foreground.fingerprint });
+		expect(completed).toEqual({ ...result, details: { ...details, async: { ...async, state: "completed" } } });
+	},
+);
+
+test("a lane.review gets the per-op wait the hub serves, so an answer after 5 s still arrives", async () => {
+	const pi = fakePi();
+	const sent: any[] = [];
+	let answer: (() => void) | undefined;
+	const connect: Deps["connect"] = async (_path, onLine) => ({
+		write(line: string) {
+			const msg = JSON.parse(line);
+			sent.push(msg);
+			const reply = (ok: unknown) => onLine(JSON.stringify({ v: 1, id: msg.id, ok }));
+			if (msg.method === "bridge.hello")
+				queueMicrotask(() => reply({ role: "lead", key: "k1", tools: [{ name: "cataly_lead", parameters: { type: "object" }, op_timeout_ms: { "lane.review": 2_100_000 } }] }));
+			if (msg.method === "bridge.tool") answer = () => reply({ text: `did ${msg.params.input.op}` });
+		},
+		close() {},
+	});
+	bridge(pi, { env: { CATALY_LAUNCH: "tok", CATALY_SOCKET: "/x.sock" }, connect, uid: () => 1 });
+	const ctx = ctxOf(pi);
+	await pi.emit("session_start", {}, ctx);
+	// A fake clock: timers armed during the call fire if they end before the hub's answer at 6 s.
+	const real = globalThis.setTimeout;
+	const timers: [() => void, number][] = [];
+	globalThis.setTimeout = ((fn: () => void, ms: number) => (timers.push([fn, ms]), 0)) as any;
+	try {
+		const call = pi.tools[0].execute("call-r", { op: "lane.review", pr: "o/r#1" }, undefined, undefined, ctx);
+		for (const [fn, ms] of timers) if (ms <= 6_000) fn();
+		answer?.();
+		expect((await call).content[0].text).toBe("did lane.review");
+	} finally {
+		globalThis.setTimeout = real;
+	}
+});

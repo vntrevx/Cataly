@@ -325,15 +325,17 @@ impl<R: Runtime> Lanes<R> {
         text
     }
 
-    /// Whether a worktree holds a published file (EVR-19: kept at close).
-    pub(super) async fn holds_published(&self, worktree: &str) -> bool {
+    /// Whether a worktree holds a published file (EVR-19: kept at close). Older ownership records
+    /// may name a symlink, so `real`, the worktree resolved where it lives, is compared too.
+    pub(super) async fn holds_published(&self, worktree: &str, real: &Path) -> bool {
         docs::all::<Published>(&self.env.store, FILE)
             .await
             .map_or(true, |(all, damaged)| {
                 !damaged.is_empty()
-                    || all
-                        .iter()
-                        .any(|(d, _)| Path::new(&d.path).starts_with(worktree))
+                    || all.iter().any(|(d, _)| {
+                        let path = Path::new(&d.path);
+                        path.starts_with(worktree) || path.starts_with(real)
+                    })
             })
     }
 
