@@ -1808,30 +1808,36 @@ fn a_wake_after_a_lifted_hold_begins_a_fresh_episode_and_delivers() {
 }
 
 /// An episode that ended long ago is nobody's recovery: a crash exit of the bound lead retries
-/// normally, whether that episode ended bound or an older start left it active past its window.
+/// normally. The store gets the old episode only while no hub runs (a live hub's store never has
+/// a second writer): an earlier lead's episode, begun two hours ago and left active, which the
+/// first start's binding ends; the lead then crashes.
 #[test]
 fn a_crash_exit_long_after_the_episode_ended_retries_normally() {
-    for ended in ["bound", "active"] {
-        let mut w = wrapped("", None);
-        w.hub.start();
-        let first = live(&w.hub, &Value::Null);
-        let db = store(&w.hub);
-        let old = left_episode(&db, &first["session"]["session_id"], ended);
-        kill(&first["session"]["pid"]);
-        let again = w.hub.until(Duration::from_secs(20), || {
-            let v = lead_view(&w.hub);
-            assert_ne!(v["phase"], "held", "{ended}: {v}");
-            let pid = &v["session"]["pid"];
-            (v["phase"] == "live" && pid.is_u64() && pid != &first["session"]["pid"]).then_some(v)
-        });
-        assert_eq!(
-            again["session"]["session_id"], first["session"]["session_id"],
-            "{ended}: {again}"
-        );
-        let (state, began) = lead_episode(&db);
-        assert_eq!(state, "bound", "{ended}");
-        assert!(began > old, "{ended}: a fresh episode");
-        assert!(w.hub.stop().success());
-        w.no_orphans();
-    }
+    let mut w = wrapped("", None);
+    let without_lead = w.config.split("[lead]").next().unwrap().to_string();
+    w.hub.write_config(&without_lead);
+    w.hub.start();
+    assert!(w.hub.stop().success());
+    let old = left_episode(&store(&w.hub), &Value::from("earlier"), "active");
+    w.hub.write_config(&w.config);
+    w.hub.start();
+    let first = live(&w.hub, &Value::Null);
+    let db = store(&w.hub);
+    assert_eq!(lead_episode(&db), ("bound".into(), old), "ended long ago");
+    kill(&first["session"]["pid"]);
+    let again = w.hub.until(Duration::from_secs(20), || {
+        let v = lead_view(&w.hub);
+        assert_ne!(v["phase"], "held", "{v}");
+        let pid = &v["session"]["pid"];
+        (v["phase"] == "live" && pid.is_u64() && pid != &first["session"]["pid"]).then_some(v)
+    });
+    assert_eq!(
+        again["session"]["session_id"], first["session"]["session_id"],
+        "{again}"
+    );
+    let (state, began) = lead_episode(&db);
+    assert_eq!(state, "bound");
+    assert!(began > old, "a fresh episode");
+    assert!(w.hub.stop().success());
+    w.no_orphans();
 }
