@@ -2,6 +2,8 @@
 
 ## 0.2.9 (Unreleased)
 
+- A lead held after too many crashes stays held across hub restarts and updates, even with
+  autostart enabled. Only an explicit `lead start` clears the hold and resumes its conversation.
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:

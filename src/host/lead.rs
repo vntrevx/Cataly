@@ -9,7 +9,8 @@
 //! Resume rule (acceptance check 12): the lead resumes its last session (same ID and file) after a
 //! clean close; after an unclean stop with a free lease it resumes with a note; with a held lease it
 //! is reported and not started. A configured lead session ID must be resumed exactly. When its OMP
-//! exits by itself, the lead is restarted on the same session with bounded backoff. Startup
+//! exits by itself, the lead is restarted on the same session with bounded backoff. Exhausting
+//! the restart limit keeps a durable hold across hub restarts until an explicit lead start. Startup
 //! timeouts require verified cleanup and a free lease, with five retries inside one durable
 //! 300-second episode. A lead idle for `[lead] idle_sleep` is woken on the same session
 //! when a message needs it ([`sleep`]).
@@ -443,6 +444,8 @@ const RESTART_FIRST: Duration = Duration::from_secs(1);
 const RESTART_MAX: Duration = Duration::from_secs(60);
 const RESTART_WINDOW: Duration = Duration::from_mins(10);
 const RESTART_LIMIT: usize = 5;
+/// The crash-limit hold in `meta`; empty only after an explicit owner start.
+const RESTART_HOLD_KEY: &str = "lead_restart_hold";
 
 #[derive(Default)]
 struct Restarts {
@@ -646,6 +649,7 @@ impl<R: Runtime> Lead<R> {
             let mut waking = false;
             if self.env.omp.report().is_some() {
                 if !self.recovered.swap(true, Ordering::AcqRel) {
+                    let _one = self.starting.lock().await;
                     self.recover().await;
                     self.keep_asleep().await;
                 }
@@ -897,6 +901,7 @@ impl<R: Runtime> Lead<R> {
             .map_err(|e| e.to_string())?;
         *self.restarts() = Restarts::default();
         self.recovery().end("bound", None).await?;
+        self.keep_restart_hold("").await?;
         self.launch(fresh, true, None).await
     }
 
@@ -1361,12 +1366,16 @@ impl<R: Runtime> Lead<R> {
         &self,
         pin: Option<String>,
     ) -> Result<crate::store::host::anchor::Selection, String> {
-        let mut selected = self
+        let (mut selected, restart_hold) = self
             .env
             .store
-            .read(move |r| r.lead_target(pin.as_deref()))
+            .read(move |r| Ok((r.lead_target(pin.as_deref())?, r.meta(RESTART_HOLD_KEY)?)))
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(reason) = restart_hold.filter(|reason| !reason.is_empty()) {
+            selected.hold = Some(reason);
+            return Ok(selected);
+        }
         if selected.provenance.as_deref()
             == Some("two exact get_state identities and accepted model")
             && let Some(row) = &selected.row
@@ -1490,10 +1499,23 @@ impl<R: Runtime> Lead<R> {
         }
     }
 
+    /// Persist before publishing the crash-limit hold; only `start` writes an empty value.
+    async fn keep_restart_hold(&self, reason: &str) -> Result<(), String> {
+        self.env
+            .store
+            .lead(crate::store::lead::LeadWrite::Meta {
+                key: RESTART_HOLD_KEY.into(),
+                value: reason.into(),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("lead restart hold: {e}"))
+    }
+
     /// After the child exited by itself (`exit` is its status), or a restart failed: plans the next
     /// restart, or past the limit holds the lead for the owner (DESIGN 2.2). Every exit is an event
     /// (HOST req. 70); the owner is alerted at the first exit of a series and at the hold.
-    fn exited(&self, session: (String, PathBuf), why: &str, exit: Option<&str>) {
+    async fn exited(&self, session: (String, PathBuf), why: &str, exit: Option<&str>) {
         let planned = self.restarts().plan(Instant::now(), session);
         let next = match planned {
             Some((delay, _)) => format!("restarting in {} s", delay.as_secs()),
@@ -1515,6 +1537,9 @@ impl<R: Runtime> Lead<R> {
             self.set_phase(Phase::Stopped, Some(reason));
             self.wake.notify_one();
         } else {
+            if let Err(error) = self.keep_restart_hold(&reason).await {
+                log::warn("lead restart hold not recorded", &[("error", &error)]);
+            }
             self.set_phase(Phase::Held, Some(reason.clone()));
             self.emit(
                 Emit::new(EventKind::SessionFenced, Severity::Warning, true, "lead")
@@ -1667,7 +1692,9 @@ impl<R: Runtime> Lead<R> {
     /// The watched session ended: its record and phase, and a restart when its OMP exited by itself.
     /// A sleep records its own stop, and nothing restarts.
     async fn ended(&self, handle: &str, identity: (String, PathBuf), record: &super::StopRecord) {
-        if self.sleeps(handle) {
+        // The exit must not reapply a hold after the owner has explicitly started the lead.
+        let _one = self.starting.lock().await;
+        if self.sleeps(handle) || self.current().is_none_or(|s| s.snapshot().handle != handle) {
             return;
         }
         self.update(SessionUpdate {
@@ -1693,7 +1720,8 @@ impl<R: Runtime> Lead<R> {
                 identity,
                 &format!("its OMP exited by itself ({exit})"),
                 Some(exit),
-            );
+            )
+            .await;
         }
     }
 

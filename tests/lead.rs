@@ -133,6 +133,84 @@ fn lead_restarts_on_its_session_after_omp_exits() {
     assert_eq!(pids.lines().count(), 4, "{pids}");
 }
 
+/// HOST req. 105: six child exits exhaust the restart budget. Both an orderly hub restart and a
+/// hub crash keep the hold and its reason, even with autostart and a waiting owner message. Only
+/// an explicit start clears it; subsequent hub starts may resume the same conversation again.
+#[test]
+fn a_restart_limit_hold_survives_hub_restarts_until_an_explicit_start() {
+    let mut w = wrapped("autostart = true\nidle_sleep = \"0s\"\n", None);
+    let first = original(&mut w);
+    let id = first["session"]["session_id"].clone();
+    let file = first["session"]["session_file"].clone();
+    let mut current = first;
+    for _ in 0..5 {
+        kill(&current["session"]["pid"]);
+        current = live(&w.hub, &current["session"]["pid"]);
+        assert_eq!(current["session"]["session_id"], id, "{current}");
+        assert_eq!(current["session"]["session_file"], file, "{current}");
+    }
+    kill(&current["session"]["pid"]);
+    let before = held(&w.hub, 20);
+    assert!(
+        before["reason"]
+            .as_str()
+            .unwrap()
+            .contains("more than 5 restarts within 10 minutes"),
+        "{before}"
+    );
+    assert_eq!(w.starts("resume").len(), 5);
+    assert!(
+        w.hub
+            .cli(&["lead", "send", "RESTART-HOLD"])
+            .status
+            .success()
+    );
+
+    for crash in [false, true] {
+        if crash {
+            w.hub.crash();
+        } else {
+            assert!(w.hub.stop().success());
+        }
+        w.hub.start();
+        // Startup settlement is a barrier: no fixed sleep to guess when autostart ran.
+        let resumed = w.hub.until(Duration::from_secs(20), || {
+            let value = w.hub.json(&["status", "--json"])["resumed"].clone();
+            value.is_object().then_some(value)
+        });
+        assert_eq!(resumed["lead_start"], "not_running", "{resumed}");
+        let after = lead_view(&w.hub);
+        assert_eq!(after["phase"], "held", "{after}");
+        assert_eq!(after["reason"], before["reason"], "{after}");
+        assert_eq!(after["waiting"], 1, "{after}");
+        assert!(after["session"].is_null(), "{after}");
+        assert_eq!(w.starts("fresh").len(), 1);
+        assert_eq!(w.starts("resume").len(), 5, "no OMP spawned while held");
+        assert_eq!(user_entries(&file, "RESTART-HOLD"), 0);
+        // A stop request is not permission to restart a crash-looping lead.
+        assert!(!w.hub.cli(&["lead", "stop"]).status.success());
+    }
+
+    let out = w.hub.cli(&["lead", "start"]);
+    assert!(out.status.success(), "{out:?}");
+    let started = live(&w.hub, &Value::Null);
+    assert_eq!(started["session"]["session_id"], id, "{started}");
+    assert_eq!(started["session"]["session_file"], file, "{started}");
+    w.hub.until(Duration::from_secs(20), || {
+        (user_entries(&file, "RESTART-HOLD") == 1).then_some(())
+    });
+    assert!(w.hub.stop().success());
+    w.hub.start();
+    let resumed = live(&w.hub, &Value::Null);
+    assert_eq!(resumed["session"]["session_id"], id, "{resumed}");
+    assert_eq!(resumed["session"]["session_file"], file, "{resumed}");
+    assert_eq!(w.starts("resume").len(), 7, "the hold was durably cleared");
+    assert_eq!(user_entries(&file, "RESTART-HOLD"), 1);
+    assert_eq!(session_files(&file), 1);
+    assert!(w.hub.stop().success());
+    w.no_orphans();
+}
+
 /// From PR #299 (Momentum96): a resume that never gets ready (`slow-resume` reads input until it
 /// closes) fails at the 60 s startup deadline; after proven cleanup it is retried on the same
 /// transcript and the waiting message is delivered once.
