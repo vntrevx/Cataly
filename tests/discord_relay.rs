@@ -61,7 +61,9 @@ fn ready(hub: &TestHub) {
 
 /// The lead's start recap (EVR req. 48), which its bridge's hello queued as a quiet note, goes out
 /// with an owner note from the command line, so the next owner message is alone in its wake: the
-/// early wake of decision 15 takes only a batch that carries nothing else.
+/// early wake of decision 15 takes only a batch that carries nothing else, into a lead that shows
+/// idle or working. The note's delivery is confirmed once its entry is in the transcript, before
+/// the readback after its turn shows the lead idle again, so that is waited for too.
 fn recap_delivered(hub: &TestHub) {
     hub.until(WAIT, || {
         (hub.json(&["lead", "status", "--json"])["notes"] == 1).then_some(())
@@ -74,7 +76,11 @@ fn recap_delivered(hub: &TestHub) {
     });
     hub.until(WAIT, || {
         let v = hub.json(&["lead", "status", "--json"]);
-        (v["notes"] == 0 && v["sent"] == 0 && v["in_doubt"] == 0).then_some(())
+        (v["notes"] == 0
+            && v["sent"] == 0
+            && v["in_doubt"] == 0
+            && v["session"]["status"] == "idle")
+            .then_some(())
     });
 }
 
