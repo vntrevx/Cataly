@@ -25,6 +25,7 @@ mod remote;
 mod reopen;
 mod replies;
 mod review;
+pub(crate) use review::REVIEW_WAIT;
 pub(crate) mod shell;
 pub(crate) mod slots;
 mod starts;
@@ -129,6 +130,9 @@ pub(crate) struct Lanes<R: Runtime> {
     opening: Mutex<Vec<String>>,
     /// Closes on threads are serialised so two last lanes cannot both skip the hook (LANE req. 42).
     closing: AsyncMutex<()>,
+    /// Path reservations (open, reopen, registration) and worktree removal are serialised.
+    /// When both locks are needed, acquire the lane's turn before this lock.
+    worktree_use: AsyncMutex<()>,
     overlay: OnceLock<()>,
     spend: Mutex<HashMap<String, crate::omp::transcript::SpendTree>>,
     /// Wakes oversight early (a report, a state change, a claim).
@@ -176,6 +180,7 @@ impl<R: Runtime> Lanes<R> {
             turns: Mutex::new(HashMap::new()),
             opening: Mutex::new(Vec::new()),
             closing: AsyncMutex::new(()),
+            worktree_use: AsyncMutex::new(()),
             overlay: OnceLock::new(),
             spend: Mutex::new(HashMap::new()),
             nudge: Notify::new(),
@@ -209,7 +214,7 @@ impl<R: Runtime> Lanes<R> {
     }
 
     /// Live lanes that may not be stopped now, with the reason.
-    pub(crate) fn busy(&self) -> Vec<(String, &'static str)> {
+    pub(crate) fn busy(&self) -> Vec<(String, crate::host::Busy)> {
         self.live_map()
             .iter()
             .filter(|(_, s)| s.alive())
@@ -712,16 +717,27 @@ impl<R: Runtime> Lanes<R> {
                 if !current {
                     return Err(crate::store::lanes::MOVED_ON.into());
                 }
-                let path = p::PATH.some(input)?.to_string();
-                let real = std::fs::canonicalize(&path).map_err(|e| format!("{path}: {e}"))?;
+                let path = p::PATH.some(input)?;
+                drop(rec);
+                let _turn = self.turn(&key).await?;
+                let (mut rec, rev) = self.load(&key).await?;
+                if !rec.open()
+                    || rec.intent.is_some()
+                    || run.as_deref() != Some(rec.run_id.as_str())
+                    || rec.handle.as_deref() != Some(handle)
+                    || rec.session_id.as_deref() != Some(session)
+                {
+                    return Err(crate::store::lanes::MOVED_ON.into());
+                }
+                let _worktree_use = self.worktree_use.lock().await;
+                let real = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
                 let real = real.display().to_string();
-                self.keep(&key, |r| {
-                    if !r.worktrees.contains(&real) {
-                        r.worktrees.push(real.clone());
-                    }
-                })
-                .await;
-                Ok(json!(format!("worktree {real} registered for lane {key}")))
+                let receipt = format!("worktree {real} registered for lane {key}");
+                if !rec.worktrees.contains(&real) {
+                    rec.worktrees.push(real);
+                    self.save(&rec, Some(rev), None).await?;
+                }
+                Ok(json!(receipt))
             }
             "publish" => {
                 if !current {
@@ -1122,6 +1138,11 @@ impl<R: Runtime> Lanes<R> {
             rec.thread = Some(self.thread_for(&rec.key, &rec.title, &source).await?);
         }
         let mut note = None;
+        let worktree_use = self.worktree_use.lock().await;
+        // Validation preceded the lock; a close may have removed this directory since then.
+        if valid.worker.is_none() && !valid.cwd.is_dir() {
+            return Err(format!("{} is not a directory", valid.cwd.display()));
+        }
         if let Some(worker) = &valid.worker {
             let prepared = self.prepare(&valid, worker).await?;
             rec.cwd.clone_from(&prepared.cwd);
@@ -1129,10 +1150,14 @@ impl<R: Runtime> Lanes<R> {
             note = Some(prepared.note());
         } else if let Some(w) = &valid.worktree {
             git::add_worktree(&valid.cwd, &w.path, &w.branch, &w.base).await?;
-            rec.worktrees.push(w.path.clone());
-            // The lane works in its own worktree, stored canonical like any working directory.
-            if let Ok(real) = std::fs::canonicalize(&w.path) {
-                rec.cwd = real.display().to_string();
+            // Store ownership and the working directory in the same canonical form.
+            match std::fs::canonicalize(&w.path) {
+                Ok(real) => {
+                    rec.cwd = real.display().to_string();
+                    rec.worktrees.push(rec.cwd.clone());
+                }
+                // Keep authority over the allocation; an unreadable path cannot be removed.
+                Err(_) => rec.worktrees.push(w.path.clone()),
             }
         }
         // Record first, then spawn (LANE req. 15c).
@@ -1146,6 +1171,7 @@ impl<R: Runtime> Lanes<R> {
                 ));
             }
         };
+        drop(worktree_use);
         if let Some(rid) = &request_id {
             let _ = self
                 .env
@@ -1670,7 +1696,10 @@ impl<R: Runtime> Lanes<R> {
     /// lane's: an open lane names it, or a lane being opened (or queued for its worker) created it.
     /// The open journals the creation before it saves the lane record, which waits for the worktree
     /// (on a worker, after a push) or for the worker, so the record alone would let the lead's answer
-    /// into the thread before the kickoff.
+    /// into the thread before the kickoff. Each read sees the store as it is then, and the open can
+    /// save the record between two of them, so they follow the open's own order: the journal, then
+    /// the record it names (none yet: being opened), then the open lanes, which hold a record saved
+    /// since.
     pub(crate) async fn claims_thread(
         &self,
         relay: &str,
@@ -1678,14 +1707,13 @@ impl<R: Runtime> Lanes<R> {
         parent: &str,
         source: &str,
     ) -> bool {
-        if self.route(relay, room).await.is_some() {
+        let origin = format!("{relay}:{parent}/{source}");
+        if let Ok(Some(journal)) = self.env.store.read(move |r| r.journal(&origin)).await
+            && matches!(self.row(&journal.lane).await, Ok(None))
+        {
             return true;
         }
-        let origin = format!("{relay}:{parent}/{source}");
-        let Ok(Some(journal)) = self.env.store.read(move |r| r.journal(&origin)).await else {
-            return false;
-        };
-        matches!(self.row(&journal.lane).await, Ok(None))
+        self.route(relay, room).await.is_some()
     }
 
     /// Hands an owner message from a lane's thread to that lane (DISC-IN req. 42).
@@ -1742,19 +1770,33 @@ impl<R: Runtime> Lanes<R> {
         )
     }
 
-    /// The thread title word from lane state (DESIGN 12.2 C17).
+    /// The thread title word from lane state (DESIGN 12.2 C17). A closed lane leaves the thread
+    /// alone while another lane on it is open: `done` and the archive would end that lane's thread
+    /// (LANE req. 42). That check and the change run under `closing`, like the thread-finished hook.
     async fn status_word(&self, rec: &Record) {
-        let Some(thread) = rec
-            .thread
-            .as_deref()
-            .and_then(|t| t.strip_prefix("discord:"))
-        else {
+        let Some(full) = rec.thread.as_deref() else {
             return;
         };
-        let (word, archive) = match rec.state {
-            State::Running | State::Rejected | State::Starting => ("working", false),
-            State::Held | State::Claimed | State::Closing => ("waiting", false),
-            State::Closed => ("done", rec.outcome.as_deref() == Some("completed")),
+        let Some(thread) = full.strip_prefix("discord:") else {
+            return;
+        };
+        let (_one, others) = if rec.state == State::Closed {
+            let one = self.closing.lock().await;
+            match self.others_open(rec, full).await {
+                Ok(n) => (Some(one), n),
+                Err(e) => {
+                    log::info(
+                        "thread status not set",
+                        &[("lane", &rec.key), ("error", &e)],
+                    );
+                    return;
+                }
+            }
+        } else {
+            (None, 0)
+        };
+        let Some((word, archive)) = thread_word(rec.state, rec.outcome.as_deref(), others) else {
+            return;
         };
         if let Err(e) = self.env.threads.status(thread, word, archive).await {
             log::info(
@@ -1814,6 +1856,18 @@ impl<R: Runtime> Lanes<R> {
     }
 }
 
+/// The thread title word for a lane in `state` and whether to archive the thread (DESIGN 12.2
+/// C17); `others` is how many other lanes on the thread are open. `None` for a closed lane that
+/// shares its thread with an open one: `done` is refused while a lane is open.
+fn thread_word(state: State, outcome: Option<&str>, others: usize) -> Option<(&'static str, bool)> {
+    match state {
+        State::Running | State::Rejected | State::Starting => Some(("working", false)),
+        State::Held | State::Claimed | State::Closing => Some(("waiting", false)),
+        State::Closed if others > 0 => None,
+        State::Closed => Some(("done", outcome == Some("completed"))),
+    }
+}
+
 /// The turn lock of `key`. Locks that nobody holds or waits for are dropped first (a new one is
 /// made when their key is used again), so the map holds only locks in use and the one returned.
 fn turn_lock(
@@ -1828,6 +1882,110 @@ fn turn_lock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn registration_lane(
+        store: Store,
+        dir: &Path,
+    ) -> (Arc<Lanes<crate::host::headless::Headless>>, Record) {
+        let config = Config::default();
+        let input = OpenInput {
+            key: "registration".into(),
+            title: "Register work".into(),
+            brief: Some("Keep this worktree".into()),
+            model: Some("fake/primary".into()),
+            cwd: Some(dir.display().to_string()),
+            checks: json!([{ "kind": "command", "argv": ["true"] }]),
+            ..OpenInput::default()
+        };
+        let valid = record::validate(&input, &config.lanes).unwrap();
+        let mut rec =
+            Lanes::<crate::host::headless::Headless>::build(&valid, &config, "run".into());
+        rec.state = State::Running;
+        rec.handle = Some("handle".into());
+        rec.session_id = Some("session".into());
+        let (_, config) = watch::channel(Arc::new(config));
+        let threads = Arc::new(crate::relay::discord::threads::DiscordThreads {
+            config: config.clone(),
+            rest: Arc::new(|_| panic!("registration does not contact Discord")),
+        });
+        let lanes = Lanes::new(Env {
+            config,
+            omp: Omp::new(),
+            store,
+            state_dir: dir.to_path_buf(),
+            events: Arc::new(|_| panic!("registration does not emit lifecycle events")),
+            make: Box::new(|_, _, _| panic!("registration does not start sessions")),
+            bridge_link: Arc::new(|| panic!("registration does not start a bridge")),
+            lead_live: Arc::new(|| false),
+            threads: threads.clone(),
+            boards: threads,
+        });
+        lanes.save(&rec, None, Some("opened".into())).await.unwrap();
+        (lanes, rec)
+    }
+
+    #[tokio::test]
+    async fn worktree_registration_waits_for_the_turn_before_reserving_paths() {
+        let (store, _writer, dir) = crate::store::tests::open_temp("registration-order");
+        let (lanes, mut rec) = registration_lane(store, &dir).await;
+        let lock = turn_lock(&lanes.turns, &rec.key);
+        let held = lock.clone().lock_owned().await;
+        let input = json!({ "op": "worktree", "path": dir.display().to_string() });
+        let mut registration = std::pin::pin!(lanes.lane_call("handle", "session", &input));
+        std::future::poll_fn(|cx| {
+            assert!(registration.as_mut().poll(cx).is_pending());
+            // Map, this handle, held turn, and the registration waiting for that turn.
+            if Arc::strong_count(&lock) == 4 {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        let paths = lanes
+            .worktree_use
+            .try_lock()
+            .expect("a registration waiting for its turn must not reserve paths");
+        let (_, rev) = lanes.load(&rec.key).await.unwrap();
+        rec.state = State::Closed;
+        rec.closed_ms = Some(now_ms());
+        rec.outcome = Some("completed".into());
+        lanes.save(&rec, Some(rev), None).await.unwrap();
+        drop(paths);
+        drop(held);
+        assert_eq!(
+            registration.await.unwrap_err(),
+            crate::store::lanes::MOVED_ON
+        );
+        assert_eq!(
+            lanes.load(&rec.key).await.unwrap().0.worktrees,
+            Vec::<String>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_registration_reports_store_refusal() {
+        let (store, _writer, dir) = crate::store::tests::open_temp("registration-store");
+        let (lanes, rec) = registration_lane(store, &dir).await;
+        let db = rusqlite::Connection::open(dir.join("cataly.db")).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER refuse_registration BEFORE UPDATE ON lanes
+             BEGIN SELECT RAISE(FAIL, 'registration denied'); END;",
+        )
+        .unwrap();
+        let result = lanes
+            .lane_call(
+                "handle",
+                "session",
+                &json!({ "op": "worktree", "path": dir.display().to_string() }),
+            )
+            .await;
+        assert!(result.unwrap_err().contains("registration denied"));
+        assert_eq!(
+            lanes.load(&rec.key).await.unwrap().0.worktrees,
+            Vec::<String>::new()
+        );
+    }
 
     /// Closed lanes leave no turn lock behind, and a lock in use is never replaced.
     #[tokio::test]
@@ -1852,5 +2010,31 @@ mod tests {
         );
         drop(held);
         assert!(again.try_lock().is_ok());
+    }
+
+    /// A closed lane marks its thread done (and archives it when completed) only when no other
+    /// lane on the thread is open (DESIGN C17, LANE req. 42).
+    #[test]
+    fn a_closed_lane_leaves_a_shared_thread_open() {
+        assert_eq!(
+            thread_word(State::Closed, Some("completed"), 0),
+            Some(("done", true))
+        );
+        assert_eq!(
+            thread_word(State::Closed, Some("abandoned"), 0),
+            Some(("done", false))
+        );
+        for outcome in ["completed", "abandoned", "parked"] {
+            assert_eq!(
+                thread_word(State::Closed, Some(outcome), 1),
+                None,
+                "{outcome}"
+            );
+        }
+        assert_eq!(
+            thread_word(State::Running, None, 1),
+            Some(("working", false))
+        );
+        assert_eq!(thread_word(State::Held, None, 1), Some(("waiting", false)));
     }
 }

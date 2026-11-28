@@ -717,8 +717,9 @@ pub(crate) fn remove_all(layout: &Layout) -> Result<(), String> {
     make_writable_and_remove(&layout.root)
 }
 
-/// Removes a tree whose folders may be read-only.
-fn make_writable_and_remove(path: &Path) -> Result<(), String> {
+/// Removes a tree whose folders may be read-only (an installed version folder is 0555, which
+/// `remove_dir_all` alone cannot empty). An absent path is already removed.
+pub(crate) fn make_writable_and_remove(path: &Path) -> Result<(), String> {
     fn unlock(path: &Path) {
         if let Ok(meta) = fs::symlink_metadata(path)
             && meta.is_dir()

@@ -505,14 +505,14 @@ impl Parsed {
 #[derive(Debug)]
 pub(crate) enum Invocation {
     Run(Parsed),
-    /// Usage text to print; nothing runs.
-    Help(String),
+    /// Usage to print, for one command or for all (`None`); nothing runs.
+    Help(Option<&'static Spec>),
 }
 
 /// Parses the words after the program name; the error is the one-line refusal.
 pub(crate) fn parse(words: &[String]) -> Result<Invocation, String> {
     match words.first().map(String::as_str) {
-        None | Some("help" | "--help" | "-h") => return Ok(Invocation::Help(usage(None))),
+        None | Some("help" | "--help" | "-h") => return Ok(Invocation::Help(None)),
         _ => {}
     }
     let spec = COMMANDS
@@ -533,7 +533,7 @@ pub(crate) fn parse(words: &[String]) -> Result<Invocation, String> {
     while let Some(word) = rest.next() {
         let word = word.as_str();
         if word == "--help" || word == "-h" {
-            return Ok(Invocation::Help(usage(Some(spec))));
+            return Ok(Invocation::Help(Some(spec)));
         }
         if let Some(name) = spec.values.iter().find(|v| **v == word) {
             let value = rest.next().ok_or_else(|| format!("{word} needs a value"))?;
@@ -597,7 +597,7 @@ fn synopsis(spec: &Spec) -> String {
 /// Usage for one command, or for all.
 pub(crate) fn usage(spec: Option<&Spec>) -> String {
     if let Some(spec) = spec {
-        return format!("{}\n  {}\n", synopsis(spec), spec.summary);
+        return usage_saying(spec, spec.summary);
     }
     let mut text = String::from("usage: cataly <command> [flags]\n\ncommands:\n");
     for c in &COMMANDS {
@@ -607,6 +607,11 @@ pub(crate) fn usage(spec: Option<&Spec>) -> String {
         "\nflags that take a value use the next word as it is, even when it starts with '-'.\n",
     );
     text
+}
+
+/// Usage for one command, with `summary` in place of the command table's English one.
+pub(crate) fn usage_saying(spec: &Spec, summary: &str) -> String {
+    format!("{}\n  {summary}\n", synopsis(spec))
 }
 
 #[cfg(test)]
@@ -620,7 +625,7 @@ mod tests {
     fn run(s: &[&str]) -> Parsed {
         match parse(&words(s)).unwrap() {
             Invocation::Run(p) => p,
-            Invocation::Help(h) => panic!("unexpected help: {h}"),
+            Invocation::Help(h) => panic!("unexpected help: {h:?}"),
         }
     }
 
@@ -671,7 +676,7 @@ mod tests {
             Invocation::Help(_)
         ));
         match parse(&words(&["job", "run", "--help"])).unwrap() {
-            Invocation::Help(h) => assert!(h.starts_with("cataly job run <name>")),
+            Invocation::Help(h) => assert!(usage(h).starts_with("cataly job run <name>")),
             Invocation::Run(_) => panic!("help expected"),
         }
         assert!(usage(None).contains("config check"));

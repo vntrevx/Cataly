@@ -23,6 +23,8 @@ pub(crate) fn definition() -> Value {
     json!({
         "name": crate::omp::tools::LEAD_BRIDGE.name,
         "label": "Cataly",
+        // lane.review answers when the review ends; a shorter wait would invite a second paid run.
+        "op_timeout_ms": { "lane.review": crate::lanes::REVIEW_WAIT.as_millis() },
         "description": "Cataly's records and watches. op is one of: requests (all?), request.add (title, source, thread?), \
     request.next (id, text), request.note (id, text), request.close (id, text); questions, question.ask (text, source, \
     options, recommended?, settle owner|lead, thread?, request?, room?), question.answer (id, text, message), \
@@ -533,4 +535,18 @@ pub(crate) async fn recap(hub: &Hub) -> String {
         out.truncate(end);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bridge_waits_for_a_review_past_its_limit() {
+        let wait = definition()["op_timeout_ms"]["lane.review"]
+            .as_u64()
+            .unwrap();
+        assert!(wait > 30 * 60 * 1000, "{wait}");
+        assert_eq!(definition()["op_timeout_ms"].as_object().unwrap().len(), 1);
+    }
 }

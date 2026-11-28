@@ -117,8 +117,9 @@ pub(crate) struct View {
 
 impl View {
     /// The target's ID and path, the startup phase with its elapsed time, the attempt count and
-    /// next retry, how the last attempt ended with its cleanup, and the last lease answer.
-    fn startup_lines(&self, now: i64) -> Vec<String> {
+    /// next retry, how the last attempt ended in plain words in the owner's `language`, and the
+    /// last lease answer.
+    fn startup_lines(&self, now: i64, language: crate::config::Language) -> Vec<String> {
         let ago = |ms: i64| (now - ms).max(0) / 1000;
         let until = |ms: i64| ((ms - now).max(0) + 999) / 1000;
         let attempts = 1 + super::startup::RETRY_DELAYS.len();
@@ -169,22 +170,16 @@ impl View {
                 .unwrap_or_default()
         };
         if let Some(f) = &self.attempt.failed {
-            let how = match (f.stage, f.outcome) {
-                (Some(stage), Some(outcome)) => format!(
-                    "{} {}",
-                    name(serde_json::to_value(stage)),
-                    name(serde_json::to_value(outcome))
-                ),
-                _ => "failed".into(),
-            };
-            let cleanup = f.cleanup.map_or_else(String::new, |c| {
-                format!("; cleanup {}", name(serde_json::to_value(c)))
+            // What happened, in plain words; its stage, outcome, cleanup and raw detail are in
+            // `cataly lead status --json`.
+            let (what, _) = f.cause.text(language);
+            let ago = ago(f.at_ms);
+            lines.push(match language {
+                crate::config::Language::Korean => format!("마지막 시도 ({ago}초 전): {what}"),
+                crate::config::Language::English => {
+                    format!("last attempt ({ago} s ago): {what}")
+                }
             });
-            lines.push(format!(
-                "last     {how} {} s ago{cleanup}: {}",
-                ago(f.at_ms),
-                f.detail
-            ));
         }
         if let Some(l) = &self.attempt.lease {
             lines.push(format!(
@@ -217,6 +212,9 @@ pub(crate) struct Failed {
     /// The process-ownership evidence of the attempt's cleanup.
     pub(crate) cleanup: Option<super::startup::Cleanup>,
     pub(crate) detail: String,
+    /// What the failure is about, as the owner reads it.
+    #[serde(skip)]
+    pub(crate) cause: notice::Cause,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -265,6 +263,8 @@ pub(crate) enum Plan {
         id: String,
         file: PathBuf,
         note: Option<String>,
+        /// The runtime it was started with: a resume stays on it (HOST req. 91).
+        runtime: RuntimeKind,
     },
     Refuse(String),
 }
@@ -278,6 +278,8 @@ struct Chosen {
     /// A resumed session's recorded working folder, else the default one.
     cwd: PathBuf,
     how: LeadStart,
+    /// A resume's recorded runtime; a fresh session takes the configured one.
+    runtime: Option<RuntimeKind>,
 }
 
 impl Chosen {
@@ -288,6 +290,7 @@ impl Chosen {
             note: None,
             cwd,
             how,
+            runtime: None,
         }
     }
 }
@@ -336,11 +339,19 @@ pub(crate) fn plan(
             "the transcript for lead {id} is missing or is not a regular file: {file}; retained, never replaced"
         ));
     }
+    let Some(runtime) = RuntimeKind::from_name(&row.runtime) else {
+        return Plan::Refuse(format!(
+            "lead session {id} was started on the runtime '{}', which this Cataly does not run; \
+             start a fresh lead with `cataly lead start --fresh`",
+            row.runtime
+        ));
+    };
     match lease {
         Lease::Free => Plan::Resume {
             id: id.clone(),
             file: PathBuf::from(file),
             note: unclean(row),
+            runtime,
         },
         Lease::Held => Plan::Refuse(format!(
             "lead session {id} is held by a running OMP; conversation retained"
@@ -563,7 +574,7 @@ impl<R: Runtime> Lead<R> {
     }
 
     /// Why the lead may not be stopped now, if it may not.
-    pub(crate) fn busy(&self) -> Option<&'static str> {
+    pub(crate) fn busy(&self) -> Option<crate::host::Busy> {
         self.current().and_then(|s| s.snapshot().busy())
     }
 
@@ -934,10 +945,13 @@ impl<R: Runtime> Lead<R> {
             note,
             cwd,
             how,
+            runtime,
         } = match again {
             Some((id, file)) => self.again(id, file, default).await?,
             None => self.target(&settings, fresh, owner, default).await?,
         };
+        self.overlay(&config)?;
+        // Last before the attempt: a refusal above never spends the recovery episode.
         if let Some(id) = &expected
             && let Err(reason) = self
                 .recovery()
@@ -947,11 +961,7 @@ impl<R: Runtime> Lead<R> {
             self.set_phase(Phase::Held, Some(reason.clone()));
             return Err(reason);
         }
-        self.overlay(&config)?;
-        let kind = match &expected {
-            Some(id) => self.stored_runtime(id).await?,
-            None => config.sessions.runtime,
-        };
+        let kind = runtime.unwrap_or(config.sessions.runtime);
         if kind != config.sessions.runtime {
             log::info(
                 "the lead resumes on the runtime it was started with",
@@ -1098,7 +1108,12 @@ impl<R: Runtime> Lead<R> {
                 log::info("lead starts fresh", &[("reason", &reason)]);
                 Ok(Chosen::fresh(dir, default, how))
             }
-            Plan::Resume { id, file, note } => {
+            Plan::Resume {
+                id,
+                file,
+                note,
+                runtime,
+            } => {
                 let verified = transcript::verify_exact(
                     file.clone(),
                     dir.clone(),
@@ -1117,6 +1132,7 @@ impl<R: Runtime> Lead<R> {
                             note,
                             cwd: saved.cwd,
                             how: LeadStart::Resumed,
+                            runtime: Some(runtime),
                         });
                     }
                     Err(e) => e.to_string(),
@@ -1249,6 +1265,7 @@ impl<R: Runtime> Lead<R> {
         resume: Option<(String, PathBuf)>,
     ) -> String {
         let detail = e.to_string();
+        let cause = notice::Cause::of(&detail);
         self.attempt().failed = Some(match e {
             StartError::Startup {
                 stage,
@@ -1261,6 +1278,7 @@ impl<R: Runtime> Lead<R> {
                 outcome: Some(*outcome),
                 cleanup: Some(*cleanup),
                 detail: detail.clone(),
+                cause,
             },
             StartError::Refused(why) => Failed {
                 at_ms: now_ms(),
@@ -1268,6 +1286,7 @@ impl<R: Runtime> Lead<R> {
                 outcome: None,
                 cleanup: None,
                 detail: why.clone(),
+                cause,
             },
         });
         self.update(SessionUpdate {
@@ -1338,23 +1357,6 @@ impl<R: Runtime> Lead<R> {
                 Err("lead anchor changed during recovery; held".into())
             }
         }
-    }
-
-    /// The runtime the lead session `id` was started with: a resume stays on it whatever the
-    /// config says now (HOST req. 91). Uses the same record as resume target selection.
-    async fn stored_runtime(&self, id: &str) -> Result<RuntimeKind, String> {
-        let last = self
-            .resolve(Some(id.to_string()))
-            .await?
-            .row
-            .ok_or_else(|| format!("no proven binding of lead session {id} to resume"))?;
-        RuntimeKind::from_name(&last.runtime).ok_or_else(|| {
-            format!(
-                "lead session {id} was started on the runtime '{}', which this Cataly does not run; \
-                 start a fresh lead with `cataly lead start --fresh`",
-                last.runtime
-            )
-        })
     }
 
     async fn resolve(
@@ -2006,7 +2008,7 @@ impl<R: Runtime> Lead<R> {
             notice,
             startup: Vec::new(),
         };
-        view.startup = view.startup_lines(now_ms());
+        view.startup = view.startup_lines(now_ms(), language);
         view
     }
 
@@ -2175,6 +2177,53 @@ impl<R: Runtime> Lead<R> {
 mod tests {
     use super::*;
 
+    /// Plain `cataly lead status` says how the last attempt ended in the owner's language, with
+    /// the same plain cause as the hold texts; the raw detail stays in `--json`.
+    #[test]
+    fn the_last_attempt_line_is_plain_in_the_owner_language() {
+        let detail = "startup Ready Rejected: bad protocol (cleanup: LocalReaped)".to_string();
+        let view = View {
+            phase: Phase::Held,
+            reason: None,
+            session: None,
+            waiting: 0,
+            notes: 0,
+            sent: 0,
+            in_doubt: 0,
+            asleep: None,
+            anchor: None,
+            recovery: None,
+            attempt: Attempt {
+                started_ms: None,
+                failed: Some(Failed {
+                    at_ms: 1_000,
+                    stage: Some(crate::host::startup::StartupStage::Ready),
+                    outcome: Some(crate::host::startup::StartupOutcome::Rejected),
+                    cleanup: Some(crate::host::startup::Cleanup::LocalReaped),
+                    cause: notice::Cause::of(&detail),
+                    detail,
+                }),
+                lease: None,
+            },
+            recovering: false,
+            notice: None,
+            startup: Vec::new(),
+        };
+        assert_eq!(
+            view.startup_lines(31_000, crate::config::Language::Korean),
+            ["마지막 시도 (30초 전): lead를 시작했지만 준비되기 전에 멈췄어요."]
+        );
+        assert_eq!(
+            view.startup_lines(31_000, crate::config::Language::English),
+            ["last attempt (30 s ago): The lead was started but stopped before it was ready."]
+        );
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            json["attempt"]["failed"]["detail"],
+            "startup Ready Rejected: bad protocol (cleanup: LocalReaped)"
+        );
+    }
+
     fn row(state: &str, how: Option<&str>, file: Option<&Path>) -> SessionRow {
         SessionRow {
             handle: "h".into(),
@@ -2211,6 +2260,7 @@ mod tests {
             id: "s1".into(),
             file: file.clone(),
             note: note.map(Into::into),
+            runtime: RuntimeKind::Headless,
         };
         assert!(matches!(
             plan(None, None, false, Lease::Free),
@@ -2261,6 +2311,14 @@ mod tests {
         assert!(matches!(
             plan(Some(&gone), Some("s1"), false, Lease::Free),
             Plan::Refuse(_)
+        ));
+        let old = SessionRow {
+            runtime: "old".into(),
+            ..clean.clone()
+        };
+        assert!(matches!(
+            plan(Some(&old), None, false, Lease::Free),
+            Plan::Refuse(r) if r.contains("runtime 'old'")
         ));
     }
 

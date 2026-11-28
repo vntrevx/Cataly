@@ -11,7 +11,7 @@ use crate::sys::command::{self, Output, Spec};
 use crate::worker::Place;
 
 /// GitHub reads and commands (EVR req. 57).
-const LIMIT: Duration = Duration::from_secs(120);
+pub(super) const LIMIT: Duration = Duration::from_secs(120);
 const WEB_LIMIT: Duration = Duration::from_secs(30);
 const OUTPUT_CAP: u64 = 2 * 1024 * 1024;
 const DETAIL: usize = 120;

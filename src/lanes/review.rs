@@ -29,6 +29,15 @@ use crate::sys::now_ms;
 
 /// A review may take this long.
 const REVIEW_LIMIT: Duration = Duration::from_mins(30);
+/// The lead's bridge waits this long for `lane.review`, which answers only once the review ends:
+/// up to four GitHub reads first (`head`, `review_file`), the review, each with its kill grace,
+/// and a minute for the rest.
+pub(crate) const REVIEW_WAIT: Duration = super::checks::LIMIT
+    .saturating_add(KILL_GRACE)
+    .saturating_mul(4)
+    .saturating_add(REVIEW_LIMIT)
+    .saturating_add(KILL_GRACE)
+    .saturating_add(Duration::from_mins(1));
 const REVIEW_CAP: u64 = 4 * 1024 * 1024;
 const KEEP_CHARS: usize = 4000;
 const DIAG_LINES: usize = 200;

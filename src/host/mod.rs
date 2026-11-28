@@ -288,15 +288,24 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     /// Why this session may not be stopped now: a running turn or an open dialog (IR req. 33).
-    pub(crate) fn busy(&self) -> Option<&'static str> {
+    pub(crate) fn busy(&self) -> Option<Busy> {
         if !self.dialogs.is_empty() {
-            Some("waits on a dialog")
+            Some(Busy::Dialog)
         } else if self.status == Status::Working {
-            Some("is working")
+            Some(Busy::Working)
         } else {
             None
         }
     }
+}
+
+/// Why a session refuses the hub's orderly stop (IR req. 33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Busy {
+    /// It waits on a dialog.
+    Dialog,
+    /// A turn runs.
+    Working,
 }
 
 /// A page of numbered events; `missed` when the caller's number is older than the oldest kept.
