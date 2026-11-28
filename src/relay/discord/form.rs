@@ -305,7 +305,7 @@ struct Reader {
     /// Text collected for the open label, legend, option or textarea.
     label: Option<String>,
     legend: Option<String>,
-    option: Option<(String, bool, String)>,
+    option: Option<(Option<String>, bool, String)>,
     textarea: Option<(String, String, bool, Limits)>,
     /// The open select's field name.
     select: Option<String>,
@@ -359,11 +359,7 @@ impl Reader {
                     .find(|f| f.name == *name)
                     .ok_or("malformed select")?;
                 let words = words.trim().to_string();
-                let value = if value.is_empty() {
-                    words.clone()
-                } else {
-                    value
-                };
+                let value = value.unwrap_or_else(|| words.clone());
                 field.choices.push(Choice {
                     value,
                     label: words,
@@ -439,7 +435,7 @@ impl Reader {
                 if self.select.is_none() {
                     return Err("an option outside a select".into());
                 }
-                let value = t.attr("value").unwrap_or_default().to_string();
+                let value = t.attr("value").map(str::to_string);
                 self.option = Some((value, t.has("selected"), String::new()));
             }
             "textarea" => {
@@ -608,6 +604,32 @@ fn legend_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_options_keep_explicit_empty_values() {
+        let html = r#"<form><select name="size"><option value="" selected> None </option><option> Small &amp; light </option><option value="l"> Large </option></select></form>"#;
+        let f = read(html).unwrap();
+        assert_eq!(
+            f.fields[0].choices,
+            vec![
+                Choice {
+                    value: String::new(),
+                    label: "None".into(),
+                    selected: true,
+                },
+                Choice {
+                    value: "Small & light".into(),
+                    label: "Small & light".into(),
+                    selected: false,
+                },
+                Choice {
+                    value: "l".into(),
+                    label: "Large".into(),
+                    selected: false,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn reads_omp_ask_forms_and_refuses_the_rest() {
