@@ -458,6 +458,34 @@ fn telegram_long_rate_limit_is_waited_out() {
     assert!(hub.stop().success());
 }
 
+/// Check 1: a restart of intake (here `telegram reset`) stops the old poller before the next one
+/// polls, so the bot never has two long polls open at once.
+#[test]
+fn a_restarted_telegram_intake_keeps_one_poller() {
+    let tg = FakeTelegram::start();
+    let mut hub = relay_hub(Some(&tg), None, "");
+    hub.start();
+    ready(&hub, &["telegram"]);
+    tg.wait(WAIT, |f| (!f.calls("getUpdates").is_empty()).then_some(()));
+    assert!(hub.cli(&["telegram", "reset"]).status.success());
+    tg.wait(WAIT, |f| {
+        let again = f.calls("getMe").get(1)?.at;
+        f.calls("getUpdates")
+            .iter()
+            .any(|p| p.at > again)
+            .then_some(())
+    });
+    ready(&hub, &["telegram"]);
+    assert_eq!(tg.peak_polling(), 1);
+    tg.push(
+        "message",
+        FakeTelegram::message(21, FakeTelegram::dm(), 7, "after the restart"),
+    );
+    tg.wait(WAIT, |f| tg_replies_to(f, 21).pop());
+    assert_eq!(tg.peak_polling(), 1);
+    assert!(hub.stop().success());
+}
+
 /// Check 1: the offset survives a restart and a replayed update is not handed off again.
 #[test]
 fn telegram_offset_and_replay_guard_hold_across_restarts() {

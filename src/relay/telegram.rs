@@ -735,25 +735,17 @@ async fn start<T: Runtime>(
         env.store.clone(),
         Arc::clone(&env.lead),
     ));
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    {
-        let poller = Poller {
-            api,
-            settings: settings.clone(),
-            shared: Arc::clone(&shared),
-            round: Arc::clone(&round),
-            store: env.store.clone(),
-            state,
-        };
-        let stop = shutdown.clone();
-        tokio::spawn(async move {
-            let end = poller.run(stop).await;
-            let _ = tx.send(end);
-        });
-    }
+    let poller = Poller {
+        api,
+        settings: settings.clone(),
+        shared: Arc::clone(&shared),
+        round: Arc::clone(&round),
+        store: env.store.clone(),
+        state,
+    };
     round
         .serve(
-            rx,
+            |stop| poller.run(stop),
             env.config.clone(),
             |c| c.telegram.clone(),
             &shared.kick,
@@ -841,6 +833,29 @@ async fn save(store: &crate::store::Store, state: &PollState) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
+/// Runs `save` until it succeeds, calling `failed` and waiting `SAVE_RETRY` after each failure;
+/// false when `halt` is raised first.
+async fn save_until_halt<F: Future<Output = Result<(), String>>>(
+    mut save: impl FnMut() -> F,
+    failed: impl Fn(String),
+    halt: &watch::Receiver<bool>,
+) -> bool {
+    let mut halt = halt.clone();
+    loop {
+        let Err(e) = save().await else {
+            return true;
+        };
+        failed(e);
+        if *halt.borrow_and_update() {
+            return false;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(SAVE_RETRY) => {}
+            _ = halt.changed() => return false,
+        }
+    }
+}
+
 /// Sets an empty bot name to the product name (MSG req. 14); failures are logged once.
 async fn profile(api: &Api) {
     let result = tokio::time::timeout(PROFILE_TIMEOUT, async {
@@ -887,7 +902,8 @@ impl<T: Runtime> Poller<T> {
             };
             let read_at = Instant::now();
             let wait = match polled {
-                Ok(v) => match self.batch(&v, read_at).await {
+                Ok(v) => match self.batch(&v, read_at, &shutdown).await {
+                    Ok(()) if *shutdown.borrow() => return Stop::Shutdown,
                     Ok(()) => {
                         backoff = BACKOFF_FIRST;
                         conflict_logged = false;
@@ -944,7 +960,12 @@ impl<T: Runtime> Poller<T> {
 
     /// One poll response. `Err(None)`: a protocol error, retried with backoff; `Err(Some(wait))`: a
     /// failed save, retried after the wait.
-    async fn batch(&mut self, v: &Value, read_at: Instant) -> Result<(), Option<Duration>> {
+    async fn batch(
+        &mut self,
+        v: &Value,
+        read_at: Instant,
+        halt: &watch::Receiver<bool>,
+    ) -> Result<(), Option<Duration>> {
         let Some(updates) = v.as_array().filter(|a| a.len() <= BATCH_MAX) else {
             self.protocol("the update list is not an array of at most 100");
             return Err(None);
@@ -985,11 +1006,19 @@ impl<T: Runtime> Poller<T> {
             self.state.offset = Some(id + 1);
             self.state.batch_ms = Some(now_ms());
             self.state.guard.clone_from(&guard);
-            // Never poll past an unsaved position (MSG req. 5).
-            while let Err(e) = save(&self.store, &self.state).await {
-                log::warn("Telegram position not saved", &[("error", &e)]);
-                self.unhealthy("the position could not be saved");
-                tokio::time::sleep(SAVE_RETRY).await;
+            // Never poll past an unsaved position (MSG req. 5). A halt ends the batch here; the
+            // next start reads again from the saved position.
+            let saved = save_until_halt(
+                || save(&self.store, &self.state),
+                |e| {
+                    log::warn("Telegram position not saved", &[("error", &e)]);
+                    self.unhealthy("the position could not be saved");
+                },
+                halt,
+            )
+            .await;
+            if !saved || *halt.borrow() {
+                return Ok(());
             }
         }
         Ok(())
@@ -1071,6 +1100,35 @@ mod tests {
             topic: Some(5),
             ..TelegramSettings::default()
         }
+    }
+
+    /// A failing position save is retried every minute until a halt, which ends the wait at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_halt_ends_the_save_retries() {
+        let tries = std::sync::atomic::AtomicUsize::new(0);
+        let (halt, halted) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        let saving = tokio::time::timeout(
+            SAVE_RETRY * 2 + Duration::from_secs(2),
+            save_until_halt(
+                || {
+                    tries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    async { Err::<(), _>("disk full".to_string()) }
+                },
+                drop,
+                &halted,
+            ),
+        );
+        let stop = async {
+            tokio::time::sleep(SAVE_RETRY * 2 + Duration::from_secs(1)).await;
+            halt.send(true).unwrap();
+        };
+        let (saved, ()) = tokio::join!(saving, stop);
+        assert!(matches!(saved, Ok(false)), "a halt must end the retries");
+        assert_eq!(tries.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert_eq!(started.elapsed(), SAVE_RETRY * 2 + Duration::from_secs(1));
+        let ok = save_until_halt(|| async { Ok(()) }, drop, &halted).await;
+        assert!(ok);
     }
 
     fn msg(chat: &Value, from: i64, extra: &Value) -> Value {

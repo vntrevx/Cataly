@@ -37,6 +37,27 @@ struct State {
     webhook: String,
     /// Polls answer every update from this ID on, whatever the offset (a replay).
     replay_from: Option<i64>,
+    /// Long polls open now, and the most ever open at once.
+    polling: usize,
+    peak_polling: usize,
+}
+
+/// Counts one open long poll until its handler ends or the client goes away.
+struct Polling(Arc<Mutex<State>>);
+
+impl Polling {
+    fn open(state: &Arc<Mutex<State>>) -> Self {
+        let mut s = state.lock().unwrap();
+        s.polling += 1;
+        s.peak_polling = s.peak_polling.max(s.polling);
+        Self(Arc::clone(state))
+    }
+}
+
+impl Drop for Polling {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().polling -= 1;
+    }
 }
 
 pub struct FakeTelegram {
@@ -101,6 +122,11 @@ impl FakeTelegram {
             .into_iter()
             .filter(|s| s.method == method)
             .collect()
+    }
+
+    /// The most long polls ever open at once.
+    pub fn peak_polling(&self) -> usize {
+        self.state.lock().unwrap().peak_polling
     }
 
     pub fn script(&self, status: u16, body: Value) {
@@ -249,6 +275,7 @@ async fn poll(state: &Arc<Mutex<State>>, body: &Value) -> Response<Full<Bytes>> 
     if let Some((status, b)) = state.lock().unwrap().scripted.pop_front() {
         return reply(status, &b);
     }
+    let _open = Polling::open(state);
     let offset = body["offset"].as_i64().unwrap_or(0);
     let wait = Duration::from_secs(body["timeout"].as_u64().unwrap_or(0));
     let limit = usize::try_from(body["limit"].as_u64().unwrap_or(100)).unwrap();

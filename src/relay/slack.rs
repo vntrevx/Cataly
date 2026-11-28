@@ -54,6 +54,8 @@ const LIMIT: usize = 4000;
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Envelopes are acknowledged within 3 s (SLACK req. 38); admission gets this much of it.
 const ADMIT_WITHIN: Duration = Duration::from_millis(2500);
+/// The remaining envelope budget: a stalled acknowledgement must not prevent a restart.
+const ACK_WITHIN: Duration = Duration::from_millis(500);
 const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const FRAME_MAX: usize = 1024 * 1024;
@@ -887,26 +889,18 @@ async fn start<T: Runtime>(
         env.store.clone(),
         Arc::clone(&env.lead),
     ));
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    {
-        let socket = Socket {
-            api,
-            account,
-            senders: settings.senders(),
-            shared: Arc::clone(&shared),
-            round: Arc::clone(&round),
-            store: env.store.clone(),
-            loopback: settings.api_base.as_ref().is_some_and(Base::is_loopback),
-        };
-        let stop = shutdown.clone();
-        tokio::spawn(async move {
-            let end = socket.run(stop).await;
-            let _ = tx.send(end);
-        });
-    }
+    let socket = Socket {
+        api,
+        account,
+        senders: settings.senders(),
+        shared: Arc::clone(&shared),
+        round: Arc::clone(&round),
+        store: env.store.clone(),
+        loopback: settings.api_base.as_ref().is_some_and(Base::is_loopback),
+    };
     round
         .serve(
-            rx,
+            |stop| socket.run(stop),
             env.config.clone(),
             |c| c.slack.clone(),
             &shared.kick,
@@ -942,6 +936,17 @@ fn socket_url(url: &str, loopback: bool) -> Option<(bool, String, u16)> {
     ok.then_some((tls, host, port))
 }
 
+/// Acknowledges an admitted or dropped envelope. On failure the caller drops the connection,
+/// keeping the admitted message even if Slack has to redeliver its envelope.
+async fn acknowledge(ws: &mut http::WebSocket, envelope: &str) -> Result<(), String> {
+    let ack = json!({"envelope_id": envelope}).to_string();
+    match tokio::time::timeout(ACK_WITHIN, ws.send(Frame::text(ack))).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("acknowledgement not sent: {e}")),
+        Err(_) => Err("acknowledgement not sent within 500 ms".into()),
+    }
+}
+
 /// Why one Socket Mode connection ended.
 enum Down {
     Again(String),
@@ -965,10 +970,7 @@ impl<T: Runtime> Socket<T> {
         let mut backoff = BACKOFF_FIRST;
         loop {
             let started = Instant::now();
-            let down = tokio::select! {
-                d = self.connect() => d,
-                _ = shutdown.changed() => Down::Shutdown,
-            };
+            let down = self.connect(&mut shutdown).await;
             match down {
                 Down::Shutdown => return Stop::Shutdown,
                 Down::Fatal(why) => return Stop::Fatal(why),
@@ -992,17 +994,21 @@ impl<T: Runtime> Socket<T> {
         }
     }
 
-    async fn connect(&self) -> Down {
-        let opened = match self
-            .api
-            .call("apps.connections.open", &json!({}), Kind::Once, true)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) if e.why == "invalid_auth" || e.why == "not_authed" => {
-                return Down::Fatal("the app-level token was refused".into());
-            }
-            Err(e) => return Down::Again(format!("opening the socket: {e}")),
+    async fn connect(&self, shutdown: &mut watch::Receiver<bool>) -> Down {
+        if *shutdown.borrow() {
+            return Down::Shutdown;
+        }
+        let args = json!({});
+        let opened = tokio::select! {
+            biased;
+            _ = shutdown.changed() => return Down::Shutdown,
+            opened = self.api.call("apps.connections.open", &args, Kind::Once, true) => match opened {
+                Ok(v) => v,
+                Err(e) if e.why == "invalid_auth" || e.why == "not_authed" => {
+                    return Down::Fatal("the app-level token was refused".into());
+                }
+                Err(e) => return Down::Again(format!("opening the socket: {e}")),
+            },
         };
         let Some(url) = opened.get("url").and_then(Value::as_str) else {
             return Down::Again("no socket URL".into());
@@ -1010,17 +1016,27 @@ impl<T: Runtime> Socket<T> {
         let Some((tls, host, port)) = socket_url(url, self.loopback) else {
             return Down::Fatal("the socket URL is not Slack's".into());
         };
-        let mut ws = match http::websocket(tls, &host, port, url, FRAME_MAX).await {
-            Ok(ws) => ws,
-            Err(e) => return Down::Again(e),
+        let mut ws = tokio::select! {
+            biased;
+            _ = shutdown.changed() => return Down::Shutdown,
+            connected = http::websocket(tls, &host, port, url, FRAME_MAX) => match connected {
+                Ok(ws) => ws,
+                Err(e) => return Down::Again(e),
+            },
         };
         let established = Instant::now();
         let mut caught_up = false;
         loop {
-            let frame = match ws.next().await {
-                Some(Ok(f)) => f,
-                Some(Err(e)) => return Down::Again(format!("socket read: {e}")),
-                None => return Down::Again("socket closed".into()),
+            // Stop only between frames: a read envelope must finish admission and its ack before
+            // an intake restart can replace this socket. A pending halt wins over the next frame.
+            let frame = tokio::select! {
+                biased;
+                _ = shutdown.changed() => return Down::Shutdown,
+                incoming = ws.next() => match incoming {
+                    Some(Ok(f)) => f,
+                    Some(Err(e)) => return Down::Again(format!("socket read: {e}")),
+                    None => return Down::Again("socket closed".into()),
+                },
             };
             let read_at = Instant::now();
             let text = match frame {
@@ -1040,7 +1056,14 @@ impl<T: Runtime> Socket<T> {
                     });
                     if !caught_up {
                         caught_up = true;
-                        match self.catch_up().await {
+                        // Catch-up has no envelope to acknowledge; the next intake can read it
+                        // again from its saved positions without holding up this stop.
+                        let caught = tokio::select! {
+                            biased;
+                            _ = shutdown.changed() => return Down::Shutdown,
+                            result = self.catch_up() => result,
+                        };
+                        match caught {
                             Ok(()) => {
                                 self.shared.catch_up_latency.record(established.elapsed());
                                 self.shared.set(|h| h.caught_up = true);
@@ -1068,9 +1091,8 @@ impl<T: Runtime> Socket<T> {
                     // Admitted or dropped first, acknowledged within 3 s either way.
                     let _ = tokio::time::timeout(ADMIT_WITHIN, self.event(event, read_at)).await;
                 }
-                let ack = json!({"envelope_id": envelope}).to_string();
-                if let Err(e) = ws.send(Frame::text(ack)).await {
-                    return Down::Again(format!("acknowledgement not sent: {e}"));
+                if let Err(e) = acknowledge(&mut ws, envelope).await {
+                    return Down::Again(e);
                 }
             }
         }
@@ -1223,6 +1245,344 @@ impl<T: Runtime> Socket<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    use crate::host::headless::Headless;
+    use crate::host::lead::{Events, Factory, Lead};
+    use crate::relay::pipeline::Parts;
+    use crate::store::WriterHandle;
+    use crate::sys::fs::tests::Scratch;
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// A real arrival queue, without starting the lead or draining a round.
+    fn socket(base: Base) -> (Socket<Headless>, WriterHandle, Scratch) {
+        let (store, writer, dir) = crate::store::tests::open_temp("slack-halt");
+        let config = watch::channel(Arc::new(Config::default())).1;
+        let omp = crate::omp::Omp::new();
+        let make = || -> Factory<Headless> {
+            Box::new(|_, _, _| panic!("socket tests must not start a session"))
+        };
+        let events: Events = Arc::new(|_| panic!("socket tests must not emit lead events"));
+        let lead = Lead::new(crate::host::lead::Env {
+            config: config.clone(),
+            omp: Arc::clone(&omp),
+            bridge_link: Arc::new(crate::omp::extension::check),
+            events: Arc::clone(&events),
+            store: store.clone(),
+            state_dir: dir.to_path_buf(),
+            make: make(),
+        });
+        let threads = Arc::new(crate::relay::discord::threads::DiscordThreads {
+            config: config.clone(),
+            rest: Arc::new(|_| panic!("socket tests must not call Discord")),
+        });
+        let live = Arc::clone(&lead);
+        let lanes = crate::lanes::Lanes::new(crate::lanes::Env {
+            config: config.clone(),
+            omp,
+            store: store.clone(),
+            state_dir: dir.to_path_buf(),
+            events: Arc::clone(&events),
+            make: make(),
+            bridge_link: Arc::new(crate::omp::extension::check),
+            lead_live: Arc::new(move || live.snapshot().is_some()),
+            threads: threads.clone(),
+            boards: threads,
+        });
+        let api = Arc::new(Api {
+            base,
+            tokens: Tokens {
+                app: "xapp-test".into(),
+                api: "xoxb-test".into(),
+            },
+            account: Mutex::new(None),
+        });
+        let shared = Arc::new(Shared::default());
+        let relay = Arc::new(SlackRelay {
+            api: Arc::clone(&api),
+            store: store.clone(),
+            checks: Checks::default(),
+            shared: Arc::clone(&shared),
+            receipts: AtomicBool::new(true),
+        });
+        let pipeline = Arc::new(Pipeline::new(
+            relay,
+            Parts {
+                store: store.clone(),
+                lead: Arc::clone(&lead),
+                lanes,
+                spill_dir: dir.join("spill"),
+                events,
+                config,
+            },
+            shared.wake_latency.clone(),
+        ));
+        let socket = Socket {
+            api,
+            account: "U0SELF".into(),
+            senders: vec!["U0OWNER".into()],
+            shared,
+            round: Arc::new(Round::new(pipeline, store.clone(), lead)),
+            store,
+            loopback: true,
+        };
+        (socket, writer, dir)
+    }
+
+    /// Answers apps.connections.open, then accepts its socket without completing the handshake.
+    async fn open_socket(listener: &TcpListener) -> TcpStream {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let mut args = [0; 2];
+        stream.read_exact(&mut args).await.unwrap();
+        assert_eq!(&args, b"{}");
+        let response =
+            json!({"ok": true, "url": format!("ws://{}/link", listener.local_addr().unwrap())})
+                .to_string();
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}",
+                    response.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        drop(stream);
+        listener.accept().await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn a_halt_finishes_the_read_envelope_before_stopping() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Base::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let (socket, writer, _dir) = socket(base);
+        let shared = Arc::clone(&socket.shared);
+        let store = socket.store.clone();
+        let (halt, halted) = watch::channel(false);
+        {
+            let run = socket.run(halted);
+            tokio::pin!(run);
+            let mut ws = tokio::select! {
+                _ = &mut run => panic!("socket stopped before connecting"),
+                ws = async {
+                    tokio_tungstenite::accept_async(open_socket(&listener).await).await
+                } => ws.unwrap(),
+            };
+            // An untagged reply waits for a post's thread record, just as it does while the
+            // Web API response to a post is still in flight.
+            let posting = POSTING.read().await;
+            tokio::time::pause();
+            for (id, event) in [
+                (
+                    "read",
+                    json!({"type": "message", "channel": "C1", "user": "U0OWNER",
+                    "ts": "2.000001", "thread_ts": "1.000001", "text": "reply"}),
+                ),
+                (
+                    "next",
+                    json!({"type": "message", "channel": "D1", "user": "U0OWNER",
+                    "ts": "3.000001", "text": "must wait for the next intake"}),
+                ),
+            ] {
+                let envelope = json!({"type": "events_api", "envelope_id": id,
+                    "payload": {"event": event}});
+                ws.send(Frame::text(envelope.to_string())).await.unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                assert!(
+                    poll_fn(|cx| Poll::Ready(run.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                if shared.health().last_event_ms.is_some() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "event was not read");
+                tokio::task::yield_now().await;
+            }
+            halt.send(true).unwrap();
+            assert!(
+                poll_fn(|cx| Poll::Ready(run.as_mut().poll(cx)))
+                    .await
+                    .is_pending(),
+                "halt cancelled an envelope before its admission and acknowledgement"
+            );
+            tokio::time::resume();
+            remember(&store, "C1", "1.000001", "1.000001")
+                .await
+                .unwrap();
+            drop(posting);
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_secs(5), &mut run)
+                    .await
+                    .unwrap(),
+                Stop::Shutdown
+            ));
+            let ack = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let ack: Value = serde_json::from_str(ack.to_text().unwrap()).unwrap();
+            assert_eq!(ack, json!({"envelope_id": "read"}));
+            let queue = store.read(|r| r.queue(NAME)).await.unwrap();
+            assert_eq!(queue.len(), 1, "the next frame must not be admitted");
+            assert_eq!(queue[0].room, "C1:1.000001");
+            assert_eq!(queue[0].message, "2.000001");
+        }
+        drop(store);
+        writer.join().unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_halt_interrupts_connecting_and_waiting_for_a_frame() {
+        for stage in ["open", "handshake", "frame"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = Base::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+            let (socket, writer, _dir) = socket(base);
+            let shared = Arc::clone(&socket.shared);
+            let (halt, halted) = watch::channel(false);
+            {
+                let run = socket.run(halted);
+                tokio::pin!(run);
+                let stream = tokio::select! {
+                    _ = &mut run => panic!("socket stopped before {stage}"),
+                    stream = async {
+                        if stage == "open" {
+                            listener.accept().await.unwrap().0
+                        } else {
+                            open_socket(&listener).await
+                        }
+                    } => stream,
+                };
+                // Keep the unanswered request or established socket alive until the halt.
+                let (_pending, mut peer) = if stage == "frame" {
+                    let ws = tokio::select! {
+                        _ = &mut run => panic!("socket stopped before its handshake"),
+                        ws = tokio_tungstenite::accept_async(stream) => ws.unwrap(),
+                    };
+                    (None, Some(ws))
+                } else {
+                    (Some(stream), None)
+                };
+                if let Some(ws) = &mut peer {
+                    ws.send(Frame::text(json!({"type": "hello"}).to_string()))
+                        .await
+                        .unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        assert!(
+                            poll_fn(|cx| Poll::Ready(run.as_mut().poll(cx)))
+                                .await
+                                .is_pending()
+                        );
+                        if shared.health().caught_up {
+                            break;
+                        }
+                        assert!(Instant::now() < deadline, "hello was not handled");
+                        tokio::task::yield_now().await;
+                    }
+                }
+                halt.send(true).unwrap();
+                assert!(matches!(
+                    tokio::time::timeout(Duration::from_secs(1), &mut run)
+                        .await
+                        .unwrap(),
+                    Stop::Shutdown
+                ));
+            }
+            writer.join().unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_halt_interrupts_a_pending_catch_up() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Base::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let (socket, writer, _dir) = socket(base);
+        remember(&socket.store, "C1", "1.000001", "1.000001")
+            .await
+            .unwrap();
+        let shared = Arc::clone(&socket.shared);
+        let (halt, halted) = watch::channel(false);
+        {
+            let run = socket.run(halted);
+            tokio::pin!(run);
+            let mut ws = tokio::select! {
+                _ = &mut run => panic!("socket stopped before connecting"),
+                ws = async {
+                    tokio_tungstenite::accept_async(open_socket(&listener).await).await
+                } => ws.unwrap(),
+            };
+            ws.send(Frame::text(json!({"type": "hello"}).to_string()))
+                .await
+                .unwrap();
+            // Keep the catch-up HTTP request unanswered, as with an unresponsive Web API.
+            let (_pending, request) = tokio::select! {
+                _ = &mut run => panic!("socket stopped before catch-up"),
+                request = async {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut stream = BufReader::new(stream);
+                    let mut line = String::new();
+                    stream.read_line(&mut line).await.unwrap();
+                    (stream, line)
+                } => request,
+            };
+            assert!(
+                request.starts_with("GET /conversations.replies?"),
+                "{request}"
+            );
+            tokio::time::pause();
+            halt.send(true).unwrap();
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_secs(1), &mut run).await,
+                Ok(Stop::Shutdown)
+            ));
+            assert!(!shared.health().caught_up);
+            tokio::time::resume();
+        }
+        writer.join().unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_acknowledgement_has_a_deadline() {
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let io: Box<dyn http::Io> = Box::new(stream);
+        let mut ws = http::WebSocket::from_raw_socket(
+            io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let started = tokio::time::Instant::now();
+        // The peer stays open but never drains its one-byte buffer. The outer deadline makes
+        // removing the send timeout fail rather than leaving the test hung as well.
+        let why = tokio::time::timeout(Duration::from_secs(1), acknowledge(&mut ws, "read"))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(why, "acknowledgement not sent within 500 ms");
+        assert!(started.elapsed() >= ACK_WITHIN);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // connect returns on this error, dropping the partially written socket, not the queue.
+        drop(ws);
+        let mut byte = [0];
+        peer.read_exact(&mut byte).await.unwrap();
+        assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+    }
 
     #[test]
     fn timestamps_rooms_and_urls() {

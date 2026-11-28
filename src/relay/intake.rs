@@ -245,18 +245,25 @@ impl<R: Relay, T: Runtime> Round<R, T> {
     }
 
     /// Runs rounds until `source` ends, the config's `settings` change, or the owner or a shutdown
-    /// stops them.
-    pub(crate) async fn serve<S: PartialEq>(
+    /// stops them. `source` (the poller or socket) runs on a stop signal of its own that is raised,
+    /// and the task joined, before this returns: a restart never leaves the old source running
+    /// beside the next one with the settings it was started with.
+    pub(crate) async fn serve<S: PartialEq, F>(
         self: &Arc<Self>,
-        mut source: tokio::sync::oneshot::Receiver<Stop>,
+        source: impl FnOnce(watch::Receiver<bool>) -> F,
         mut config: watch::Receiver<Arc<Config>>,
         settings: impl Fn(&Config) -> S,
         kick: &Notify,
         mut shutdown: watch::Receiver<bool>,
-    ) -> Stop {
+    ) -> Stop
+    where
+        F: Future<Output = Stop> + Send + 'static,
+    {
+        let (halt, halted) = watch::channel(false);
+        let mut task = tokio::spawn(source(halted));
         let mut events = self.lead.follow();
         let current = settings(&config.borrow());
-        loop {
+        let end = loop {
             self.round().await;
             let tick = if self.busy().await { TICK } else { IDLE_TICK };
             tokio::select! {
@@ -267,15 +274,20 @@ impl<R: Relay, T: Runtime> Round<R, T> {
                     Err(broadcast::error::RecvError::Closed) => events = self.lead.follow(),
                 },
                 () = tokio::time::sleep(tick) => {}
-                end = &mut source => return end.unwrap_or(Stop::Shutdown),
+                end = &mut task => return end.unwrap_or(Stop::Shutdown),
                 _ = config.changed() => {
                     if settings(&config.borrow_and_update()) != current {
-                        return Stop::Again;
+                        break Stop::Again;
                     }
                 }
-                () = kick.notified() => return Stop::Again,
-                _ = shutdown.changed() => return Stop::Shutdown,
+                () = kick.notified() => break Stop::Again,
+                _ = shutdown.changed() => break Stop::Shutdown,
             }
+        };
+        let _ = halt.send(true);
+        match task.await {
+            Ok(failed @ (Stop::Fatal(_) | Stop::Retry(_))) if matches!(end, Stop::Again) => failed,
+            _ => end,
         }
     }
 
