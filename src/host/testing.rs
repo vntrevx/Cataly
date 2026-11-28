@@ -72,6 +72,7 @@ pub(crate) fn spec(handle: &str, expected: Option<(&str, PathBuf)>) -> StartSpec
         max_cost: None,
         look_only: false,
         worker: None,
+        quota_blocked: None,
     }
 }
 

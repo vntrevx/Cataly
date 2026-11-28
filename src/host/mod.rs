@@ -59,6 +59,9 @@ pub(crate) struct StartSpec {
     pub(crate) look_only: bool,
     /// The worker the session runs on (design 2.1); `None` runs it here.
     pub(crate) worker: Option<String>,
+    /// A quota block the logical session carries over from an earlier process (OPC-58): a
+    /// headless session starts blocked with it until a turn completes.
+    pub(crate) quota_blocked: Option<String>,
 }
 
 impl StartSpec {

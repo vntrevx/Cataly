@@ -671,6 +671,7 @@ impl Session {
             proc: AsyncMutex::new(Some(proc)),
             state: Mutex::new(State {
                 updated_ms: now,
+                quota_blocked: spec.quota_blocked.clone(),
                 ..State::default()
             }),
             snapshot: watch::channel(Arc::new(placeholder(&spec, now))).0,
@@ -955,7 +956,7 @@ fn placeholder(spec: &StartSpec, now: i64) -> Snapshot {
         requested_model: spec.model.clone(),
         turn_started_ms: None,
         reason: None,
-        quota_blocked: None,
+        quota_blocked: spec.quota_blocked.clone(),
         dialogs: Vec::new(),
         recent: Vec::new(),
         view: 0,

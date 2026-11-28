@@ -40,6 +40,7 @@ use crate::omp::transcript::{self, Folder};
 use crate::proto::LeadStart;
 use crate::store::Store;
 use crate::store::host::{HostWrite, SessionRow, SessionUpdate};
+use crate::store::lead::LeadWrite;
 use crate::sys::latency::Latency;
 use crate::sys::now_ms;
 
@@ -49,6 +50,9 @@ const CONFIRM_TICK: Duration = Duration::from_secs(5);
 const SWEEP: Duration = Duration::from_mins(5);
 /// How often an automatic start that is waiting looks again.
 const AUTOSTART_TICK: Duration = Duration::from_secs(30);
+/// The `meta` key keeping the lead's quota block (OPC-58) over its sleep, restarts and hub runs;
+/// empty while none holds.
+const QUOTA_KEY: &str = "lead_quota_blocked";
 /// Bound for a graceful stop at hub shutdown: end of input, 15 s, TERM, 5 s, KILL and 5 s to reap
 /// it, with 2 s for the state read before. The lead and every lane get all of it, so a slow exit
 /// keeps its TERM grace in full instead of being dropped, and so killed, before its KILL is due.
@@ -358,6 +362,7 @@ fn lead_spec(
     cwd: PathBuf,
     target: Target,
     expected_id: Option<String>,
+    quota_blocked: Option<String>,
 ) -> StartSpec {
     StartSpec {
         handle,
@@ -371,6 +376,7 @@ fn lead_spec(
         max_cost: None,
         look_only: false,
         worker: None,
+        quota_blocked,
     }
 }
 
@@ -961,9 +967,10 @@ impl<R: Runtime> Lead<R> {
                 ],
             );
         }
+        let quota = self.kept_quota().await?;
         let handle = super::random_hex(8);
         let runtime = (self.env.make)(&config, &exe, kind);
-        let spec = lead_spec(handle.clone(), &settings, cwd, target, expected);
+        let spec = lead_spec(handle.clone(), &settings, cwd, target, expected, quota);
         self.record_attempt(&spec, runtime.kind()).await?;
         self.set_phase(Phase::Starting, None);
         self.attempt().started_ms = Some(now_ms());
@@ -1544,9 +1551,35 @@ impl<R: Runtime> Lead<R> {
         }
     }
 
-    /// A turn ended with the quota exhausted: the owner is alerted and the lead told once (OPC-58,
-    /// OPC-64).
+    /// Keeps the lead's quota block, or its end (`None`), for the lead's next process: a sleep, a
+    /// restart or a new hub run starts it blocked until a turn completes (OPC-58).
+    async fn keep_quota(&self, message: Option<&str>) {
+        let value = match message {
+            Some("") => "usage limit reached",
+            Some(message) => message,
+            None => "",
+        };
+        let write = LeadWrite::Meta {
+            key: QUOTA_KEY.into(),
+            value: value.into(),
+        };
+        if let Err(e) = self.env.store.lead(write).await {
+            log::warn("lead quota block not recorded", &[("error", &e)]);
+        }
+    }
+
+    /// The quota block an earlier process left: the next session starts with it, until a turn
+    /// completes.
+    async fn kept_quota(&self) -> Result<Option<String>, String> {
+        let kept = self.env.store.read(|r| r.meta(QUOTA_KEY)).await;
+        kept.map(|q| q.filter(|message| !message.is_empty()))
+            .map_err(|e| format!("lead quota block: {e}"))
+    }
+
+    /// A turn ended with the quota exhausted: the block is kept, the owner is alerted and the lead
+    /// told once (OPC-58, OPC-64).
     async fn quota_blocked(&self, handle: &str, message: &str) {
+        self.keep_quota(Some(message)).await;
         self.emit(
             Emit::new(EventKind::QuotaBlocked, Severity::Warning, true, "lead")
                 .with("role", "lead")
@@ -1577,6 +1610,8 @@ impl<R: Runtime> Lead<R> {
         mut states: watch::Receiver<Arc<Snapshot>>,
     ) {
         let mut states_open = true;
+        // Whether a kept quota block is in force: one this session started with, or its own.
+        let mut quota = states.borrow().quota_blocked.is_some();
         loop {
             let received = tokio::select! {
                 received = events.recv() => received,
@@ -1604,9 +1639,16 @@ impl<R: Runtime> Lead<R> {
             };
             self.forward(&event);
             match event {
+                SessionEvent::Settled { status, .. } => {
+                    // A completed turn ends the block in the session, so in the store too.
+                    if quota && status == "completed" {
+                        quota = false;
+                        self.keep_quota(None).await;
+                    }
+                    self.wake.notify_one();
+                }
                 SessionEvent::TurnEnded { .. }
                 | SessionEvent::Quiet
-                | SessionEvent::Settled { .. }
                 | SessionEvent::LinkRestored
                 | SessionEvent::Message { .. } => self.wake.notify_one(),
                 SessionEvent::Fallback { from, to, reason } => self.emit(
@@ -1634,6 +1676,7 @@ impl<R: Runtime> Lead<R> {
                         .with("count", count),
                 ),
                 SessionEvent::QuotaBlocked { message } => {
+                    quota = true;
                     self.quota_blocked(&handle, &message).await;
                 }
                 SessionEvent::Fault { reason } => {

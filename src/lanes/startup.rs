@@ -56,6 +56,7 @@ impl<R: Runtime> Lanes<R> {
             max_cost: rec.ceilings.cost,
             look_only: rec.look_only,
             worker: rec.worker.clone(),
+            quota_blocked: None,
         })
     }
 

@@ -641,6 +641,74 @@ fn quiet_notes_wait_through_a_sleep_and_go_with_the_first_turn() {
     assert!(hub.stop().success());
 }
 
+/// OPC-58: a turn ending on the usage limit quota-blocks the lead, and the block outlives its sleep
+/// and a hub restart. The woken session is still blocked, so an urgent note from the hub is not
+/// prompted; the owner's message is, and its completed turn ends the block, here and in the store.
+#[test]
+fn a_quota_block_survives_sleep_and_restart_until_a_turn_completes() {
+    let mut hub = sleepy_hub(&[], "2s", "", "");
+    hub.fixture("omp", "limit", Some("QUOTA-HIT"));
+    hub.start();
+    let first = live(&hub, &Value::Null);
+    let file = first["session"]["session_file"].clone();
+    assert!(hub.cli(&["lead", "send", "QUOTA-HIT"]).status.success());
+    hub.until(Duration::from_secs(20), || {
+        lead_view(&hub)["session"]["quota_blocked"]
+            .is_string()
+            .then_some(())
+    });
+    asleep(&hub);
+    assert!(hub.stop().success());
+    // An urgent note from the hub, as an urgent event leaves it, waits for the sleeping lead.
+    let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute(
+        "INSERT INTO inbox (target, sender, text, urgent, owner, identity, state, created_ms, updated_ms) \
+         VALUES ('lead', 'cataly', 'URGENT-NOTE', 1, 0, 'test:urgent', 'pending', \
+         strftime('%s', 'now') * 1000, strftime('%s', 'now') * 1000)",
+        [],
+    )
+    .unwrap();
+    hub.start();
+    let woke = live(&hub, &first["session"]["pid"]);
+    assert_eq!(
+        woke["session"]["session_id"],
+        first["session"]["session_id"]
+    );
+    assert!(
+        woke["session"]["quota_blocked"]
+            .as_str()
+            .is_some_and(|q| q.contains("usage limit")),
+        "{woke}"
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(user_entries(&file, "URGENT-NOTE"), 0, "held while blocked");
+    assert!(hub.cli(&["lead", "send", "OWNER-1"]).status.success());
+    hub.until(Duration::from_secs(20), || {
+        (user_entries(&file, "URGENT-NOTE") == 1).then_some(())
+    });
+    assert_eq!(user_entries(&file, "OWNER-1"), 1);
+    let text = std::fs::read_to_string(file.as_str().unwrap()).unwrap();
+    assert!(
+        !text
+            .lines()
+            .any(|l| l.contains("URGENT-NOTE") && l.contains("OWNER-1")),
+        "the note goes only after the owner's turn completed"
+    );
+    assert!(lead_view(&hub)["session"]["quota_blocked"].is_null());
+    hub.until(Duration::from_secs(10), || {
+        let kept: String = db
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'lead_quota_blocked'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        kept.is_empty().then_some(())
+    });
+    assert!(hub.stop().success());
+}
+
 /// `idle_sleep = "0s"` turns sleep off.
 #[test]
 fn zero_idle_sleep_never_sleeps() {

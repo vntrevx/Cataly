@@ -8,7 +8,8 @@
 //! reminder still to come, since the reminders only reach a live lead. Quiet notes wait for the
 //! next turn anyway, so they wait through a sleep and go with the first turn after the wake. Every
 //! session event, delivery, settled in-doubt entry and start counts as activity; an idle check that
-//! finds the lead busy restarts the count.
+//! finds the lead busy restarts the count. A quota block does not end with the sleep: it is kept in
+//! the store, and the woken session starts with it.
 
 use std::sync::{MutexGuard, PoisonError};
 use std::time::{Duration, Instant};

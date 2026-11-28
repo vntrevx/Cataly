@@ -544,7 +544,9 @@ not establish a hard no-spend guarantee:
   `--max-cost` (WS-18); it is a session backstop, not a provider billing firewall.
 - Quota exhausted for good (a turn ends with a usage-limit error in `prompt_result`, meaning the chain is
   exhausted or absent) marks the session quota-blocked: no nudges, reminders or deliveries other than owner
-  requests; the lead is told once (OPC-58, OPC-64).
+  requests; the lead is told once (OPC-58, OPC-64). A completed turn ends the block. The lead's block
+  is kept in `meta` (`lead_quota_blocked`), so its next session after a sleep, a restart or a hub
+  restart starts blocked too.
 - Guidance text for the lead and lanes says: never redeem a reset, buy credits, enable overage or switch
   account, provider or model yourself; OMP's configured fallback may change the model for you; when it is
   exhausted, stop, save progress and report. This replaces the stricter "no switching" wording in LANE req. 13
