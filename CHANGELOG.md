@@ -35,6 +35,10 @@
   (ignoring host-name letter case), so other users on that host can still connect. The last worker's
   removal drops every case variant of the pin. Enrolling a worker replaces case variants instead of
   adding duplicate pins.
+- A slot waiter started without `--timeout` waits until it is granted or cancelled, as LANE
+  req. 21 says. It gave up after an hour with no change in its queue place ("no grant for slot
+  … within the timeout") and its command never ran, so a heavy job held for over an hour failed
+  every command queued behind it.
 
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
