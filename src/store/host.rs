@@ -651,6 +651,25 @@ impl Reads {
         stmt.query_map([delivery], inbox_from_row)?.collect()
     }
 
+    /// Whether a once-only identity is known for a target: remembered, or on a row of its inbox.
+    pub(crate) fn identity_known(&self, target: &str, identity: &str) -> rusqlite::Result<bool> {
+        self.0.query_row(
+            "SELECT EXISTS (SELECT 1 FROM once_ids WHERE target = ?1 AND identity = ?2) \
+             OR EXISTS (SELECT 1 FROM inbox WHERE target = ?1 AND identity = ?2)",
+            params![target, identity],
+            |r| r.get(0),
+        )
+    }
+
+    /// Where one delivery stands, `None` for an unknown ID.
+    pub(crate) fn delivery_state(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        self.0
+            .query_row("SELECT state FROM deliveries WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+    }
+
     /// The receipt a request ID left, `None` for an unknown ID.
     pub(crate) fn receipt(
         &self,
@@ -970,21 +989,16 @@ mod receipt_cap {
             host_all(&store, resolved.collect()).await;
             let settled = ns.iter().filter(|&&n| n != unsettled).map(|&n| {
                 let (relay, room, message) = room(n);
-                if n == in_doubt {
-                    RelayWrite::Doubt {
-                        relay,
-                        room,
-                        message,
-                        state: "in_doubt".into(),
-                        reason: "no answer".into(),
-                    }
+                let state = if n == in_doubt {
+                    "in_doubt"
                 } else {
-                    RelayWrite::Finish {
-                        relay,
-                        room,
-                        message,
-                        state: Some("delivered".into()),
-                    }
+                    "delivered"
+                };
+                RelayWrite::Finish {
+                    relay,
+                    room,
+                    message,
+                    state: Some(state.into()),
                 }
             });
             relay_all(&store, settled.collect()).await;
@@ -998,7 +1012,7 @@ mod receipt_cap {
                 "{n}: {again:?}"
             );
         }
-        // The in-doubt one still reads in doubt, so its room stays held.
+        // The in-doubt one still reads in doubt: a repeat of it is never resent.
         let again = store.host(admit_send(in_doubt, "h1")).await.unwrap();
         let HostDone::Admitted(Admitted::Earlier(Some(id))) = again else {
             panic!("{again:?}")

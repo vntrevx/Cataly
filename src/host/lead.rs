@@ -1833,6 +1833,12 @@ impl<R: Runtime> Lead<R> {
         Ok(self.mailbox.receipt(request.request_id, id).await)
     }
 
+    /// Has the lead's loop deliver what its inbox holds now, as after a message stored for it
+    /// elsewhere.
+    pub(crate) fn nudge(&self) {
+        self.wake.notify_one();
+    }
+
     /// When the lead last read a turn start of its session.
     pub(crate) fn turn_started(&self) -> Option<Instant> {
         *self
@@ -1892,6 +1898,13 @@ impl<R: Runtime> Lead<R> {
             .and_then(|s| s.snapshot().session_file.clone());
         if current.is_none() && self.asleep().is_none() {
             return Ok(None);
+        }
+        // Debug builds only: the test of a transcript that cannot be searched.
+        #[cfg(debug_assertions)]
+        if crate::sys::fault::named("transcript_unsearchable")
+            || crate::sys::fault::named("transcript_unsearchable_stop")
+        {
+            return Err("fault point transcript_unsearchable".into());
         }
         let earlier = self
             .env

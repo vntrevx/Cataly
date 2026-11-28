@@ -3,7 +3,8 @@
 //! after that is shared ([`pipeline`], [`intake`]): the durable arrival queue, hand-off to the lead
 //! through its inbox, the read mark, the owed reply, the answer posted as a reply in parts, the
 //! optional channel facts and earlier-conversation lines ([`context`]), and fencing a room when a
-//! hand-off is in doubt (DESIGN 9.3). Discord, Telegram and Slack implement the same [`Relay`] trait.
+//! hand-off failed; one in doubt is given up, the lead told, and the room goes on (DESIGN 9.3).
+//! Discord, Telegram and Slack implement the same [`Relay`] trait.
 
 pub(crate) mod boards;
 pub(crate) mod context;

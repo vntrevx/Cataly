@@ -2,7 +2,8 @@
 //! this hands it to the lead through the lead's inbox (owner messages, `owner: true`, the relay
 //! message ID as request ID), adds the seen mark in parallel (DESIGN 12.2 C9), records the owed
 //! reply, finishes the queue item in one transaction once the session file confirms the hand-off
-//! (DISC-IN req. 49), holds the room when the hand-off is in doubt and tells the owner (DESIGN 9.3),
+//! (DISC-IN req. 49), gives up a hand-off in doubt without resending it while the room goes on (the
+//! lead hears of it once), holds the room when the hand-off failed and tells the owner (DESIGN 9.3),
 //! and posts the lead's final answer as a linked reply in parts from a durable outbox (DISC-OUT req.
 //! 20-29, DESIGN 12.2 A16).
 
@@ -19,7 +20,7 @@ use tokio::sync::{Notify, watch};
 use super::context::{self, Context};
 use super::{Inbound, PartOutcome, Relay};
 use crate::config::Config;
-use crate::host::inbox::{self, Message, ReceiptState};
+use crate::host::inbox::{self, Message, Receipt, ReceiptState};
 use crate::host::lead::{Events, Lead};
 use crate::host::{Runtime, SessionEvent, Status};
 use crate::jobs::event::{Emit, EventKind, Severity};
@@ -43,11 +44,11 @@ const LOOKUP_TRIES: usize = 3;
 /// Where a hand-off stands after a step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Step {
-    /// Confirmed in the session file and finished.
+    /// Finished: confirmed in the session file, or in doubt and given up (never resent).
     Done,
     /// In the lead's inbox or written; not confirmed yet.
     Waiting,
-    /// In doubt, failed or conflicting: the room is held.
+    /// Failed or conflicting: the room is held.
     Held(String),
     /// Not handed yet and to be tried again next round; later messages of its room wait behind it.
     Deferred,
@@ -771,19 +772,22 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
     ) -> Result<Step, String> {
         let digest = inbox::digest("relay", &inbound.stable);
         if let Some(h) = found {
+            // Never handed again, whatever its content now.
+            if h.state == "in_doubt" {
+                return self.given_up(row, inbound, h).await;
+            }
             if h.digest != digest {
                 // The same message with other content: never resent silently (DISC-IN req. 51).
                 return self
                     .hold(
                         &row.room,
                         &row.message,
-                        "failed",
                         "the message changed since its hand-off",
                     )
                     .await;
             }
-            if matches!(h.state.as_str(), "in_doubt" | "failed") {
-                return Ok(Step::Held("an earlier hand-off is in doubt".into()));
+            if h.state == "failed" {
+                return Ok(Step::Held("an earlier hand-off failed".into()));
             }
         }
         let text = self.spill(inbound, self.text_for(inbound).await);
@@ -815,7 +819,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                     Ok(bound) => bound,
                     Err(e) => {
                         let why = format!("the question ledger could not be read: {e}");
-                        return self.hold(&row.room, &row.message, "failed", &why).await;
+                        return self.hold(&row.room, &row.message, &why).await;
                     }
                 }
             }
@@ -827,7 +831,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             self.lanes.route(R::NAME, &row.room).await
         };
         if let Some(Err(why)) = &route {
-            return self.hold(&row.room, &row.message, "failed", why).await;
+            return self.hold(&row.room, &row.message, why).await;
         }
         let lane = route.and_then(Result::ok);
         let handed = RelayWrite::Handed {
@@ -852,15 +856,59 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                 request_id: Some(request_id),
             };
             return match self.lanes.hand_off(&key, message).await {
-                Ok(r) => {
-                    self.apply(&row.room, &row.message, r.state, r.reason.as_deref())
-                        .await
-                }
-                Err(refused) => self.hold(&row.room, &row.message, "failed", &refused).await,
+                Ok(r) => self.apply(row, &r, &key).await,
+                Err(refused) => self.hold(&row.room, &row.message, &refused).await,
             };
         }
         self.lead_hand_off(row, handed, text, request_id, read_at)
             .await
+    }
+
+    /// A queued message whose hand-off is in doubt is never handed again. It is still queued after
+    /// a stop between the lead's notice and the finish (`lead_hand_off`), or in a room an earlier
+    /// version held for it: the lead's notice is made, once by its identity, and the item goes.
+    async fn given_up(
+        &self,
+        row: &QueueRow,
+        inbound: &Inbound,
+        h: &HandoffRow,
+    ) -> Result<Step, String> {
+        let receipt = if h.target == inbox::LEAD {
+            self.lead.receipt(&h.request_id).await?
+        } else {
+            self.lanes.receipt(&h.target, &h.request_id).await
+        };
+        match receipt {
+            // Confirmed or released meanwhile: its target has it, or gets it again.
+            Some(r)
+                if matches!(
+                    r.state,
+                    ReceiptState::Delivered
+                        | ReceiptState::Duplicate
+                        | ReceiptState::Waiting
+                        | ReceiptState::Sent
+                ) => {}
+            // The inbox found its batch in doubt: that batch's notice.
+            Some(Receipt {
+                state: ReceiptState::InDoubt,
+                delivery_id: Some(delivery),
+                reason,
+                ..
+            }) => {
+                let why = reason.as_deref().unwrap_or("its batch was not confirmed");
+                self.inbox_notice(row, &h.target, &delivery, why).await?;
+            }
+            // No inbox entry tells of it (the lead's transcript could not be searched): the
+            // relay's notice, with its text.
+            _ if h.target == inbox::LEAD => {
+                let text = self.spill(inbound, self.text_for(inbound).await);
+                let why = "an earlier attempt could not confirm it";
+                self.tell_lead(&row.room, &row.message, why, &text).await?;
+            }
+            _ => {}
+        }
+        self.finish(&row.room, &row.message, None).await?;
+        Ok(Step::Done)
     }
 
     /// The lead's part of a hand-off. Decision 15: the lead's wake can be written before any record
@@ -878,8 +926,29 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
         if read_at.is_none() {
             match self.lead.written_earlier(&request_id).await {
                 Err(e) => {
+                    // No inbox entry tells the lead of this one: the relay does. The hand-off reads
+                    // in doubt before the notice and its queue item goes after it, so a stop in
+                    // between neither hands it again nor loses the notice (see `hand_off`). The
+                    // seen mark shows the owner it was read.
                     let why = format!("the lead's transcript could not be searched ({e})");
-                    return self.hold(&row.room, &row.message, "in_doubt", &why).await;
+                    self.store.relay(handed).await.map_err(|e| e.to_string())?;
+                    self.mark_seen(&row.room, &row.message);
+                    self.store
+                        .relay(RelayWrite::Doubt {
+                            relay: R::NAME.into(),
+                            room: row.room.clone(),
+                            message: row.message.clone(),
+                            state: "in_doubt".into(),
+                            reason: None,
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    self.tell_lead(&row.room, &row.message, &why, &text).await?;
+                    // Debug builds only: the crash test of a stop between the notice and the
+                    // finish.
+                    #[cfg(debug_assertions)]
+                    crate::sys::fault::point("transcript_unsearchable_stop");
+                    return self.doubt(&row.room, &row.message, &why).await;
                 }
                 Ok(None) => return Ok(Step::Deferred),
                 Ok(Some(true)) => {
@@ -929,7 +998,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
         let receipt = match receipt {
             Ok(r) => r,
             Err(refused) => {
-                return self.hold(&row.room, &row.message, "failed", &refused).await;
+                return self.hold(&row.room, &row.message, &refused).await;
             }
         };
         if idle
@@ -942,13 +1011,7 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             // before this wake was set.
             self.settle_wake(&mut wake);
         }
-        self.apply(
-            &row.room,
-            &row.message,
-            receipt.state,
-            receipt.reason.as_deref(),
-        )
-        .await
+        self.apply(row, &receipt, inbox::LEAD).await
     }
 
     /// Reads a hand-off's receipt again; a hand-off the inbox never got is made again.
@@ -964,64 +1027,169 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
             self.lanes.receipt(&h.target, &h.request_id).await
         };
         match receipt {
-            Some(r) => {
-                self.apply(&row.room, &row.message, r.state, r.reason.as_deref())
-                    .await
-            }
+            Some(r) => self.apply(row, &r, &h.target).await,
             None => self.hand_off(row, inbound, None, Some(h)).await,
         }
     }
 
-    async fn apply(
-        &self,
-        room: &str,
-        message: &str,
-        state: ReceiptState,
-        reason: Option<&str>,
-    ) -> Result<Step, String> {
-        match state {
+    /// Acts on the receipt of a hand-off to `target`, the lead or a lane key.
+    async fn apply(&self, row: &QueueRow, r: &Receipt, target: &str) -> Result<Step, String> {
+        let (room, message) = (row.room.as_str(), row.message.as_str());
+        match r.state {
             ReceiptState::Delivered | ReceiptState::Duplicate => {
                 self.finish(room, message, Some("delivered")).await?;
                 Ok(Step::Done)
             }
             ReceiptState::Waiting | ReceiptState::Sent => Ok(Step::Waiting),
             ReceiptState::InDoubt => {
-                self.hold(
-                    room,
-                    message,
-                    "in_doubt",
-                    reason.unwrap_or("the lead may or may not have it"),
-                )
-                .await
+                let reason = r.reason.as_deref().unwrap_or("its batch was not confirmed");
+                if let Some(delivery) = &r.delivery_id {
+                    self.inbox_notice(row, target, delivery, reason).await?;
+                }
+                self.doubt(room, message, reason).await
             }
             ReceiptState::Failed => {
-                self.hold(
-                    room,
-                    message,
-                    "failed",
-                    reason.unwrap_or("the hand-off failed"),
-                )
-                .await
+                let reason = r.reason.as_deref().unwrap_or("the hand-off failed");
+                self.hold(room, message, reason).await
             }
         }
     }
 
-    /// Holds the room and tells the owner once, in the room and as an urgent event (DESIGN 9.3).
-    async fn hold(
+    /// The lead's one notice of the batch `delivery` to `target` in doubt, stored before the queue
+    /// item goes, so a stop in between cannot lose it. It is the notice the lead's inbox, or for a
+    /// lane the lanes (after their fence), make just after the doubt commits, under the same
+    /// identity, so it is made once. For a lane the lanes' own handling is made sure of first.
+    async fn inbox_notice(
+        &self,
+        row: &QueueRow,
+        target: &str,
+        delivery: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        let identity = inbox::in_doubt_identity(delivery);
+        let (id, known_id) = (delivery.to_string(), identity.clone());
+        let (rows, state, known) = self
+            .store
+            .read(move |r| {
+                Ok((
+                    r.inbox_rows_of(&id)?,
+                    r.delivery_state(&id)?,
+                    r.identity_known(inbox::LEAD, &known_id)?,
+                ))
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        // Found in the file of the session now current (PATCH-01 rule 9): its target has it, and
+        // nothing is to be released or resent.
+        if state.as_deref() == Some("misdelivered") {
+            return Ok(());
+        }
+        if target != inbox::LEAD {
+            // A stop, or a caller that dropped what its flush found, may have left the lanes'
+            // handling undone: the fence, then the lead told (the notice below, or for any other
+            // batch the lanes' alert). Done already when the fence names the batch or its notice
+            // exists (the lead may have released the fence since).
+            let relayed = !rows.is_empty() && rows.iter().all(inbox::relayed);
+            if !known {
+                let (d, r) = (delivery.to_string(), reason.to_string());
+                self.lanes.relay_doubt(target, d, rows.clone(), r).await;
+            }
+            // A batch that mixes relayed messages with other lane input is the lanes' to report:
+            // `relay_doubt` above fences the lane and raises its "delivery in doubt" alert, which
+            // has the lead read the lane and release it; a notice from here would only repeat it.
+            if !relayed {
+                return Ok(());
+            }
+        }
+        let text = if rows.is_empty() {
+            // Written, but the batch's records were not stored: only the tag names it.
+            let mut text = format!(
+                "[in-doubt delivery] The owner's message {} may or may not have reached {target} \
+                 ({reason}). It is not resent; later messages from room {} still come on.",
+                Self::tag(&row.room, &row.message),
+                row.room
+            );
+            if target == inbox::LEAD {
+                text.push_str(inbox::NO_REPLY);
+            }
+            text
+        } else if target == inbox::LEAD {
+            inbox::in_doubt_notice(inbox::LEAD, &rows, reason)
+        } else {
+            inbox::lane_in_doubt_notice(target, &rows, reason)
+        };
+        let note = Message {
+            sender: inbox::HUB_SENDER.into(),
+            text,
+            urgent: true,
+            owner: false,
+            identity: Some(identity),
+            request_id: None,
+        };
+        self.lead
+            .deliver(note)
+            .await
+            .map(drop)
+            .map_err(|e| format!("the in-doubt notice was not stored: {e}"))
+    }
+
+    /// A hand-off in doubt is given up and never resent, and the room goes on: its next messages
+    /// are handed on as usual. Nothing is posted in the room; the lead hears of it once.
+    async fn doubt(&self, room: &str, message: &str, reason: &str) -> Result<Step, String> {
+        self.finish(room, message, Some("in_doubt")).await?;
+        log::warn(
+            "relay hand-off in doubt; not resent",
+            &[
+                ("relay", &R::NAME),
+                ("room", &room),
+                ("message", &message),
+                ("reason", &reason),
+            ],
+        );
+        Ok(Step::Done)
+    }
+
+    /// The lead's one notice of an owner message in doubt that no inbox found in doubt, with the
+    /// `text` it would have received, which is kept nowhere else.
+    async fn tell_lead(
         &self,
         room: &str,
         message: &str,
-        state: &str,
         reason: &str,
-    ) -> Result<Step, String> {
+        text: &str,
+    ) -> Result<(), String> {
+        let note = Message {
+            sender: inbox::HUB_SENDER.into(),
+            text: format!(
+                "[in-doubt delivery] The owner's message {} may or may not have reached you \
+                 ({reason}). It is not handed to you again as a request; later messages from room \
+                 {room} still come to you.{} It read:\n{text}",
+                Self::tag(room, message),
+                inbox::NO_REPLY
+            ),
+            urgent: true,
+            owner: false,
+            identity: Some(inbox::in_doubt_identity(&Self::request_id(room, message))),
+            request_id: None,
+        };
+        self.lead
+            .deliver(note)
+            .await
+            .map(drop)
+            .map_err(|e| format!("the in-doubt notice was not stored: {e}"))
+    }
+
+    /// Holds the room after a failed hand-off and tells the owner once, in the room and as an
+    /// urgent event (DESIGN 9.3).
+    async fn hold(&self, room: &str, message: &str, reason: &str) -> Result<Step, String> {
         let why = format!("message {message}: {reason}");
         self.store
             .relay(RelayWrite::Doubt {
                 relay: R::NAME.into(),
                 room: room.into(),
                 message: message.into(),
-                state: state.into(),
-                reason: why.clone(),
+                state: "failed".into(),
+                reason: Some(why.clone()),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -1036,8 +1204,8 @@ impl<R: Relay, T: Runtime> Pipeline<R, T> {
                 .with("reason", &why),
         );
         let note = format!(
-            "This message may not have reached the lead ({reason}). Nothing more from this room goes \
-             to the lead until you release it with `cataly {} release {room}`.",
+            "This message was not handed on ({reason}). Nothing more from this room goes to the \
+             lead until you release it with `cataly {} release {room}`.",
             R::NAME
         );
         let nonce = self.relay.nonce(room, message, 9_999);

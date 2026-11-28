@@ -1033,7 +1033,45 @@ pub(crate) fn in_doubt_notice(target: &str, rows: &[InboxRow], reason: &str) -> 
         "\nCheck the conversation, then `cataly lead inbox` and `cataly lead confirm <n>` if it \
          arrived or `cataly lead release <n>` to deliver it again.",
     );
+    // A relay no longer holds the room for one of its messages in doubt, and no reply to it is
+    // posted by itself.
+    if rows.iter().any(relayed) {
+        text.push('\n');
+        text.push_str(NO_REPLY.trim_start());
+    }
     text
+}
+
+/// What the lead's in-doubt notices say about a reply to a relayed owner message in doubt.
+pub(crate) const NO_REPLY: &str = " No reply to a relayed owner message in doubt is posted by \
+    itself: if it needs one, answer it in your reply to that room's next message.";
+
+/// The lead's one notice about a lane's batch of relayed owner messages in doubt (the lanes'
+/// alert covers any other batch).
+pub(crate) fn lane_in_doubt_notice(lane: &str, rows: &[InboxRow], reason: &str) -> String {
+    let mut text = format!(
+        "[in-doubt delivery] {} owner message(s) for lane {lane} may or may not have reached it \
+         ({reason}). They are not resent, and later messages from their rooms still go to the lane:",
+        rows.len()
+    );
+    for row in rows {
+        let _ = write!(
+            text,
+            "\n- queued {}: {}",
+            clock(row.created_ms),
+            preview(&row.text)
+        );
+    }
+    text.push_str("\nRead the lane, then lane.release it; lane.send waits until then.");
+    text
+}
+
+/// Whether a row is an owner message a relay handed on: the relay tells the lead when it is in doubt.
+pub(crate) fn relayed(row: &InboxRow) -> bool {
+    row.owner
+        && ["[discord ", "[telegram ", "[slack "]
+            .iter()
+            .any(|tag| row.text.starts_with(tag))
 }
 
 /// The identity of the notice about one delivery.

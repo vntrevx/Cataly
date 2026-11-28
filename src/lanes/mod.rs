@@ -109,6 +109,8 @@ pub(crate) struct Env<R: Runtime> {
     pub(crate) bridge_link: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     /// Whether the lead's session is live (it counts toward the session cap).
     pub(crate) lead_live: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Has the lead deliver a notice stored in its inbox.
+    pub(crate) lead_nudge: Arc<dyn Fn() + Send + Sync>,
     pub(crate) threads: Arc<dyn Threads>,
     /// Board posts on Telegram and Slack (`telegram:…`, `slack:…` destinations).
     pub(crate) boards: Arc<dyn board::Board>,
@@ -347,6 +349,25 @@ impl<R: Runtime> Lanes<R> {
         self.noted(key, notes, locked).await;
     }
 
+    /// A batch to lane `key` a relay found in doubt, handled as when the lane's inbox finds it (a
+    /// stop, or a caller that dropped what its flush found, may have left that undone): the fence,
+    /// then the lead told, unless the fence already names the batch.
+    pub(crate) async fn relay_doubt(
+        &self,
+        key: &str,
+        delivery: String,
+        rows: Vec<crate::store::host::InboxRow>,
+        reason: String,
+    ) {
+        let note = Note::InDoubt {
+            delivery,
+            rows,
+            reason,
+            notify: true,
+        };
+        self.noted(key, vec![note], false).await;
+    }
+
     /// Acts on what a flush or a delivery of the lane's inbox found. A batch in doubt is never
     /// resent: it fences the lane's messages until the lead releases it, and the owner and the lead
     /// hear it once (DESIGN 9.3, EVR req. 62). `locked`: the caller holds the lane's turn.
@@ -386,6 +407,28 @@ impl<R: Runtime> Lanes<R> {
                     .with("count", rows.len())
                     .with("reason", &reason),
             );
+            // Owner messages a relay handed on: the lead's notice names each, after the fence. The
+            // relay stores the same notice under the same identity before it lets them go, so it is
+            // made once.
+            if !rows.is_empty() && rows.iter().all(crate::host::inbox::relayed) {
+                let notice = Message {
+                    sender: HUB_SENDER.into(),
+                    text: crate::host::inbox::lane_in_doubt_notice(key, &rows, &reason),
+                    urgent: true,
+                    owner: false,
+                    identity: Some(crate::host::inbox::in_doubt_identity(&delivery)),
+                    request_id: None,
+                };
+                let lead = Mailbox {
+                    target: crate::host::inbox::LEAD.into(),
+                    store: self.env.store.clone(),
+                };
+                match lead.admit(&notice).await {
+                    Ok(_) => (self.env.lead_nudge)(),
+                    Err(e) => log::warn("in-doubt notice not stored", &[("error", &e)]),
+                }
+                continue;
+            }
             self.alert(
                 key,
                 "delivery in doubt",

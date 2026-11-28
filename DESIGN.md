@@ -35,7 +35,7 @@ The specs use neutral words. Cataly uses the words below, and only these, in cod
 | Inbox | The per-target queue of deliveries (one for the lead, one per lane key). | mailbox |
 | Receipt | The durable record that an outside effect happened (admission, post, thread, push). | receipt |
 | In doubt | An effect that may or may not have happened. Never repeated automatically except where 9.3 says. | in doubt, uncertain |
-| Fence | A session or room the hub refuses to send into until someone acts (model mismatch, in-doubt hand-off, misdelivery, repeated spend offers). | held, hold (of a session or conversation) |
+| Fence | A session or room the hub refuses to send into until someone acts (model mismatch, failed hand-off, misdelivery, repeated spend offers). | held, hold (of a session or conversation) |
 | Pause / resume | Stop and continue a lane's work while keeping its process. | hold / continue |
 | Park / abandon | Close a lane's process but keep files, with "may come back" or "given up" as outcome. | park / abandon |
 | Claim / objection | A lane says it is done; the lead may object within the window. | completion claim, objection |
@@ -576,15 +576,25 @@ path, including remote workers and shared MCP/LSP brokers. This credential isola
 - Hub notices in doubt are never resent; the lead is told once and may confirm or release (COORD-13).
   Lead-to-lane messages in doubt fence the lane's inbox until the lead releases it (EVR req. 62).
 - A message found in another session's file is "misdelivered": never resent, owner told once.
+- An owner message a relay handed to the lead or a lane that ends in doubt never holds its room: it is never
+  handed again, its queue item is finished, nothing is posted in the room, and the room's next messages go on.
+  A lane batch in doubt still fences the lane as above. For the lead, and for a lane batch made only of relayed
+  owner messages, the lead hears of it from a notice stored before the queue item goes, under the batch's
+  once-only identity, so it is made once (the lead inbox's own in-doubt notice, or the lanes' notice of the
+  relayed messages). A lane batch that also carries other messages is told by the lanes' usual alert instead,
+  raised with the fence before the queue item goes, without that identity, so it may come more than once. A
+  failed hand-off still holds its room for the owner. Rooms an earlier version held for a hand-off in doubt lose
+  that hold when the hub starts; their messages are settled as above.
 - **Early wake (decision 15).** An owner request from a relay that goes to the lead alone is written before its
   records commit, under a delivery marker derived from its request ID; on Discord, whose Gateway never
   replays a message to a new session, a live message is also handed off while its arrival commits (the
   room's position stays below it until then, so a crash leaves it to the catch-up read). A message not read
   live in this hub run (restart, catch-up, a hand-off made again) is looked up in the current and previous
-  lead transcripts before any send: found means delivered; a transcript that cannot be searched holds the
-  room; with no lead running yet it waits. Written with a record that then fails to commit is in doubt, never
-  resent. Senders that cannot prove a request was not written before (Telegram and Slack redeliver live,
-  `cataly lead send` retries with the same request ID, lane messages, notes) commit first.
+  lead transcripts before any send: found means delivered; a transcript that cannot be searched makes it in
+  doubt (the lead gets its text once in a notice, never as a request); with no lead running yet it waits.
+  Written with a record that then fails to commit is in doubt, never resent. Senders that cannot prove a
+  request was not written before (Telegram and Slack redeliver live, `cataly lead send` retries with the same
+  request ID, lane messages, notes) commit first.
 - Remote approvals (off by default) deny on any doubt: a card that cannot be posted, an unacknowledged press,
   or a run that ended.
 

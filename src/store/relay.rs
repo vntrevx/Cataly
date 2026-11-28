@@ -159,13 +159,14 @@ pub(crate) enum RelayWrite {
         message: String,
         state: Option<String>,
     },
-    /// A hand-off ended in doubt or failed; the queue item stays and the room is held.
+    /// A hand-off failed or is in doubt; the queue item stays and, with a `reason`, the room is
+    /// held.
     Doubt {
         relay: String,
         room: String,
         message: String,
         state: String,
-        reason: String,
+        reason: Option<String>,
     },
     /// Holds a room (fence) or releases it (`None`).
     Hold {
@@ -173,6 +174,9 @@ pub(crate) enum RelayWrite {
         room: String,
         reason: Option<String>,
     },
+    /// Releases, in every relay, the rooms earlier versions held for a hand-off in doubt; their
+    /// messages stay queued. The rooms released come back.
+    ReleaseDoubts,
     Flag {
         relay: String,
         flag: String,
@@ -254,6 +258,8 @@ pub(crate) enum RelayDone {
     Arrived(Arrived),
     /// The binding already recorded, when it differs from the one asked for.
     Bound(Option<(String, String)>),
+    /// Rooms released, as relay and room.
+    Released(Vec<(String, String)>),
 }
 
 /// One stored earlier-conversation row.
@@ -430,7 +436,7 @@ fn arrive(
     let (relay, room, message, seq, parent, raw) = w;
     let handled: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM handoffs WHERE relay = ?1 AND room = ?2 AND message = ?3 \
-             AND state = 'delivered')",
+             AND state IN ('delivered', 'in_doubt'))",
         params![relay, room, message],
         |r| r.get(0),
     )?;
@@ -496,6 +502,7 @@ pub(super) fn write(
         RelayWrite::Finish { .. }
         | RelayWrite::Doubt { .. }
         | RelayWrite::Hold { .. }
+        | RelayWrite::ReleaseDoubts
         | RelayWrite::Flag { .. } => write_queue(tx, change, now),
         RelayWrite::ReadMark { .. }
         | RelayWrite::Outbox { .. }
@@ -625,10 +632,12 @@ fn write_queue(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite:
                 "UPDATE handoffs SET state = ?4, updated_ms = ?5 WHERE relay = ?1 AND room = ?2 AND message = ?3",
                 params![relay, room, message, state, now],
             )?;
-            tx.execute(
-                "UPDATE positions SET held = ?3, updated_ms = ?4 WHERE relay = ?1 AND room = ?2",
-                params![relay, room, reason, now],
-            )?;
+            if let Some(reason) = reason {
+                tx.execute(
+                    "UPDATE positions SET held = ?3, updated_ms = ?4 WHERE relay = ?1 AND room = ?2",
+                    params![relay, room, reason, now],
+                )?;
+            }
             Ok(RelayDone::Done)
         }
         RelayWrite::Hold {
@@ -641,11 +650,12 @@ fn write_queue(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite:
                 params![relay, room, reason, now],
             )?;
             if reason.is_none() {
-                // A released room's doubtful hand-offs are given up: their messages count as handled.
+                // A released room's failed hand-offs are given up: their messages count as
+                // handled. One in doubt stays queued for the relay, which tells the lead of it.
                 let doubtful: Vec<String> = {
                     let mut stmt = tx.prepare(
                         "SELECT message FROM handoffs WHERE relay = ?1 AND room = ?2 \
-                         AND state IN ('in_doubt', 'failed')",
+                         AND state = 'failed'",
                     )?;
                     stmt.query_map(params![relay, room], |r| r.get(0))?
                         .collect::<rusqlite::Result<_>>()?
@@ -665,6 +675,7 @@ fn write_queue(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite:
             }
             Ok(RelayDone::Done)
         }
+        RelayWrite::ReleaseDoubts => release_doubts(tx, now),
         RelayWrite::Flag { relay, flag, on } => {
             if *on {
                 tx.execute(
@@ -681,6 +692,33 @@ fn write_queue(tx: &Transaction<'_>, change: &RelayWrite, now: i64) -> rusqlite:
         }
         _ => Ok(RelayDone::Done),
     }
+}
+
+/// [`RelayWrite::ReleaseDoubts`]: a room held for a queued hand-off of it in doubt (the hold names
+/// its message), or because the lead's transcript could not be searched, loses its hold. Its
+/// message stays queued for the relay: one in doubt is told to the lead and finished, never handed
+/// again; one with no hand-off yet is decided by the transcript first.
+fn release_doubts(tx: &Transaction<'_>, now: i64) -> rusqlite::Result<RelayDone> {
+    let held: Vec<(String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT p.relay, p.room FROM positions p WHERE p.held IS NOT NULL AND ( \
+             p.held LIKE 'message %: the lead''s transcript could not be searched%' OR EXISTS ( \
+             SELECT 1 FROM arrival_queue q JOIN handoffs h ON h.relay = q.relay \
+             AND h.room = q.room AND h.message = q.message \
+             WHERE q.relay = p.relay AND q.room = p.room AND h.state = 'in_doubt' \
+             AND p.held LIKE 'message ' || q.message || ':%')) \
+             ORDER BY p.relay, p.room",
+        )?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (relay, room) in &held {
+        tx.execute(
+            "UPDATE positions SET held = NULL, updated_ms = ?3 WHERE relay = ?1 AND room = ?2",
+            params![relay, room, now],
+        )?;
+    }
+    Ok(RelayDone::Released(held))
 }
 
 fn write_replies(
@@ -1426,5 +1464,130 @@ mod tests {
             RelayDone::Bound(None)
         );
         assert_eq!(store.read(|q| q.queue("discord")).await.unwrap().len(), 0);
+    }
+
+    /// Rooms an earlier version held for a hand-off in doubt, or because the transcript could not
+    /// be searched, are released at start with their messages left queued for the relay. A room
+    /// held for a failed hand-off, or fenced for another reason, stays held for the owner.
+    #[tokio::test]
+    async fn rooms_held_for_a_hand_off_in_doubt_are_released() {
+        let (store, _w, _dir) = open_temp("relay-release-doubts");
+        let unsearched = "message 12: the lead's transcript could not be searched (out of time)";
+        held_for(&store, "d", "in_doubt", "message 12: unsure").await;
+        held_for(&store, "f", "failed", "message 12: unsure").await;
+        held_for(&store, "u", "in_doubt", unsearched).await;
+        // Another fence replaced the hold of a room with a hand-off in doubt.
+        held_for(&store, "o", "in_doubt", "message 12: unsure").await;
+        hold(&store, "o", Some("fenced")).await;
+        // An unsearchable transcript held a room with no hand-off record; another fence did too.
+        let unsearched_20 = "message 20: the lead's transcript could not be searched (x)";
+        for (room, reason) in [("t", unsearched_20), ("x", "fenced")] {
+            store.relay(arrive(room, 20)).await.unwrap();
+            hold(&store, room, Some(reason)).await;
+        }
+        let released = |rooms: &[&str]| {
+            let rooms = rooms.iter().map(|r| ("discord".into(), (*r).into()));
+            RelayDone::Released(rooms.collect())
+        };
+        assert_eq!(
+            store.relay(RelayWrite::ReleaseDoubts).await.unwrap(),
+            released(&["d", "t", "u"])
+        );
+        for room in ["d", "t", "u"] {
+            assert_eq!(held(&store, room).await, None, "{room}");
+        }
+        for room in ["f", "x", "o"] {
+            assert!(held(&store, room).await.is_some(), "{room}");
+        }
+        // Every message stays queued for the relay to decide (`hand_off`).
+        let queued = queued(&store).await;
+        for (room, message) in [("d", "12"), ("d", "13"), ("t", "20"), ("u", "12")] {
+            let key = (room.to_string(), message.to_string());
+            assert!(queued.contains(&key), "{key:?}: {queued:?}");
+        }
+        // Nothing is left to release.
+        assert_eq!(
+            store.relay(RelayWrite::ReleaseDoubts).await.unwrap(),
+            released(&[])
+        );
+    }
+
+    /// The owner's release gives up a failed hand-off and leaves one in doubt to the relay.
+    #[tokio::test]
+    async fn a_release_gives_up_a_failed_hand_off_only() {
+        let (store, _w, _dir) = open_temp("relay-release-failed");
+        held_for(&store, "f", "failed", "message 12: refused").await;
+        held_for(&store, "d", "in_doubt", "message 12: unsure").await;
+        for room in ["f", "d"] {
+            hold(&store, room, None).await;
+            assert_eq!(held(&store, room).await, None);
+        }
+        let queued = queued(&store).await;
+        assert!(!queued.contains(&("f".into(), "12".into())), "{queued:?}");
+        assert!(queued.contains(&("d".into(), "12".into())), "{queued:?}");
+        let h = store
+            .read(|q| q.handoff("discord", "d", "12"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(h.state, "in_doubt", "never marked delivered");
+    }
+
+    /// Messages 12 and 13 queued in `room`, 12 handed to the lead and left in `state` with the
+    /// room held for `reason`, as earlier versions left it.
+    async fn held_for(store: &crate::store::Store, room: &str, state: &str, reason: &str) {
+        store.relay(arrive(room, 12)).await.unwrap();
+        store.relay(arrive(room, 13)).await.unwrap();
+        let handed = RelayWrite::Handed {
+            relay: "discord".into(),
+            room: room.into(),
+            message: "12".into(),
+            seq: 12,
+            target: "lead".into(),
+            request_id: format!("discord:{room}:12"),
+            digest: "d".into(),
+            owed: None,
+        };
+        store.relay(handed).await.unwrap();
+        let doubt = RelayWrite::Doubt {
+            relay: "discord".into(),
+            room: room.into(),
+            message: "12".into(),
+            state: state.into(),
+            reason: Some(reason.into()),
+        };
+        store.relay(doubt).await.unwrap();
+    }
+
+    async fn hold(store: &crate::store::Store, room: &str, reason: Option<&str>) {
+        let write = RelayWrite::Hold {
+            relay: "discord".into(),
+            room: room.into(),
+            reason: reason.map(str::to_string),
+        };
+        store.relay(write).await.unwrap();
+    }
+
+    async fn held(store: &crate::store::Store, room: &str) -> Option<String> {
+        let room = room.to_string();
+        store
+            .read(move |q| {
+                Ok(q.positions("discord")?
+                    .into_iter()
+                    .find(|p| p.room == room)
+                    .and_then(|p| p.held))
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn queued(store: &crate::store::Store) -> Vec<(String, String)> {
+        store
+            .read(|q| q.queue("discord"))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|q| (q.room, q.message))
+            .collect()
     }
 }

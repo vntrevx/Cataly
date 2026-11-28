@@ -234,8 +234,9 @@ operator who configures the daemon (in practice the same person).
     49). Not found and the recorded OMP process is gone: the file is final, so the message was
     not delivered; send it again.
     Not found and the process is alive: ask it over RPC to finish writing, then search again once.
-    Still in doubt: hold that conversation only, and tell the owner which message is in doubt and
-    how to release it.
+    Still in doubt: the message counts as handled and is never sent again. The conversation is not
+    held: nothing is posted in it and its later messages go on. The lead is told once which message
+    is in doubt, before its queue item is removed.
 51. An entry with the same channel and message ID but a different envelope hash is a conflict:
     the conversation is held and reported, never silently resent.
 52. Delivered records are kept for 7 days or until the read position has passed the message and
@@ -338,8 +339,8 @@ operator who configures the daemon (in practice the same person).
   transaction per hand-off removes those windows.
 - Every message in scope was queued, owner or not. Queue only owner messages.
 - One in-doubt hand-off stopped every conversation until the operator abandoned it, and
-  abandonment needed proof that the old lead process was dead. Hold only that conversation, and
-  resolve automatically when the session file is final.
+  abandonment needed proof that the old lead process was dead. Hold no conversation: give up only
+  that message, tell the lead once, and resolve automatically when the session file is final.
 - A "rejected" hand-off outcome existed only because lead delivery went through a line filter
   meant for monitor output. Not needed.
 - A duplicate live event with changed content raised a hard error. Keep the first copy and log.

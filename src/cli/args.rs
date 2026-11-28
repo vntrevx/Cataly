@@ -345,7 +345,7 @@ pub(crate) const COMMANDS: [Spec; 59] = [
         args: &["room"],
         flags: &["--json"],
         values: &[],
-        summary: "release a held room; its in-doubt message counts as handled and is not sent again",
+        summary: "release a held room; a failed hand-off in it counts as handled, never sent again",
     },
     Spec {
         path: &["discord", "reset"],
@@ -366,7 +366,7 @@ pub(crate) const COMMANDS: [Spec; 59] = [
         args: &["room"],
         flags: &["--json"],
         values: &[],
-        summary: "release a held Telegram room; its in-doubt message counts as handled",
+        summary: "release a held Telegram room; a failed hand-off in it counts as handled",
     },
     Spec {
         path: &["telegram", "reset"],
@@ -387,7 +387,7 @@ pub(crate) const COMMANDS: [Spec; 59] = [
         args: &["room"],
         flags: &["--json"],
         values: &[],
-        summary: "release a held Slack room; its in-doubt message counts as handled",
+        summary: "release a held Slack room; a failed hand-off in it counts as handled",
     },
     Spec {
         path: &["slack", "reset"],

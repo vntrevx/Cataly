@@ -441,6 +441,7 @@ async fn serve(paths: &Paths, config: Config, store: Store, cleanup: Cleanup) ->
         lead_cwd,
         paths.files_dir.clone(),
     );
+    release_doubt_holds(&store).await;
     let (lead, lanes, agent_start, relays) = sessions(
         paths,
         &jobs,
@@ -748,7 +749,7 @@ fn lanes(
     links: &Arc<crate::host::bridge::Links>,
     lead: &Arc<Lead<Hosted>>,
 ) -> Arc<crate::lanes::Lanes<Hosted>> {
-    let (rest, lead) = (jobs.clone(), Arc::clone(lead));
+    let (rest, lead, nudged) = (jobs.clone(), Arc::clone(lead), Arc::clone(lead));
     crate::lanes::Lanes::new(crate::lanes::Env {
         config: config.clone(),
         omp: Arc::clone(omp),
@@ -758,6 +759,7 @@ fn lanes(
         make: runtime(paths, agent_start, links),
         bridge_link: Arc::new(crate::omp::extension::check),
         lead_live: Arc::new(move || lead.snapshot().is_some()),
+        lead_nudge: Arc::new(move || nudged.nudge()),
         threads: Arc::new(crate::relay::discord::threads::DiscordThreads {
             config: config.clone(),
             rest: Arc::new(move |config: &Config| rest.ctx().discord(config)),
@@ -877,6 +879,24 @@ fn hub_events(jobs: &Jobs) -> Events {
         // Closed only when the runtime shuts down.
         let _ = tx.send(emit);
     })
+}
+
+/// A hand-off in doubt no longer holds its room: rooms an earlier version held for one are released
+/// before intake starts ([`crate::store::relay::RelayWrite::ReleaseDoubts`]); nothing is resent.
+async fn release_doubt_holds(store: &Store) {
+    use crate::store::relay::{RelayDone, RelayWrite};
+    match store.relay(RelayWrite::ReleaseDoubts).await {
+        Ok(RelayDone::Released(rooms)) => {
+            for (relay, room) in rooms {
+                log::info(
+                    "room held for a hand-off in doubt released",
+                    &[("relay", &relay), ("room", &room)],
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::warn("held rooms not released", &[("error", &e)]),
+    }
 }
 
 /// Discord intake and replies (DESIGN 5.1), a supervised task that idles until the config names the

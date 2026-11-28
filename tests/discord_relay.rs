@@ -838,6 +838,101 @@ fn a_lane_thread_keeps_the_leads_answer_in_the_channel() {
     assert!(hub.stop().success());
 }
 
+/// A thread message to a lane that ends in doubt holds nothing: it is never resent, nothing is
+/// posted in the thread, the lead hears it once with the room and message, and the thread's next
+/// message goes to the lane.
+#[test]
+fn a_lane_thread_goes_on_after_a_hand_off_in_doubt() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    let work = hub.root.join("work");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{config}[lanes]\nmodel = \"fake/primary\"\ncwd = \"{}\"\n",
+        work.display()
+    ));
+    hub.start();
+    ready(&hub);
+    let source = "800000000000000191";
+    let msg = FakeDiscord::message(CH, 800_000_000_000_000_191, OWNER, "start the work");
+    fake.put(msg.clone());
+    fake.start_thread(CH, source, support::discord::BOT);
+    let params = json!({
+        "key": "w-2",
+        "title": "Work w-2",
+        "brief": "Do the work.",
+        "checks": [{ "kind": "command", "argv": ["true"] }],
+        "thread": format!("discord:{source}"),
+        "cwd": work,
+    });
+    let out = hub.cli(&["lane", "open", "--json", "--params", &params.to_string()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fake.gw(Gw::Dispatch("MESSAGE_CREATE", msg));
+    settled(&hub);
+    let lanes = hub.json(&["lane", "list", "--json", "--params", "{\"all\":true}"]);
+    let file = lanes[0]["session_file"].as_str().unwrap().to_string();
+    let in_lane = |text: &str| {
+        std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    // A thread that appears while the hub runs is read from the hub's start on, so its messages
+    // are made now.
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let now = u64::try_from(since_epoch).unwrap() - 1_420_070_400_000;
+    let (lost, next) = ((now << 22) + 1, (now << 22) + 2);
+    hub.until(WAIT, || in_lane("Lane instructions").then_some(()));
+    // The lane's OMP takes the message and never writes its entry. Its batch is in doubt once 30 s
+    // have passed and the lane's inbox is next flushed: here by the thread's next message, which
+    // the unconfirmed one does not hold back.
+    hub.fixture("omp", "noentry", Some(""));
+    fake.say(FakeDiscord::message(source, lost, OWNER, "lost on the way"));
+    let envelope = format!("[discord {source}/{lost}] request from the owner");
+    hub.until(WAIT, || {
+        (prompts_with(&hub, &[&envelope]) == 1).then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(31));
+    hub.fixture("omp", "noentry", None);
+    fake.say(FakeDiscord::message(source, next, OWNER, "the next one"));
+    hub.until(WAIT, || in_lane("the next one").then_some(()));
+    hub.until(WAIT, || {
+        (handoff_state(&hub, &lost.to_string()).as_deref() == Some("in_doubt")).then_some(())
+    });
+    assert_eq!(status(&hub)["counts"]["held"], 0);
+    assert!(!in_lane("lost on the way"));
+    // Never resent, and nothing posted in the thread about it.
+    assert_eq!(prompts_with(&hub, &[&envelope]), 1);
+    assert!(
+        !fake
+            .creates()
+            .iter()
+            .any(|c| reference(c) == Some(lost.to_string()))
+    );
+    let kinds = hub.event_kinds();
+    assert!(!kinds.iter().any(|k| k == "relay.held"), "{kinds:?}");
+    // The lead hears it once, by the relay's notice naming the room and message, not also by the
+    // lanes' alert.
+    let named = format!("{source}/{lost}");
+    hub.until(WAIT, || {
+        (prompts_with(&hub, &["[in-doubt delivery]", "for lane w-2", &named]) == 1).then_some(())
+    });
+    assert_eq!(prompts_with(&hub, &["[in-doubt delivery]", &named]), 1);
+    let alerts = hub
+        .events()
+        .into_iter()
+        .filter(|e| e["kind"] == "lane.alert" && e.to_string().contains("delivery in doubt"))
+        .count();
+    assert_eq!(alerts, 0, "{kinds:?}");
+    assert!(hub.stop().success());
+}
+
 /// With `follow_threads = false` the hub reads no threads, so the answer stays in the channel and
 /// the source message is not even read.
 #[test]
@@ -1136,9 +1231,10 @@ fn crash_at_each_wake_point_delivers_once() {
 }
 
 /// Check 4: the prompt was written but never confirmed; with the OMP process gone the message is
-/// resent once into the resumed session; with it alive past 30 s the room is held and the owner told.
+/// resent once into the resumed session; with it alive past 30 s it is in doubt: never resent,
+/// the lead told once, nothing posted in the room, and the room's next message goes to the lead.
 #[test]
-fn unconfirmed_hand_offs_resend_once_or_hold_the_room() {
+fn unconfirmed_hand_offs_resend_once_or_go_on_in_doubt() {
     let fake = FakeDiscord::start();
     let mut hub = relay_hub(&fake, &[], "");
     hub.start();
@@ -1164,7 +1260,7 @@ fn unconfirmed_hand_offs_resend_once_or_hold_the_room() {
     );
     assert_eq!(requests(&hub).len(), 1, "resent once");
 
-    // The process stays alive and never writes the entry: in doubt after 30 s, room held.
+    // The process stays alive and never writes the entry: in doubt after 30 s.
     hub.fixture("omp", "noentry", Some(""));
     fake.say(FakeDiscord::message(
         CH,
@@ -1172,62 +1268,299 @@ fn unconfirmed_hand_offs_resend_once_or_hold_the_room() {
         OWNER,
         "lost in transit",
     ));
-    let s = hub.until(Duration::from_secs(70), || {
-        let s = status(&hub);
-        (s["counts"]["held"] == 1).then_some(s)
+    hub.until(Duration::from_secs(70), || {
+        (handoff_state(&hub, "800000000000000042").as_deref() == Some("in_doubt")).then_some(())
     });
-    assert!(
-        s["held"][0]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("800000000000000042"),
-        "{s}"
-    );
-    let told = fake.wait(WAIT, |f| {
-        f.creates()
-            .into_iter()
-            .find(|c| reference(c).as_deref() == Some("800000000000000042"))
-    });
-    assert!(
-        told.body["content"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("cataly discord release {CH}"))
-    );
-    hub.until(WAIT, || {
-        hub.event_kinds()
-            .iter()
-            .any(|k| k == "relay.held")
-            .then_some(())
-    });
-    // Nothing more from the held room goes to the lead.
+    // The room is not held and the in-doubt message left the queue, given up.
+    let s = status(&hub);
+    assert_eq!(s["counts"]["held"], 0, "{s}");
+    assert_eq!(queued(&hub, 800_000_000_000_000_042), 0);
+    // The room's next message goes to the lead and is answered.
+    hub.fixture("omp", "noentry", None);
     fake.say(FakeDiscord::message(
         CH,
         800_000_000_000_000_043,
         OWNER,
         "still there?",
     ));
-    std::thread::sleep(Duration::from_secs(2));
-    // The in-doubt message and the new one both wait in the arrival queue.
-    assert_eq!(status(&hub)["counts"]["queued"], 2);
-    assert!(
-        !requests(&hub)
-            .iter()
-            .any(|r| r.contains("800000000000000043"))
-    );
-    // The lead is told of the held room once (DESIGN 9.3, COORD-13), as a quiet note.
-    let inbox = hub.json(&["lead", "inbox", "--json"]).to_string();
-    assert_eq!(inbox.matches("[event relay.held]").count(), 1, "{inbox}");
-    assert!(hub.cli(&["discord", "release", CH]).status.success());
-    hub.fixture("omp", "noentry", None);
-    hub.until(WAIT, || (status(&hub)["counts"]["held"] == 0).then_some(()));
-    // The lead's batch written while the session still confirmed nothing (the in-doubt notice,
-    // with the quiet note) must end, confirmed or in doubt after 30 s, before the next one goes.
+    // The lead's batch written while the session still confirmed nothing (the in-doubt notice)
+    // must end, confirmed or in doubt after 30 s, before the next one goes.
     fake.wait(Duration::from_secs(70), |f| {
         f.creates()
             .into_iter()
             .find(|c| reference(c).as_deref() == Some("800000000000000043"))
     });
+    assert!(
+        requests(&hub)
+            .iter()
+            .any(|r| r.contains("800000000000000043"))
+    );
+    // Nothing was posted in the room about the message in doubt.
+    assert!(
+        !fake
+            .creates()
+            .iter()
+            .any(|c| reference(c).as_deref() == Some("800000000000000042")),
+        "nothing posted for the message in doubt"
+    );
+    assert!(!hub.event_kinds().iter().any(|k| k == "relay.held"));
+    // Never resent: the owner's envelope went to OMP once.
+    let envelope = format!("[discord {CH}/800000000000000042] request from the owner");
+    assert_eq!(prompts_with(&hub, &[&envelope]), 1);
+    // The lead was told once, by the in-doubt notice naming the room and message.
+    assert_eq!(
+        prompts_with(&hub, &["[in-doubt delivery]", "800000000000000042"]),
+        1
+    );
+    assert_eq!(status(&hub)["counts"]["held"], 0);
+    assert!(hub.stop().success());
+}
+
+/// The hand-off record state of one Discord message in the hub's store.
+fn handoff_state(hub: &TestHub, message: &str) -> Option<String> {
+    let db = rusqlite::Connection::open_with_flags(
+        hub.state().join("cataly.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    db.query_row(
+        "SELECT state FROM handoffs WHERE relay = 'discord' AND message = ?1",
+        [message],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Prompt, follow-up and steer lines the fake OMP got (lead and lanes) that contain every part.
+fn prompts_with(hub: &TestHub, parts: &[&str]) -> usize {
+    std::fs::read_to_string(hub.root.join("bin/omp-data/prompts"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| parts.iter().all(|p| l.contains(p)))
+        .count()
+}
+
+/// A room an earlier version held for a hand-off in doubt is released when the hub starts: the
+/// message in doubt is never handed again, the lead gets one notice with its text, and the room's
+/// next message goes on.
+#[test]
+fn a_room_held_for_a_hand_off_in_doubt_is_released_at_start() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.start();
+    ready(&hub);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_061,
+        OWNER,
+        "before",
+    ));
+    fake.wait_creates(1, WAIT);
+    hub.until(WAIT, || {
+        (status(&hub)["rooms"][0]["position"] == "800000000000000061").then_some(())
+    });
+    assert!(hub.stop().success());
+    // What an earlier version left: the room held for a queued hand-off in doubt.
+    let (doubt, seq) = ("800000000000000062", 800_000_000_000_000_062_i64);
+    {
+        let db = rusqlite::Connection::open(hub.state().join("cataly.db")).unwrap();
+        let raw =
+            FakeDiscord::message(CH, 800_000_000_000_000_062, OWNER, "stuck before").to_string();
+        db.execute(
+            "INSERT INTO arrival_queue (relay, room, message, seq, parent, position_at, raw, bytes, \
+             created_ms) VALUES ('discord', ?1, ?2, ?3, NULL, ?3 - 1, ?4, length(?4), 0)",
+            rusqlite::params![CH, doubt, seq, raw],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO handoffs (relay, room, message, seq, target, request_id, digest, state, \
+             answer, created_ms, updated_ms) VALUES ('discord', ?1, ?2, ?3, 'lead', ?4, 'd', \
+             'in_doubt', 'waiting', 0, 0)",
+            rusqlite::params![CH, doubt, seq, format!("discord:{CH}:{doubt}")],
+        )
+        .unwrap();
+        let held = db
+            .execute(
+                "UPDATE positions SET held = ?2 WHERE relay = 'discord' AND room = ?1",
+                rusqlite::params![
+                    CH,
+                    format!("message {doubt}: the lead may or may not have it")
+                ],
+            )
+            .unwrap();
+        assert_eq!(held, 1);
+    }
+    // Written while the hub was down: the start's catch-up read finds it behind the one in doubt.
+    fake.put(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_063,
+        OWNER,
+        "after the update",
+    ));
+    hub.start();
+    fake.wait(WAIT, |f| {
+        f.creates()
+            .into_iter()
+            .find(|c| reference(c).as_deref() == Some("800000000000000063"))
+    });
+    let s = status(&hub);
+    assert_eq!(s["counts"]["held"], 0, "{s}");
+    assert_eq!(queued(&hub, 800_000_000_000_000_062), 0);
+    assert_eq!(handoff_state(&hub, doubt).as_deref(), Some("in_doubt"));
+    // Never handed again: it reached the lead only inside one in-doubt notice, with its text.
+    let envelope = format!("[discord {CH}/{doubt}] request from the owner");
+    assert_eq!(
+        prompts_with(&hub, &["[in-doubt delivery]", &envelope, "stuck before"]),
+        1
+    );
+    assert_eq!(prompts_with(&hub, &[&envelope]), 1);
+    assert!(
+        !fake
+            .creates()
+            .iter()
+            .any(|c| reference(c).as_deref() == Some(doubt))
+    );
+    assert!(hub.stop().success());
+}
+
+/// An owner message a catch-up read finds while the lead's transcript cannot be searched is in
+/// doubt: never handed again as a request, the lead told once with its text, nothing posted in the
+/// room, and the room's next message goes to the lead.
+#[test]
+fn an_unsearchable_transcript_leaves_the_message_in_doubt_and_the_room_open() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.start();
+    ready(&hub);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_081,
+        OWNER,
+        "before",
+    ));
+    fake.wait_creates(1, WAIT);
+    hub.until(WAIT, || {
+        (status(&hub)["rooms"][0]["position"] == "800000000000000081").then_some(())
+    });
+    assert!(hub.stop().success());
+    // Written while the hub was down: the start's catch-up read finds it, not read live.
+    let doubt = "800000000000000082";
+    fake.put(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_082,
+        OWNER,
+        "while away",
+    ));
+    hub.env.push((
+        "CATALY_FAULT".into(),
+        PathBuf::from("transcript_unsearchable"),
+    ));
+    hub.start();
+    hub.until(WAIT, || {
+        (handoff_state(&hub, doubt).as_deref() == Some("in_doubt")).then_some(())
+    });
+    assert_eq!(status(&hub)["counts"]["held"], 0);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_083,
+        OWNER,
+        "after",
+    ));
+    fake.wait(WAIT, |f| {
+        f.creates()
+            .into_iter()
+            .find(|c| reference(c).as_deref() == Some("800000000000000083"))
+    });
+    // The lead was told once, with the message's text; that notice is the only place it went.
+    let envelope = format!("[discord {CH}/{doubt}] request from the owner");
+    assert_eq!(
+        prompts_with(&hub, &["[in-doubt delivery]", &envelope, "while away"]),
+        1
+    );
+    assert_eq!(prompts_with(&hub, &[&envelope]), 1);
+    assert!(
+        !fake
+            .creates()
+            .iter()
+            .any(|c| reference(c).as_deref() == Some(doubt))
+    );
+    assert!(!hub.event_kinds().iter().any(|k| k == "relay.held"));
+    assert!(hub.stop().success());
+}
+
+/// A stop between the lead's in-doubt notice and the queue item's finish neither hands the
+/// message again nor loses the notice: after the restart the message is only ever in the notice.
+#[test]
+fn a_stop_after_the_in_doubt_notice_never_hands_the_message_again() {
+    let fake = FakeDiscord::start();
+    let mut hub = relay_hub(&fake, &[], "");
+    hub.start();
+    ready(&hub);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_091,
+        OWNER,
+        "before",
+    ));
+    fake.wait_creates(1, WAIT);
+    hub.until(WAIT, || {
+        (status(&hub)["rooms"][0]["position"] == "800000000000000091").then_some(())
+    });
+    assert!(hub.stop().success());
+    let doubt = "800000000000000092";
+    fake.put(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_092,
+        OWNER,
+        "while away",
+    ));
+    hub.env.push((
+        "CATALY_FAULT".into(),
+        PathBuf::from("transcript_unsearchable_stop"),
+    ));
+    let pids_file = hub.root.join("bin/omp-data/pids");
+    let pids = || std::fs::read_to_string(&pids_file).unwrap_or_default();
+    let before = pids().lines().count();
+    hub.start();
+    let exit = hub.wait_exit(WAIT);
+    assert!(!exit.success(), "the fault point ended the hub");
+    // The lead's OMP of the stopped run lets go of its session before the restart.
+    for pid in pids().lines().skip(before) {
+        gone(&hub, pid.trim());
+    }
+    assert_eq!(handoff_state(&hub, doubt).as_deref(), Some("in_doubt"));
+    assert_eq!(
+        queued(&hub, 800_000_000_000_000_092),
+        1,
+        "stopped before the finish"
+    );
+    hub.env.clear();
+    hub.start();
+    ready(&hub);
+    assert_eq!(queued(&hub, 800_000_000_000_000_092), 0);
+    fake.say(FakeDiscord::message(
+        CH,
+        800_000_000_000_000_093,
+        OWNER,
+        "after",
+    ));
+    fake.wait(WAIT, |f| {
+        f.creates()
+            .into_iter()
+            .find(|c| reference(c).as_deref() == Some("800000000000000093"))
+    });
+    // The lead got the notice; the message itself went nowhere else.
+    let envelope = format!("[discord {CH}/{doubt}] request from the owner");
+    let in_notice = prompts_with(&hub, &["[in-doubt delivery]", &envelope]);
+    assert!(in_notice >= 1);
+    assert_eq!(prompts_with(&hub, &[&envelope]), in_notice);
+    assert_eq!(status(&hub)["counts"]["held"], 0);
+    assert!(
+        !fake
+            .creates()
+            .iter()
+            .any(|c| reference(c).as_deref() == Some(doubt))
+    );
     assert!(hub.stop().success());
 }
 
