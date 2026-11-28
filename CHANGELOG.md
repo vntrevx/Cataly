@@ -4,6 +4,9 @@
 
 - Discord form options with an explicit empty value keep that value instead of returning their
   label to OMP. Only options without a value attribute use their label as the value.
+- Discord: disabled select options could be offered as buttons or recommended defaults, then refused
+  by OMP. They are now left out of form choices, defaults and answers.
+
 - A lead whose hold was lifted without `cataly lead start` (as 0.2.8's repair of the false
   "ambiguous lead binding history" does) could be held again by the first message that woke it,
   "300 s recovery episode has no startup and cleanup budget remaining", with nothing attempted:
