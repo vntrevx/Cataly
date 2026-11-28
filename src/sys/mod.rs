@@ -37,6 +37,7 @@ pub(crate) mod fault {
 }
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The one decision class every error carries (DESIGN 9.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,25 @@ pub(crate) fn own_uid() -> u32 {
 /// Milliseconds since the Unix epoch, from the wall clock.
 pub(crate) fn now_ms() -> i64 {
     jiff::Timestamp::now().as_millisecond()
+}
+
+/// The XDG homes the hub's own paths come from, as `lookup` gives them, skipping unset, empty and
+/// relative values as path resolution does; the service and OMP children inherit these.
+pub(crate) fn xdg_homes<V: AsRef<std::ffi::OsStr>>(
+    lookup: impl Fn(&str) -> Option<V>,
+) -> impl Iterator<Item = (&'static str, V)> {
+    ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"]
+        .into_iter()
+        .filter_map(move |name| {
+            let value = lookup(name).filter(|v| std::path::Path::new(v).is_absolute())?;
+            Some((name, value))
+        })
+}
+
+/// `<now_ms>-<n>`, `n` counting up in this process: a file stem no other call here returns.
+pub(crate) fn unique_stem() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Lower-case hexadecimal of `bytes`.

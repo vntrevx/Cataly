@@ -1,20 +1,20 @@
-//! Running a job command and applying its outcome (WS req. 59-62, DESIGN 6.2). The order is fixed:
-//! record the run, spawn, record its end, append the run's events, then commit memory and run state.
-//! A crash after the append but before the commit makes start-up apply the run again, so an event may
-//! repeat but is never lost.
+//! Running a job command and applying its outcome (WS req. 56-62, DESIGN 6.2). The order is fixed:
+//! recheck timed occurrences after acquiring a command slot, record the run, spawn, record its end,
+//! append the run's events, then commit memory and run state. A crash after the append but before the
+//! commit makes start-up apply the run again, so an event may repeat but is never lost.
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::{Fire, Job, Trigger, Work};
-use crate::store::{Apply, EventRecord, RunEnd, RunRecord, RunStart};
+use crate::store::{Apply, EventRecord, JobPatch, RunEnd, RunRecord, RunStart};
 use crate::sys::command::{self, Exit, KILL_GRACE, Output, Spec};
 use crate::sys::fs::{ensure_private_dir, read_private};
-use crate::sys::now_ms;
+use crate::sys::{now_ms, unique_stem};
 
 use super::event::{BODY_INLINE_MAX, Emit, EventKind, Severity, build};
 use super::memory::Memory;
+use super::schedule::{LATE, LATE_MS, record_skips};
 use super::{Ctx, JobsError, instant_text};
 
 /// Output kept per run file (DESIGN 7.1: child output capped at 1 MiB).
@@ -23,7 +23,8 @@ const OUTPUT_CAP: u64 = 1024 * 1024;
 /// One run to perform.
 pub(super) struct Request {
     pub(super) job: Arc<Job>,
-    pub(super) scheduled_ms: i64,
+    /// A scheduler occurrence; `None` for a manual run, which has no lateness limit.
+    pub(super) scheduled_ms: Option<i64>,
     pub(super) dry: bool,
     /// One-shot: consume the job in the same transaction that records the run.
     pub(super) consume: bool,
@@ -106,14 +107,39 @@ fn outcome_text(class: &Class) -> String {
     }
 }
 
-/// Performs one run end to end and returns the events it produced.
+/// Performs one run end to end and returns the events it produced. A timed occurrence that is 60 s
+/// or more late once it holds a command slot is skipped, as the scheduler skips it (WS req. 56).
 pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>, JobsError> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let scheduled_ms = req.scheduled_ms.unwrap_or_else(now_ms);
     let _slot = ctx
         .command_slots
         .acquire()
         .await
         .map_err(|_| JobsError::Stopped)?;
+    let started_ms = now_ms();
+    if req.scheduled_ms.is_some()
+        && matches!(req.job.trigger, Trigger::Cron { .. } | Trigger::Once { .. })
+        && started_ms.saturating_sub(scheduled_ms) >= LATE_MS
+    {
+        let patch = JobPatch {
+            next_due_ms: req.consume.then_some(None),
+            consumed: req.consume.then_some(true),
+            held: req.consume.then_some(true),
+            ..JobPatch::default()
+        };
+        let (events, _) = record_skips(ctx, &req.job, &[(1, LATE)], started_ms, patch).await?;
+        return Ok(events);
+    }
+    execute_in_slot(ctx, &req, scheduled_ms, started_ms).await
+}
+
+/// Records, runs and applies a command while the caller holds its slot and has checked lateness.
+async fn execute_in_slot(
+    ctx: &Ctx,
+    req: &Request,
+    scheduled_ms: i64,
+    started_ms: i64,
+) -> Result<Vec<EventRecord>, JobsError> {
     let job = &req.job;
     let Work::Command { argv, cwd } = &job.work else {
         return Err(JobsError::Refused(format!(
@@ -124,8 +150,7 @@ pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>,
     let probe = matches!(job.trigger, Trigger::Probe { .. });
     let dir = ctx.files_dir.join("runs").join(&job.name);
     ensure_private_dir(&dir).map_err(JobsError::Fs)?;
-    let started_ms = now_ms();
-    let stem = format!("{started_ms}-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+    let stem = unique_stem();
     let stdout_path = dir.join(format!("{stem}.out"));
     let stderr_path = probe.then(|| dir.join(format!("{stem}.err")));
     let run = ctx
@@ -133,7 +158,7 @@ pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>,
         .run_started(RunStart {
             job: job.name.clone(),
             dry: req.dry,
-            scheduled_ms: req.scheduled_ms,
+            scheduled_ms,
             started_ms,
             stdout_path: stdout_path.display().to_string(),
             stderr_path: stderr_path.as_ref().map(|p| p.display().to_string()),
@@ -159,7 +184,7 @@ pub(super) async fn execute(ctx: &Ctx, req: Request) -> Result<Vec<EventRecord>,
     let mut facts = Facts {
         run,
         dry: req.dry,
-        scheduled_ms: req.scheduled_ms,
+        scheduled_ms,
         started_ms,
         exit_code: None,
         signal: None,
@@ -542,6 +567,9 @@ fn kind_of(run: &RunRecord) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
     use super::*;
     use crate::jobs::tests::{ctx_in, ctx_with, probe_config};
     use crate::store::Reads;
@@ -641,6 +669,137 @@ mod tests {
         assert_eq!(kind_of(&record), "probe");
     }
 
+    /// Pending while every command slot is held, then skipped once it gets one: the lateness of a
+    /// timed run is judged when it holds a slot, not when it was queued (WS req. 56).
+    #[tokio::test]
+    async fn timed_runs_recheck_lateness_after_waiting_for_a_slot() {
+        for dry in [false, true] {
+            for (trigger, consume) in [
+                ("kind = \"once\"\nat = \"2030-01-01T00:00:00Z\"", true),
+                (
+                    "kind = \"cron\"\ncron = \"* * * * *\"\nzone = \"UTC\"",
+                    false,
+                ),
+            ] {
+                let cfg = format!(
+                    "[jobs.t]\n{trigger}\nargv = [\"true\"]\ncwd = \"/\"\ndry_run = {dry}\n"
+                );
+                let (ctx, _stop, _dir) = ctx_with(&cfg, "run-slot-late");
+                let job = ctx.config().jobs.get("t").cloned().unwrap();
+                let due = now_ms() - LATE_MS;
+                // Cron's next due time is already advanced by the scheduler before it queues a run.
+                let next_due_ms = Some(if consume { due } else { due + 120_000 });
+                ctx.store
+                    .register_job(crate::store::JobRegistration {
+                        name: job.name.clone(),
+                        kind: job.kind(),
+                        trigger: job.trigger.canonical(),
+                        next_due_ms,
+                        now_ms: due,
+                    })
+                    .await
+                    .unwrap();
+                let slots = ctx.command_slots.acquire_many(4).await.unwrap();
+                let run = execute(
+                    &ctx,
+                    Request {
+                        job,
+                        scheduled_ms: Some(due),
+                        dry,
+                        consume,
+                    },
+                );
+                tokio::pin!(run);
+                assert!(
+                    poll_fn(|cx| Poll::Ready(run.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                let waiting = ctx.store.read(|r| r.job("t")).await.unwrap().unwrap();
+                assert!(!waiting.held && !waiting.consumed && waiting.skipped == 0);
+                drop(slots);
+                let events = run.await.unwrap();
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].kind, "run.skipped");
+                assert!(events[0].text.contains("60 s or more late"));
+                assert_eq!(events[0].dry, dry);
+                assert!(events[0].at_ms >= due + LATE_MS);
+                assert_eq!(
+                    ctx.store.read(|r| r.events_after(0, 10)).await.unwrap(),
+                    events
+                );
+                assert_eq!(ctx.store.read(Reads::last_runs).await.unwrap(), []);
+                assert!(!ctx.files_dir.join("runs").exists());
+                let skipped = ctx.store.read(|r| r.job("t")).await.unwrap().unwrap();
+                assert_eq!(skipped.skipped, 1);
+                assert_eq!((skipped.held, skipped.consumed), (consume, consume));
+                assert_eq!(
+                    skipped.next_due_ms,
+                    if consume { None } else { next_due_ms }
+                );
+            }
+        }
+    }
+
+    /// A manual run has no scheduled occurrence, so waiting for a slot never makes it late.
+    #[tokio::test]
+    async fn manual_timed_runs_wait_for_a_slot_without_being_skipped() {
+        for trigger in [
+            "kind = \"once\"\nat = \"2030-01-01T00:00:00Z\"",
+            "kind = \"cron\"\ncron = \"* * * * *\"\nzone = \"UTC\"",
+        ] {
+            let cfg = format!("[jobs.t]\n{trigger}\nargv = [\"echo\", \"ran\"]\ncwd = \"/\"\n");
+            let (ctx, _stop, _dir) = ctx_with(&cfg, "run-manual-slot");
+            let job = ctx.config().jobs.get("t").cloned().unwrap();
+            let before = ctx
+                .store
+                .register_job(crate::store::JobRegistration {
+                    name: job.name.clone(),
+                    kind: job.kind(),
+                    trigger: job.trigger.canonical(),
+                    next_due_ms: Some(now_ms() + 120_000),
+                    now_ms: now_ms(),
+                })
+                .await
+                .unwrap();
+            let slots = ctx.command_slots.acquire_many(4).await.unwrap();
+            let began = now_ms();
+            let run = execute(
+                &ctx,
+                Request {
+                    job,
+                    // Jobs::run_once passes no scheduled occurrence for a manual dry tick.
+                    scheduled_ms: None,
+                    dry: true,
+                    consume: false,
+                },
+            );
+            tokio::pin!(run);
+            assert!(
+                poll_fn(|cx| Poll::Ready(run.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+            drop(slots);
+            let events = run.await.unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, "run.done");
+            assert!(events[0].dry);
+            assert_eq!(events[0].body.as_deref(), Some("ran\n"));
+            let runs = ctx.store.read(Reads::last_runs).await.unwrap();
+            assert_eq!(runs.len(), 1);
+            assert!(runs[0].dry);
+            assert_eq!(runs[0].exit_code, Some(0));
+            assert!(runs[0].scheduled_ms >= began && runs[0].scheduled_ms <= runs[0].started_ms);
+            let after = ctx.store.read(|r| r.job("t")).await.unwrap().unwrap();
+            assert_eq!(after.skipped, 0);
+            assert_eq!(
+                after, before,
+                "manual runs leave scheduling state untouched"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn timed_run_reports_output_and_failure() {
         let cfg = "[jobs.t]\nkind = \"once\"\nat = \"2030-01-01T00:00:00Z\"\nargv = [\"sh\", \"-c\", \"echo hello; exit 3\"]\ncwd = \"/\"\n";
@@ -650,7 +809,7 @@ mod tests {
             &ctx,
             Request {
                 job,
-                scheduled_ms: 5,
+                scheduled_ms: Some(now_ms()),
                 dry: false,
                 consume: false,
             },
@@ -681,7 +840,7 @@ mod tests {
         let job = ctx.config().jobs.get("p").cloned().unwrap();
         let req = |job: &Arc<Job>| Request {
             job: Arc::clone(job),
-            scheduled_ms: 1,
+            scheduled_ms: Some(1),
             dry: false,
             consume: false,
         };
@@ -727,7 +886,7 @@ mod tests {
                 &ctx,
                 Request {
                     job,
-                    scheduled_ms: 1,
+                    scheduled_ms: Some(1),
                     dry: false,
                     consume: false,
                 },

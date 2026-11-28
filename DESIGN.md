@@ -486,10 +486,17 @@ relay destinations, or kept locally. Messenger posts never mention anyone and pa
   Request `{v, id, method, params}`; reply `{v, id, ok}` or `{v, id, err: {code, message}}`. Streams
   (`events.follow`, `session.follow`) send `{v, id, item}` lines until cancelled. A request runs to completion
   even if its caller disconnects; every mutating method takes an optional caller request ID for dedupe.
+  `events.since` pages fit the line limit with room for the reply envelope. Without `after` or
+  `since_ms`, they keep the newest selected events; with either cursor, they keep an oldest-first
+  prefix. Byte-limited replies include `more`, an `after` cursor for reading omitted events. In
+  latest mode it replays the selected range from its old end, possibly repeating newer events
+  already shown. The CLI prints this hint on stderr, leaving JSON event lines unchanged.
 - **Bridge link.** Same socket: `hello` (protocol version, OMP version, launch token, session ID and file, PID,
   cwd, agent kind, run mode) → role answer with guidance text, tools to show, model pin, shell-rules flag. Then
   events with per-connection sequence numbers, heartbeats every 15 s (45 s = closed), bounded buffering on the
-  bridge side (1,000 events or 1 MiB), snapshot on reconnect (EXT requirements 3-16).
+  bridge side (1,000 events or 1 MiB), snapshot on reconnect (EXT requirements 3-16). An unanswered first hello
+  retries with the same session and private random hello ID; the launch token stays bound to that identity until
+  a subsequent bridge request acknowledges the welcome, without extending the token's original lifetime.
 - **Versioning.** `v` is the control protocol major (starts at 1). Fields are only added within a major;
   unknown fields are ignored; unknown methods answer `unknown_method`. The bridge carries its own extension
   protocol version; a mismatch gets role `none` and an owner notice. The CLI and hub come from one binary, so
@@ -603,7 +610,7 @@ path. The values come from the specs; the main ones:
 | Telegram long poll / Slack calls | 25 s wait + 10 s / 15 s |
 | `gh` / git local / git push | 60 s (GitHub reads in done checks 120 s) / 60 s / 300 s |
 | Job commands / event commands | per job (default 30 s, max 1 day) / 30 s, 4 at a time |
-| Bridge: connect / report tool / job tool / shell veto / stop gate | 1 s / 10 s / 5 s / 2 s / 1 s |
+| Bridge: connect / report tool / job tool (`lane.review`) / shell veto / stop gate | 1 s / 10 s / 5 s (review limit + 4 GitHub reads + 1 min, about 40 min) / 2 s / 1 s |
 | Session file reads | header 64 KiB (1 MiB for reopen), in-doubt search last 8 MiB and 2 s, file ≤ 64 MiB |
 | Release check / install downloads | 15 s, 1 MiB / connect 10 s, 120 s per asset, binary ≤ 128 MiB |
 

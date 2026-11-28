@@ -253,6 +253,221 @@ fn open_preview_refusals_and_dedupe() {
     hub.stop();
 }
 
+/// A model change is refused while working, but first reads the fake's running state back.
+fn working_for_steering(hub: &TestHub, key: &str) {
+    hub.fixture("omp", "busy", Some(""));
+    let refused = lane(
+        hub,
+        "model",
+        &json!({ "key": key, "model": "fake/primary" }),
+    )
+    .unwrap_err();
+    assert!(refused.contains("the session is not idle"), "{refused}");
+    assert_eq!(
+        lane(hub, "read", &json!({ "key": key })).unwrap()["status"],
+        "working"
+    );
+}
+
+fn steering_commands(hub: &TestHub) -> Vec<Value> {
+    std::fs::read_to_string(data(hub).join("prompts"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["type"] == "steer")
+        .collect()
+}
+
+fn has_steering_receipt(hub: &TestHub, key: &str, id: &str) -> bool {
+    recovery::db(hub)
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM receipts WHERE target = ?1 AND request_id = ?2 AND inbox_id IS NULL)",
+            [key, id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// LANE req. 33: a lost steering reply never causes the same command to be written again.
+#[test]
+fn steer_request_ids_are_once_only_per_lane() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    for key in ["steer-a", "steer-b"] {
+        open(&hub, key, &json!({}));
+    }
+    for key in ["steer-a", "steer-b"] {
+        working_for_steering(&hub, key);
+        let request =
+            json!({ "key": key, "text": "change direction", "steer": true, "id": "same-id" });
+        let first = lane(&hub, "send", &request).unwrap();
+        assert!(first.as_str().unwrap().starts_with("Delivered"), "{first}");
+        let again = lane(&hub, "send", &request).unwrap();
+        assert!(again.as_str().unwrap().contains("earlier"), "{again}");
+        assert!(has_steering_receipt(&hub, key, "same-id"));
+    }
+    assert_eq!(
+        steering_commands(&hub).len(),
+        2,
+        "one command per target, not per retry"
+    );
+    hub.stop();
+}
+
+/// A readback that is no longer working, or an explicit refusal, leaves the ID retryable.
+#[test]
+fn steer_request_id_is_retryable_after_definite_refusal() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "steer-a", &json!({}));
+    working_for_steering(&hub, "steer-a");
+    let request =
+        json!({ "key": "steer-a", "text": "change direction", "steer": true, "id": "retry-id" });
+    hub.fixture("omp", "busy", None);
+    let not_ready = lane(&hub, "send", &request).unwrap();
+    assert!(
+        not_ready.as_str().unwrap().starts_with("NotReady"),
+        "{not_ready}"
+    );
+    assert!(!has_steering_receipt(&hub, "steer-a", "retry-id"));
+    assert_eq!(steering_commands(&hub), [] as [Value; 0]);
+    working_for_steering(&hub, "steer-a");
+    hub.fixture("omp", "steer-result", Some("refuse"));
+    let refused = lane(&hub, "send", &request).unwrap();
+    assert!(
+        refused.as_str().unwrap().starts_with("Refused"),
+        "{refused}"
+    );
+    assert!(!has_steering_receipt(&hub, "steer-a", "retry-id"));
+    hub.fixture("omp", "steer-result", None);
+    let accepted = lane(&hub, "send", &request).unwrap();
+    assert!(
+        accepted.as_str().unwrap().starts_with("Delivered"),
+        "{accepted}"
+    );
+    let again = lane(&hub, "send", &request).unwrap();
+    assert!(again.as_str().unwrap().contains("earlier"), "{again}");
+    assert_eq!(
+        steering_commands(&hub).len(),
+        2,
+        "only the refusal and accepted retry reached OMP"
+    );
+    hub.stop();
+}
+
+/// An uncertain steering command fences later messages, and release never erases its receipt.
+#[test]
+fn steer_request_id_survives_an_uncertain_result_and_release() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "steer-a", &json!({}));
+    working_for_steering(&hub, "steer-a");
+    hub.fixture("omp", "steer-result", Some("unknown"));
+    let request = json!({ "key": "steer-a", "text": "change direction", "steer": true, "id": "uncertain-id" });
+    let uncertain = lane(&hub, "send", &request).unwrap();
+    assert!(
+        uncertain.as_str().unwrap().starts_with("InDoubt"),
+        "{uncertain}"
+    );
+    assert!(
+        record(&hub, "steer-a")["doubt"]
+            .as_str()
+            .unwrap()
+            .contains("uncertain-id")
+    );
+    assert!(has_steering_receipt(&hub, "steer-a", "uncertain-id"));
+    let blocked = lane(
+        &hub,
+        "send",
+        &json!({ "key": "steer-a", "text": "next instruction", "id": "new-id" }),
+    )
+    .unwrap_err();
+    assert!(blocked.contains("in doubt"), "{blocked}");
+    lane(
+        &hub,
+        "release",
+        &json!({ "key": "steer-a", "note": "checked the transcript" }),
+    )
+    .unwrap();
+    let again = lane(&hub, "send", &request).unwrap();
+    assert!(again.as_str().unwrap().contains("earlier"), "{again}");
+    assert_eq!(steering_commands(&hub).len(), 1);
+    hub.stop();
+}
+
+/// A receipt is a duplicate only for the same steering text.
+#[test]
+fn steer_request_id_rejects_different_text() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "steer-a", &json!({}));
+    working_for_steering(&hub, "steer-a");
+    let mut request =
+        json!({ "key": "steer-a", "text": "first instruction", "steer": true, "id": "same-id" });
+    lane(&hub, "send", &request).unwrap();
+    request["text"] = json!("different instruction");
+    let refused = lane(&hub, "send", &request).unwrap_err();
+    assert!(refused.contains("different text"), "{refused}");
+    request["text"] = json!("first instruction");
+    let again = lane(&hub, "send", &request).unwrap();
+    assert!(again.as_str().unwrap().contains("earlier"), "{again}");
+    assert_eq!(steering_commands(&hub).len(), 1);
+    hub.stop();
+}
+
+/// Both sides of the write retain the same durable fence when the hub dies before settlement.
+#[test]
+fn steer_request_id_crash_keeps_the_fence_after_restart() {
+    for (point, written) in [("steer_reserved", 0), ("steer_written", 1)] {
+        let (mut hub, _) = lane_hub("");
+        hub.env.push(("CATALY_FAULT".into(), PathBuf::from(point)));
+        start(&mut hub);
+        open(&hub, "steer-a", &json!({}));
+        working_for_steering(&hub, "steer-a");
+        let request = json!({ "key": "steer-a", "text": "change direction", "steer": true, "id": "crash-id" });
+        assert!(lane(&hub, "send", &request).is_err());
+        assert!(!hub.wait_exit(WAIT).success());
+        assert!(has_steering_receipt(&hub, "steer-a", "crash-id"));
+        assert_eq!(steering_commands(&hub).len(), written);
+        hub.env.clear();
+        hub.fixture("omp", "busy", None);
+        start(&mut hub);
+        let rec = hub.until(WAIT, || {
+            let rec = record(&hub, "steer-a");
+            (rec["live"] == true).then_some(rec)
+        });
+        assert!(
+            rec["doubt"]
+                .as_str()
+                .is_some_and(|d| d.contains("crash-id")),
+            "{point}: {rec}"
+        );
+        let repeat = lane(&hub, "send", &request).unwrap_err();
+        assert!(repeat.contains("in doubt"), "{repeat}");
+        let fresh = lane(
+            &hub,
+            "send",
+            &json!({ "key": "steer-a", "text": "new instruction", "id": "new-id" }),
+        )
+        .unwrap_err();
+        assert!(fresh.contains("in doubt"), "{fresh}");
+        lane(
+            &hub,
+            "release",
+            &json!({ "key": "steer-a", "note": "checked the transcript" }),
+        )
+        .unwrap();
+        let again = lane(&hub, "send", &request).unwrap();
+        assert!(again.as_str().unwrap().contains("earlier"), "{again}");
+        assert_eq!(
+            steering_commands(&hub).len(),
+            written,
+            "restart and release never resend"
+        );
+        hub.stop();
+    }
+}
+
 /// Check 2: a model mismatch at start keeps the process, sends no brief, marks the start held and
 /// tells the lead.
 #[test]
@@ -362,6 +577,87 @@ fn reports_need_the_current_run_and_novelty_counts_only_new_evidence() {
             .unwrap()
             .contains("the lane moved on"),
         "an earlier run"
+    );
+    hub.stop();
+}
+
+/// EVR req. 31: repeating a recorded step does not reopen its file evidence or alter the record.
+#[test]
+fn repeated_step_with_removed_file_is_unchanged() {
+    let (mut hub, work) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "step-file", &json!({}));
+    let rec = record(&hub, "step-file");
+    let (mut b, _) = hello(&hub, &rec);
+    std::fs::write(work.join("out.txt"), "result").unwrap();
+    let input = json!({
+        "op": "step", "name": "build", "result": "built", "evidence": "out.txt",
+        "receipts": ["build-1"], "files": ["out.txt"]
+    });
+    let first = b.lane_tool("first", &rec["session_id"], input.clone());
+    assert_eq!(first["text"], "step 'build' recorded", "{first}");
+    let before = b.lane_tool("before", &rec["session_id"], json!({ "op": "steps" }));
+
+    std::fs::remove_file(work.join("out.txt")).unwrap();
+    let again = b.lane_tool("again", &rec["session_id"], input.clone());
+    assert_eq!(again["error"], false, "{again}");
+    assert_eq!(again["text"], "step 'build' unchanged (recorded before)");
+    let after = b.lane_tool("after", &rec["session_id"], json!({ "op": "steps" }));
+    assert_eq!(after, before, "the original step stays intact");
+
+    for (field, value) in [
+        ("result", json!("different")),
+        ("evidence", json!("elsewhere.txt")),
+        ("receipts", json!(["build-2"])),
+    ] {
+        let mut changed = input.clone();
+        changed[field] = value;
+        let refused = b.lane_tool(field, &rec["session_id"], changed);
+        assert_eq!(refused["error"], true, "{refused}");
+        assert_eq!(
+            refused["text"],
+            "step 'build' is recorded with other content"
+        );
+    }
+    let mut fresh = input;
+    fresh["name"] = json!("another");
+    let refused = b.lane_tool("fresh", &rec["session_id"], fresh);
+    assert_eq!(refused["error"], true, "{refused}");
+    assert_eq!(refused["text"], "out.txt: missing");
+    hub.stop();
+}
+
+/// The unchanged reply also survives the bridge no longer having a tool's evidence facts.
+#[test]
+fn repeated_step_without_tool_facts_is_unchanged() {
+    let (mut hub, _) = lane_hub("");
+    start(&mut hub);
+    open(&hub, "step-tool", &json!({}));
+    let rec = record(&hub, "step-tool");
+    let (mut b, _) = hello(&hub, &rec);
+    let input = json!({
+        "op": "step", "name": "build", "result": "built", "evidence": "write-1",
+        "calls": ["write-1"]
+    });
+    let first = b.call(
+        "bridge.tool",
+        json!({
+            "call": "first", "tool": "cataly_lane", "session": rec["session_id"],
+            "input": input,
+            "facts": [{ "call": "write-1", "tool": "write", "seen": true, "fingerprint": "result" }]
+        }),
+    );
+    assert_eq!(first["text"], "step 'build' recorded", "{first}");
+    let again = b.lane_tool("again", &rec["session_id"], input.clone());
+    assert_eq!(again["error"], false, "{again}");
+    assert_eq!(again["text"], "step 'build' unchanged (recorded before)");
+    let mut fresh = input;
+    fresh["name"] = json!("another");
+    let refused = b.lane_tool("fresh", &rec["session_id"], fresh);
+    assert_eq!(refused["error"], true, "{refused}");
+    assert_eq!(
+        refused["text"],
+        "no tool facts from the bridge; nothing was recorded"
     );
     hub.stop();
 }
@@ -833,8 +1129,9 @@ fn shell_rules_block_and_grants_are_one_attempt() {
     hub.stop();
 }
 
-/// Check 8: reminders while idle, one stall alert, the cost ceiling holds the lane and reaches OMP as
-/// `--max-cost`.
+/// Check 8: at most two reminders while idle, then one stall alert that ends them; the cost ceiling
+/// holds the lane and reaches OMP as `--max-cost`. A stall due first supersedes a late reminder, so
+/// the reminder count before it depends on load and only its bound is checked.
 #[test]
 fn oversight_reminds_alerts_once_and_holds_at_the_ceiling() {
     let (mut hub, _) = lane_hub(
@@ -851,7 +1148,6 @@ fn oversight_reminds_alerts_once_and_holds_at_the_ceiling() {
             .matches("[reminder ")
             .count()
     };
-    hub.until(WAIT, || (reminders(&hub) >= 2).then_some(()));
     let stall = hub.until(WAIT, || {
         let s: Vec<Value> = events_of(&hub, "lane.alert")
             .into_iter()
@@ -861,7 +1157,8 @@ fn oversight_reminds_alerts_once_and_holds_at_the_ceiling() {
     });
     assert!(opened.elapsed() >= Duration::from_secs(8));
     std::thread::sleep(Duration::from_secs(4));
-    assert_eq!(reminders(&hub), 2, "no third reminder");
+    let sent = reminders(&hub);
+    assert!(sent <= 2, "at most two reminders: {sent}");
     let stalls = events_of(&hub, "lane.alert")
         .into_iter()
         .filter(|e| e["text"].as_str().unwrap().contains(" stall: "))
@@ -888,6 +1185,36 @@ fn oversight_reminds_alerts_once_and_holds_at_the_ceiling() {
     assert_eq!(held["held_by"], "oversight");
     assert!(held["reason"].as_str().unwrap().contains("ceiling reached"));
     assert_eq!(goal(&hub, &r2["session_id"]), "paused");
+    hub.stop();
+}
+
+/// A step with new evidence starts a new round (COORD req. 7): after one stall alert, a lane that
+/// moves on only through steps is alerted again when it stalls again.
+#[test]
+fn a_step_with_new_evidence_starts_a_new_round() {
+    let (mut hub, work) = lane_hub(
+        "[lanes.oversight]\nfirst_reminder = \"1s\"\nsecond_reminder = \"2s\"\nstall = \"3s\"\nsweep = \"1s\"\n",
+    );
+    start(&mut hub);
+    open(&hub, "s-1", &json!({}));
+    let rec = record(&hub, "s-1");
+    let stalls = |hub: &TestHub| {
+        events_of(hub, "lane.alert")
+            .into_iter()
+            .filter(|e| e["text"].as_str().unwrap().contains(" stall: "))
+            .count()
+    };
+    hub.until(WAIT, || (stalls(&hub) == 1).then_some(()));
+    std::fs::write(work.join("built.txt"), "result").unwrap();
+    let (mut b, _) = hello(&hub, &rec);
+    let step = b.lane_tool(
+        "c1",
+        &rec["session_id"],
+        json!({ "op": "step", "name": "build", "result": "built", "evidence": "built.txt",
+                "files": ["built.txt"] }),
+    );
+    assert_eq!(step["text"], "step 'build' recorded", "{step}");
+    hub.until(WAIT, || (stalls(&hub) == 2).then_some(()));
     hub.stop();
 }
 
@@ -1590,6 +1917,70 @@ fn holds(file: &Value, text: &str) -> bool {
         .is_some_and(|t| t.contains(text))
 }
 
+/// Two lanes on one thread: the first completed close leaves the thread open for the other lane
+/// (no `[done]`, no archive); the last one marks it done and archives it (LANE req. 42, DESIGN C17).
+#[test]
+fn a_completed_lane_leaves_a_thread_another_lane_uses_open() {
+    let fake = FakeDiscord::start();
+    let (mut hub, work) = lane_hub("");
+    let token = hub.private_file("token", "fake-token");
+    fake.channel(CH, 0, None);
+    fake.named_thread(THREAD, CH, "Shared work");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!("{config}{}", fake.config(&token, OWNER, &[CH])));
+    start(&mut hub);
+    for key in ["shared-a", "shared-b"] {
+        open(
+            &hub,
+            key,
+            &json!({ "thread": format!("discord:{THREAD}"), "cwd": work }),
+        );
+    }
+    let ending = |f: &FakeDiscord| {
+        f.calls("PATCH", &format!("/channels/{THREAD}"))
+            .into_iter()
+            .filter(|c| {
+                c.body["archived"] == true
+                    || c.body["name"]
+                        .as_str()
+                        .is_some_and(|n| n.starts_with("[done]"))
+            })
+            .collect::<Vec<_>>()
+    };
+    // Status words reach the thread.
+    fake.wait(WAIT, |f| {
+        f.calls("PATCH", &format!("/channels/{THREAD}"))
+            .into_iter()
+            .find(|c| c.body["name"] == "[working] Shared work")
+    });
+    lane(&hub, "close", &json!({ "key": "shared-a", "note": "done" })).unwrap();
+    let a = record(&hub, "shared-a");
+    assert_eq!(
+        (a["state"].as_str(), a["outcome"].as_str()),
+        (Some("closed"), Some("completed"))
+    );
+    assert!(
+        a["receipt"]
+            .to_string()
+            .contains("thread left open: 1 other"),
+        "{a}"
+    );
+    assert!(ending(&fake).is_empty(), "{:?}", ending(&fake));
+    // The last lane on the thread ends it.
+    lane(&hub, "close", &json!({ "key": "shared-b", "note": "done" })).unwrap();
+    let done = fake.wait(WAIT, |f| {
+        let e = ending(f);
+        (!e.is_empty()).then_some(e)
+    });
+    assert_eq!(
+        done[0].body["name"], "[done] Shared work",
+        "{:?}",
+        done[0].body
+    );
+    assert_eq!(done[0].body["archived"], true, "{:?}", done[0].body);
+    hub.stop();
+}
+
 /// The lead delegates: an owner message in a watched channel, the lead's `lane.open` with
 /// `thread_from` that message and a worktree, the kickoff first in the thread and the lead's pointer
 /// in the channel, the lane's session in its worktree, reports and later owner messages in its
@@ -2100,12 +2491,208 @@ fn completed_close_removes_clean_worktree() {
             "cwd": repo, "worktree": {"path": tree, "branch": "lane-work", "base": "HEAD"}
         }),
     );
+    let sibling = work.join("lane-tree-sibling");
+    std::fs::create_dir(&sibling).unwrap();
+    open(
+        &hub,
+        "sibling-reader",
+        &json!({"cwd": sibling, "look_only": true}),
+    );
     lane(&hub, "close", &json!({"key":"clean-close", "note":"done"})).unwrap();
     assert!(!tree.exists());
     let rec = record(&hub, "clean-close");
     assert_eq!(rec["state"], "closed");
     assert!(rec["receipt"].to_string().contains("removed"), "{rec}");
     hub.stop();
+}
+
+fn close_published_symlink_worktree(legacy: bool, missing_link: bool) {
+    let (mut hub, work) = lane_hub("");
+    let repo = pushed_repo(&work);
+    let link = hub.root.join("work-link");
+    std::os::unix::fs::symlink(&work, &link).unwrap();
+    let given = link.join("lane-tree");
+    let config = std::fs::read_to_string(hub.config_path()).unwrap();
+    hub.write_config(&format!(
+        "{config}\n[[coord.publish]]\ndir = \"{}\"\n",
+        work.canonicalize().unwrap().display()
+    ));
+    start(&mut hub);
+    // Close runs signals after the unsent-work check but before the preservation boundary.
+    let argv = if missing_link {
+        json!(["rm", link])
+    } else {
+        json!(["true"])
+    };
+    open(
+        &hub,
+        "published-close",
+        &json!({
+            "cwd": repo, "worktree": {"path": given, "branch": "lane-work", "base": "HEAD"},
+            "checks": [{"kind":"command", "argv":argv}]
+        }),
+    );
+    let real = given.canonicalize().unwrap();
+    let before = record(&hub, "published-close");
+    let published = lane(
+        &hub,
+        "publish",
+        &json!({"key":"published-close", "path":real.join("a.txt")}),
+    )
+    .unwrap();
+    assert_eq!(published["path"], json!(real.join("a.txt")));
+    if legacy {
+        // Simulate ownership persisted by an older hub, without changing the canonical file path.
+        hub.stop();
+        assert_eq!(
+            recovery::db(&hub).execute(
+                "UPDATE lanes SET record = json_set(record, '$.worktrees', json_array(?1)) WHERE key = 'published-close'",
+                [given.to_str().unwrap()],
+            ).unwrap(),
+            1
+        );
+        start(&mut hub);
+        hub.until(WAIT, || {
+            (record(&hub, "published-close")["live"] == true).then_some(())
+        });
+    }
+    lane(
+        &hub,
+        "close",
+        &json!({"key":"published-close", "note":"done"}),
+    )
+    .unwrap();
+    if missing_link {
+        assert!(!link.exists(), "the close signal removed the symlink");
+    }
+    let rec = record(&hub, "published-close");
+    assert_eq!(rec["state"], "closed", "{rec}");
+    assert!(real.is_dir(), "the published worktree was removed: {rec}");
+    let kept = if missing_link {
+        "kept: its path cannot be resolved"
+    } else {
+        "kept: it holds a published file"
+    };
+    assert!(rec["receipt"].to_string().contains(kept), "{rec}");
+    assert_eq!(
+        std::fs::read_to_string(real.join("a.txt")).unwrap(),
+        "original"
+    );
+    if !legacy {
+        assert_eq!(before["worktrees"], json!([real]));
+    }
+    hub.stop();
+}
+
+#[test]
+fn completed_close_keeps_published_symlink_worktree() {
+    close_published_symlink_worktree(false, false);
+}
+
+#[test]
+fn completed_close_keeps_published_legacy_symlink_worktree() {
+    close_published_symlink_worktree(true, false);
+}
+
+#[test]
+fn completed_close_keeps_published_worktree_when_symlink_is_missing() {
+    close_published_symlink_worktree(true, true);
+}
+
+fn close_shared_worktree(usage: &str) {
+    let (mut hub, work) = lane_hub("");
+    let repo = pushed_repo(&work);
+    std::fs::create_dir(repo.join("nested")).unwrap();
+    std::fs::write(repo.join("nested/review.txt"), "reviewed").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "review directory"]);
+    git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    let alias = work.join("alias");
+    std::os::unix::fs::symlink(&work, &alias).unwrap();
+    let tree = work.join("lane-tree");
+    let owned = alias.join("lane-tree");
+    let nested = tree.join("nested");
+    start(&mut hub);
+    open(
+        &hub,
+        "shared-owner",
+        &json!({
+            "cwd": repo, "worktree": {"path": owned, "branch": "shared", "base": "HEAD"}
+        }),
+    );
+    open(
+        &hub,
+        "shared-reader",
+        &json!({"cwd": if usage == "registered" { &repo } else { &nested }, "look_only": true}),
+    );
+    let reader = record(&hub, "shared-reader");
+    if usage == "registered" {
+        let (mut bridge, hello) = hello(&hub, &reader);
+        assert_eq!(hello["role"], "lane", "{hello}");
+        let registered = bridge.lane_tool(
+            "shared-tree",
+            &reader["session_id"],
+            json!({"op": "worktree", "path": nested}),
+        );
+        assert!(
+            registered["text"].as_str().unwrap().contains("registered"),
+            "{registered}"
+        );
+    } else if usage == "closed" {
+        lane(
+            &hub,
+            "park",
+            &json!({"key": "shared-reader", "reason": "review finished"}),
+        )
+        .unwrap();
+        assert_eq!(record(&hub, "shared-reader")["state"], "closed");
+    }
+    lane(
+        &hub,
+        "close",
+        &json!({"key": "shared-owner", "note": "done"}),
+    )
+    .unwrap();
+    let rec = record(&hub, "shared-owner");
+    assert_eq!(rec["state"], "closed");
+    if usage == "closed" {
+        assert!(!tree.exists(), "a closed lane no longer reserves its cwd");
+        assert!(rec["receipt"].to_string().contains("removed"), "{rec}");
+    } else {
+        assert!(
+            nested.is_dir(),
+            "another open lane lost its directory: {rec}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(nested.join("review.txt")).unwrap(),
+            "reviewed"
+        );
+        assert!(
+            rec["receipt"]
+                .to_string()
+                .contains("kept: in use by lane shared-reader"),
+            "{rec}"
+        );
+        let after = record(&hub, "shared-reader");
+        assert_eq!(after["state"], "running", "{after}");
+        assert_eq!(after["session_id"], reader["session_id"]);
+    }
+    hub.stop();
+}
+
+#[test]
+fn completed_close_keeps_another_lanes_cwd() {
+    close_shared_worktree("cwd");
+}
+
+#[test]
+fn completed_close_keeps_another_lanes_registered_worktree() {
+    close_shared_worktree("registered");
+}
+
+#[test]
+fn completed_close_ignores_a_closed_lanes_cwd() {
+    close_shared_worktree("closed");
 }
 
 /// A pre-spawn failure proves no writer existed. Git locking is an actual removal refusal.

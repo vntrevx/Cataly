@@ -26,6 +26,9 @@
 #                               with omp-data/approve a message containing APPROVE opens the approval
 #                               select stock OMP sends under always-ask, ended the same way.
 #                               Every prompt, follow-up and steer line is appended to omp-data/prompts.
+#                               Every dialog response is appended to omp-data/responses.
+#                               omp-data/steer-result: refuse rejects steering; unknown emits a broken
+#                               frame after receiving it, leaving the outcome uncertain.
 #   with omp-data/slow-start     the first rpc-ui start answers nothing until its input closes, then
 #                               exits 1 (a start slower than the probe allows, as after an OMP update
 #                               under load); the fixture is used up and later starts are normal.
@@ -324,16 +327,25 @@ rpc() {
         *) data='{}' ;;
         esac
         if [ "$kind" = extension_ui_response ]; then
+            printf '%s\n' "$line" >> "$dir/responses"
             picked=$(printf '%s' "$line" | sed -nE 's/.*"color":"([^"]*)".*/\1/p')
             [ -n "$picked" ] || picked=cancelled
             finish "\"picked $picked\"" "$asked"
             continue
         fi
+        case "$kind" in
+        prompt | follow_up | steer) printf '%s\n' "$line" >> "$dir/prompts" ;;
+        esac
+        if [ "$kind" = steer ]; then
+            case "$(cat "$dir/steer-result" 2>/dev/null)" in
+            refuse) ok=false ;;
+            unknown) printf '{\n'; continue ;;
+            esac
+        fi
         printf '{"type":"response","id":"%s","command":"%s","success":%s,"data":%s}\n' "$cid" "$kind" "$ok" "$data"
         case "$kind" in
         prompt | follow_up | steer)
-            printf '%s\n' "$line" >> "$dir/prompts"
-            [ -f "$dir/turns" ] && turn "$line" "$cid" ;;
+            [ "$ok" = true ] && [ -f "$dir/turns" ] && turn "$line" "$cid" ;;
         esac
     done
 }

@@ -253,11 +253,11 @@ impl Ctx {
     }
 }
 
-/// Runs one occurrence of a job: its command, or one tick of its owner kind.
+/// Runs a scheduled occurrence, or a manual dry tick when `scheduled_ms` is `None`.
 pub(crate) async fn perform(
     ctx: &Ctx,
     job: &Arc<Job>,
-    scheduled_ms: i64,
+    scheduled_ms: Option<i64>,
     dry: bool,
     consume: bool,
 ) -> Result<Vec<EventRecord>, JobsError> {
@@ -401,7 +401,7 @@ impl Jobs {
         if !self.ctx.claim(name) {
             return Err(JobsError::Busy(name.into()));
         }
-        let result = perform(&self.ctx, &job, now_ms(), true, false).await;
+        let result = perform(&self.ctx, &job, None, true, false).await;
         self.ctx.release(name);
         result
     }
@@ -725,6 +725,12 @@ pub(crate) mod tests {
         let (store, _writer, dir) = open_temp(tag);
         let (ctx, stop) = ctx_in(store, &dir, config_text);
         (ctx, stop, dir)
+    }
+
+    pub(crate) fn jobs_of(ctx: &Arc<Ctx>) -> Jobs {
+        Jobs {
+            ctx: Arc::clone(ctx),
+        }
     }
 
     pub(crate) fn ctx_in(

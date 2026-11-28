@@ -3,11 +3,14 @@
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::config::lanes::KINDS;
+use crate::worker::Place;
 
 const TEXT_MAX: usize = 8000;
 const SUMMARY_MAX: usize = 500;
@@ -97,6 +100,84 @@ pub(crate) fn file_item(cwd: &Path, path: &str) -> Result<(String, String), Stri
     Ok((
         format!("file:{}", real.display()),
         crate::sys::hex(ctx.finish().as_ref()),
+    ))
+}
+
+/// One file as evidence where the lane works (EVR req. 9): here, or on the lane's worker through
+/// its `stat` and `read` (design 2.7), where files above the 8 MiB `read` limit are refused.
+pub(crate) async fn place_file_item(
+    place: &Place,
+    cwd: &Path,
+    path: &str,
+) -> Result<(String, String), String> {
+    let Place::Worker(name) = place else {
+        return file_item(cwd, path);
+    };
+    let unreadable = |e: String| format!("{path}: unreadable ({e})");
+    let link = crate::worker::link::connect(name)
+        .await
+        .map_err(unreadable)?;
+    let stat = |at: String| {
+        let link = Arc::clone(&link);
+        async move {
+            link.call(
+                crate::worker::method::STAT,
+                json!({ "path": at }),
+                Duration::from_secs(10),
+            )
+            .await
+        }
+    };
+    let before = stat(cwd.join(path).display().to_string())
+        .await
+        .map_err(unreadable)?;
+    let real = worker_real(path, &before)?;
+    let bytes = link
+        .read(&real, crate::worker::FILE_MAX)
+        .await
+        .map_err(unreadable)?;
+    let after = stat(real).await.map_err(unreadable)?;
+    worker_file_item(path, &before, &bytes, &after)
+}
+
+/// The resolved path of a worker's `stat` answer for a regular file within the `read` limit.
+fn worker_real(path: &str, stat: &Value) -> Result<String, String> {
+    if stat.get("exists").and_then(Value::as_bool) != Some(true) {
+        return Err(format!("{path}: missing"));
+    }
+    if stat.get("kind").and_then(Value::as_str) != Some("file") {
+        return Err(format!("{path}: not a regular file"));
+    }
+    if stat.get("size").and_then(Value::as_u64).unwrap_or(u64::MAX) > crate::worker::FILE_MAX {
+        return Err(format!("{path}: larger than 8 MiB (a worker lane's limit)"));
+    }
+    stat.get("real")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("{path}: unreadable (no resolved path)"))
+}
+
+/// A worker file's item from its `stat` before and after the `read`: refused when the file moved
+/// or changed size in between.
+fn worker_file_item(
+    path: &str,
+    before: &Value,
+    bytes: &[u8],
+    after: &Value,
+) -> Result<(String, String), String> {
+    let real = worker_real(path, before)?;
+    let size = |s: &Value| s.get("size").and_then(Value::as_u64);
+    if worker_real(path, after).ok().as_deref() != Some(real.as_str())
+        || size(after) != size(before)
+        || size(before) != u64::try_from(bytes.len()).ok()
+    {
+        return Err(format!(
+            "{path}: file was being modified; retry after it settles"
+        ));
+    }
+    Ok((
+        format!("file:{real}"),
+        crate::sys::hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()),
     ))
 }
 
@@ -238,7 +319,47 @@ pub(crate) fn thread_text(text: &str, home: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    /// A worker lane's file is read on the worker (EVR req. 9): its item comes from the worker's
+    /// `stat` and `read`, never from a file at the same path on the hub.
+    #[tokio::test]
+    async fn worker_files_are_hashed_from_the_worker_answers() {
+        let hub = std::env::temp_dir().join(format!("evidence-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&hub).unwrap();
+        std::fs::write(hub.join("out.txt"), "hub copy").unwrap();
+        let stat = |size: u64| json!({ "exists": true, "kind": "file", "size": size, "real": "/w/lane/out.txt" });
+        let (real, sha) = worker_file_item("out.txt", &stat(6), b"worker", &stat(6)).unwrap();
+        assert_eq!(real, "file:/w/lane/out.txt");
+        assert_eq!(
+            sha,
+            crate::sys::hex(ring::digest::digest(&ring::digest::SHA256, b"worker").as_ref())
+        );
+        assert_ne!(
+            file_item(&hub, "out.txt").unwrap().1,
+            sha,
+            "the hub's file is another"
+        );
+        let refused = |before: Value, bytes: &[u8], after: Value| {
+            worker_file_item("out.txt", &before, bytes, &after).unwrap_err()
+        };
+        assert!(refused(stat(6), b"work", stat(6)).contains("being modified"));
+        assert!(refused(stat(6), b"worker", stat(7)).contains("being modified"));
+        assert!(refused(stat(1 << 24), b"", stat(1 << 24)).contains("larger than 8 MiB"));
+        assert!(refused(json!({ "exists": false }), b"", stat(0)).contains("missing"));
+        assert!(
+            refused(json!({ "exists": true, "kind": "dir" }), b"", stat(0))
+                .contains("not a regular file")
+        );
+        // A worker lane outside the hub's worker table cannot fall back to the hub's file.
+        let place = Place::Worker("box".into());
+        assert!(
+            place_file_item(&place, &hub, "out.txt")
+                .await
+                .unwrap_err()
+                .contains("unreadable")
+        );
+        std::fs::remove_dir_all(&hub).unwrap();
+    }
 
     #[test]
     fn reports_files_and_tools() {
@@ -274,6 +395,22 @@ mod tests {
         for c in ["c2", "c3", "c4", "c5", "c9"] {
             assert!(tool_items(&[c.into()], Some(&facts)).is_err(), "{c}");
         }
+    }
+
+    #[test]
+    fn a_running_background_call_is_refused() {
+        let facts = json!([
+            { "call": "b1", "seen": true, "tool": "bash", "running": true },
+            { "call": "b2", "seen": true, "tool": "bash", "running": false, "fingerprint": "f2" }
+        ]);
+        assert_eq!(
+            tool_items(&["b1".into()], Some(&facts)).unwrap_err(),
+            "call b1: its background job has not completed"
+        );
+        assert_eq!(
+            tool_items(&["b2".into()], Some(&facts)).unwrap(),
+            [("tool:f2".to_string(), "f2".to_string())]
+        );
     }
 
     #[test]

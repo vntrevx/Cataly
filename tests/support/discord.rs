@@ -300,6 +300,14 @@ impl FakeDiscord {
             "guild_id": GUILD, "thread_metadata": {"archived": false}}));
     }
 
+    /// An active thread with a title, which status words go in front of.
+    pub fn named_thread(&self, id: &str, parent: &str, name: &str) {
+        self.thread(id, parent);
+        if let Some(c) = self.state.lock().unwrap().channels.get_mut(id) {
+            c["name"] = json!(name);
+        }
+    }
+
     /// Starts a thread from a message as the Discord client does: the thread takes the message's
     /// ID, the message names it in `thread`, the active listing has it and `THREAD_CREATE` is sent.
     pub fn start_thread(&self, channel: &str, message: &str, by: &str) {
