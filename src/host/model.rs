@@ -138,31 +138,31 @@ pub(crate) fn unverified(reason: &str) -> bool {
 }
 
 /// What the owner hears once about an unverified lead model: what happened (an extension older
-/// than the hub, or none that connected), the fix, the accept command.
+/// than the hub, or none that connected) in plain words, the fix, the accept command. The raw
+/// reason stays in the log, the event's `reason` and `cataly lead status --json`.
 pub(crate) fn unverified_text(language: Language, reason: &str) -> String {
     let silent = reason.contains(NO_BRIDGE);
-    let reason = crate::jobs::event::one_line(reason, 300);
     match language {
         Language::Korean => format!(
-            "Cataly: {} OMP가 쓰는 모델을 확인할 수 없습니다. 세션은 열려 있지만 더 이상 아무것도 전달하지 않습니다.\n\
-             원인: {reason}\n\
+            "Cataly: OMP가 쓰는 lead 모델을 확인할 수 없습니다. 세션은 열려 있지만 더 이상 아무것도 전달하지 않습니다.\n\
+             원인: {}\n\
              해결: `cataly update`를 실행하거나 lead를 다시 시작하세요(`cataly lead stop` 후 `cataly lead start`). \
              OMP가 보고하는 모델을 그대로 쓰려면 `cataly lead accept-model`을 실행하세요.",
             if silent {
-                "lead 세션의 Cataly 확장이 연결되지 않아"
+                "lead 세션의 Cataly 확장이 연결되지 않았어요."
             } else {
-                "lead 세션의 Cataly 확장이 허브보다 오래되어"
+                "lead 세션의 Cataly 확장이 허브보다 오래되었어요."
             }
         ),
         Language::English => format!(
-            "Cataly: {}, so the model OMP runs could not be checked. The session stays open, but nothing more is delivered to it.\n\
-             Reason: {reason}\n\
+            "Cataly: the model OMP runs for the lead could not be checked. The session stays open, but nothing more is delivered to it.\n\
+             Reason: {}\n\
              Fix: run `cataly update`, or restart the lead (`cataly lead stop`, then `cataly lead start`). \
              To keep the model OMP reports, run `cataly lead accept-model`.",
             if silent {
-                "the Cataly extension in the lead's session didn't connect"
+                "The Cataly extension in the lead's session didn't connect."
             } else {
-                "the Cataly extension in the lead's session is older than the hub"
+                "The Cataly extension in the lead's session is older than the hub."
             }
         ),
     }
@@ -246,8 +246,23 @@ mod tests {
             ] {
                 assert!(text.contains(needle), "{needle}: {text}");
             }
+            // The raw reason is not quoted: it stays in the log and `lead status --json`.
+            assert!(
+                !text.contains(UNVERIFIED) && !text.contains("(0.2.6)"),
+                "{text}"
+            );
         }
         let en = unverified_text(Language::English, &reason);
-        assert!(en.contains("older than the hub") && en.contains("could not be checked"));
+        assert!(
+            en.contains(
+                "\nReason: The Cataly extension in the lead's session is older than the hub.\n"
+            ),
+            "{en}"
+        );
+        let ko = unverified_text(Language::Korean, &format!("{UNVERIFIED}: {NO_BRIDGE}"));
+        assert!(
+            ko.contains("\n원인: lead 세션의 Cataly 확장이 연결되지 않았어요.\n"),
+            "{ko}"
+        );
     }
 }

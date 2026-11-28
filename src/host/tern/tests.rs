@@ -69,17 +69,30 @@ fn old_hello(session: &str, pid: u64) -> Value {
     hello
 }
 
+/// A port whose oversized deliveries would spill to the temp folder; tests that spill use
+/// `port_in` with a scratch directory.
 fn port() -> (Arc<Port>, oneshot::Receiver<()>) {
+    port_in(std::env::temp_dir())
+}
+
+fn port_in(spill: PathBuf) -> (Arc<Port>, oneshot::Receiver<()>) {
     Port::new(
         &spec("t1", None),
-        std::env::temp_dir(),
+        spill,
         Latency::default(),
         Duration::from_millis(300),
     )
 }
 
 async fn bound(answer: impl Fn(&Value) -> Value + Send + 'static) -> (Session, Seen) {
-    let (port, attached) = port();
+    bound_in(std::env::temp_dir(), answer).await
+}
+
+async fn bound_in(
+    spill: PathBuf,
+    answer: impl Fn(&Value) -> Value + Send + 'static,
+) -> (Session, Seen) {
+    let (port, attached) = port_in(spill);
     let (seen, tx) = fake_bridge(&port, answer);
     port.attach(&hello("s1", 42), "k1", tx).unwrap();
     attached.await.unwrap();
@@ -216,7 +229,8 @@ fn the_block_runs_omp_with_the_token_and_without_rpc_flags() {
 
 #[tokio::test]
 async fn deliveries_go_through_the_bridge_and_not_current_keeps_them_pending() {
-    let (session, seen) = bound(|cmd| match cmd["id"].as_str() {
+    let spill = crate::sys::fs::tests::scratch("tern-spill");
+    let (session, seen) = bound_in(spill.to_path_buf(), |cmd| match cmd["id"].as_str() {
         Some("busy0001") => json!({ "refused": "not current" }),
         _ => json!({ "sent": true }),
     })
@@ -291,7 +305,7 @@ async fn deliveries_go_through_the_bridge_and_not_current_keeps_them_pending() {
         .unwrap()
         .to_string();
     assert!(text.starts_with("[cataly:b16b16b1]") && text.contains("delivery-b16b16b1.txt"));
-    let _ = std::fs::remove_file(std::env::temp_dir().join("delivery-b16b16b1.txt"));
+    assert!(spill.join("delivery-b16b16b1.txt").exists());
 }
 
 #[tokio::test]

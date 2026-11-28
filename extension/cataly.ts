@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import type {
 	AgentToolResult, BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionAskDialogQuestion, ExtensionContext,
 	MessageEndEvent, SessionStopEventResult, ToolCallEvent, ToolCallEventResult, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent,
+	ToolExecutionUpdateEvent,
 } from "@oh-my-pi/pi-coding-agent";
 
 const PROTOCOL = 1;
@@ -39,10 +40,11 @@ export interface Deps {
 export async function unixConnect(path: string, onLine: (line: string) => void, onClose: () => void): Promise<Wire> {
 	if (!privateDir(dirname(path), process.getuid?.() ?? -1)) throw new Error("the hub socket's directory is not private");
 	let buf = "";
+	const utf8 = new TextDecoder(); // streaming: a character split across chunks is kept until its last byte
 	let closed = false;
 	const end = () => void (closed || ((closed = true), onClose()));
 	const data = (s: { end(): void }, chunk: Uint8Array) => {
-		buf += chunk.toString();
+		buf += utf8.decode(chunk, { stream: true });
 		if (buf.length > LINE_MAX * 2) return void ((buf = ""), s.end());
 		for (let at = buf.indexOf("\n"); at >= 0; at = buf.indexOf("\n")) {
 			const line = buf.slice(0, at);
@@ -105,7 +107,7 @@ export function fingerprint(tool: string, result: Json | undefined): string {
 	return hasher.digest("hex");
 }
 
-interface Call { tool: string; cwd: string; starts: number; command?: string; fingerprint?: string; error?: boolean }
+interface Call { tool: string; cwd: string; starts: number; command?: string; fingerprint?: string; error?: boolean; running?: boolean }
 
 /** The model OMP runs for this context, `provider/id`, or "" when unknown. */
 function modelOf(ctx: Ctx): string {
@@ -399,6 +401,7 @@ export class Bridge {
 		pi.on("message_end", (e, ctx) => this.message(e, ctx));
 		pi.on("tool_execution_start", (e, ctx) => this.toolStart(e, ctx));
 		pi.on("tool_execution_end", (e, ctx) => this.toolEnd(e, ctx));
+		pi.on("tool_execution_update", (e, ctx) => this.toolUpdate(e, ctx));
 		// The main agent's events the hub follows, each with the fields it reads; payloads differ across OMP versions.
 		const dialog = (e: Json) => ({ call: e.toolCallId ?? e.reviewId, tool: e.toolName, choice: e.choice });
 		const goal = (e: Json) => ({ status: (e.goal as Json)?.status ?? e.status, objective: (e.goal as Json)?.objective ?? e.objective });
@@ -592,9 +595,29 @@ export class Bridge {
 		const id = String(e.toolCallId ?? "");
 		const call = this.calls.get(id);
 		const result = e.result as Json | undefined;
-		if (call) [call.error, call.fingerprint] = [Boolean(e.isError), fingerprint(call.tool, result)];
-		const job = (result?.details as Json | undefined)?.jobId;
-		this.event("tool_execution_end", { call: id, tool: e.toolName, error: Boolean(e.isError), job });
+		// OMP backgrounds a long call and ends it at once with `details.async.state: "running"`: no result yet (EVR req. 11).
+		const async = (result?.details as Json | undefined)?.async as Json | undefined;
+		const running = async?.state === "running";
+		if (call) [call.error, call.running] = [Boolean(e.isError), running];
+		if (call) call.fingerprint = running ? undefined : fingerprint(call.tool, result);
+		const [job, state] = [async?.jobId, async?.state];
+		this.event("tool_execution_end", { call: id, tool: e.toolName, error: Boolean(e.isError), job, state });
+	}
+
+	/** A backgrounded call's job settles in a later update for the same call (EXT req. 23): completed gives the final
+	 * result's fingerprint; failed or cancelled marks the call as an error. Earlier frames and other calls change nothing. */
+	toolUpdate(e: ToolExecutionUpdateEvent, ctx: Ctx): void {
+		if (!this.main(ctx)) return;
+		const id = String(e.toolCallId ?? "");
+		const call = this.calls.get(id);
+		const result = e.partialResult as Json | undefined;
+		const async = (result?.details as Json | undefined)?.async as Json | undefined;
+		if (!call?.running || !async || async.state === "running") return;
+		[call.running, call.error] = [false, async.state !== "completed"];
+		// Job bookkeeping is not part of the foreground result's evidence identity.
+		const { async: _, ...details } = result?.details as Json;
+		call.fingerprint = call.error ? undefined : fingerprint(call.tool, { ...result, details });
+		this.event("tool_job_end", { call: id, tool: e.toolName, job: async.jobId, state: async.state });
 	}
 
 	/** Forwards one tool call with its recorded call facts (EXT req. 18, 21-22); the hub judges them. */

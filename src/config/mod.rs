@@ -130,11 +130,16 @@ pub(crate) enum Language {
 pub(crate) struct SetupSettings {
     /// Off once the owner turned the home backup off; a plain re-run then leaves it off.
     pub(crate) backup: bool,
+    /// Off once the owner turned the user service off; a plain re-run then leaves it off.
+    pub(crate) service: bool,
 }
 
 impl Default for SetupSettings {
     fn default() -> Self {
-        Self { backup: true }
+        Self {
+            backup: true,
+            service: true,
+        }
     }
 }
 
@@ -466,6 +471,7 @@ pub(crate) fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
     }
     if let Some(mut setup) = root.table(&mut errors, "setup") {
         config.setup.backup = setup.bool(&mut errors, "backup").unwrap_or(true);
+        config.setup.service = setup.bool(&mut errors, "service").unwrap_or(true);
         setup.finish(&mut errors);
     }
     sections(&mut errors, &mut root, &mut config);
