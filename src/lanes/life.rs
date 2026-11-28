@@ -725,12 +725,7 @@ impl<R: Runtime> Lanes<R> {
             return "no thread".into();
         };
         let _one = self.closing.lock().await;
-        let others = self.env.store.read(|r| r.lanes(true)).await.map(|rows| {
-            rows.iter()
-                .filter(|r| r.thread.as_deref() == Some(thread.as_str()) && r.key != rec.key)
-                .count()
-        });
-        match others {
+        match self.others_open(rec, &thread).await {
             Ok(0) => match self
                 .env
                 .threads
@@ -747,6 +742,21 @@ impl<R: Runtime> Lanes<R> {
             Ok(n) => format!("thread left open: {n} other lane(s) on it"),
             Err(e) => format!("thread-finished hook skipped: {e}"),
         }
+    }
+
+    /// How many lanes other than `rec` are open on `thread` (closed lanes of any outcome do not
+    /// count). Callers hold `closing` while they act on the answer (LANE req. 42).
+    pub(super) async fn others_open(&self, rec: &Record, thread: &str) -> Result<usize, String> {
+        self.env
+            .store
+            .read(|r| r.lanes(true))
+            .await
+            .map(|rows| {
+                rows.iter()
+                    .filter(|r| r.thread.as_deref() == Some(thread) && r.key != rec.key)
+                    .count()
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Whether OMP shows the session's lease free, on the lane's machine; `None` when unknown.

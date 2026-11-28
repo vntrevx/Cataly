@@ -87,6 +87,31 @@ test("the bridge connects only through the user's own private socket directory",
 	}
 });
 
+test("a character the hub's bytes split across two socket reads arrives whole", async () => {
+	const root = mkdtempSync(join(tmpdir(), "cataly-bridge-"));
+	try {
+		const dir = join(root, "run");
+		mkdirSync(dir, { mode: 0o700 });
+		const path = join(dir, "hub.sock");
+		const bytes = new TextEncoder().encode('{"t":"한"}\n');
+		const cut = bytes.indexOf(0xed) + 1; // inside the three bytes of 한
+		const server = Bun.listen({
+			unix: path,
+			socket: { open: async s => void (s.write(bytes.slice(0, cut)), s.flush(), await Bun.sleep(50), s.write(bytes.slice(cut))), data() {} },
+		});
+		try {
+			const lines = Promise.withResolvers<string>();
+			const wire = await cataly.unixConnect(path, lines.resolve, () => {});
+			expect(JSON.parse(await lines.promise).t).toBe("한");
+			wire.close();
+		} finally {
+			server.stop(true);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 /** A bridge as a hub launch starts it (launch token in the environment), on the given fake hub. */
 function bridge(pi: ReturnType<typeof fakePi>, connect: cataly.Deps["connect"]): void {
 	cataly.bridge(pi, { env: { CATALY_LAUNCH: "tok", CATALY_SOCKET: "/x.sock" }, connect, uid: () => 1 });

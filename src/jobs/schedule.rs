@@ -53,7 +53,9 @@ pub(super) fn cron_due(cron: &Cron, tz: &TimeZone, due: i64, now: i64, busy: boo
             .and_then(|t| cron.next_after(tz, t))
             .map(Timestamp::as_millisecond)
     };
-    let mut occurrence = Some(due);
+    // A stored due time that is not an occurrence (computed under an older rule) moves to the first
+    // occurrence at or after it.
+    let mut occurrence = next_after(due.saturating_sub(1));
     while let Some(at) = occurrence.filter(|at| *at <= now) {
         if now - at >= LATE_MS {
             out.late += 1;
@@ -441,6 +443,19 @@ mod tests {
         let d = cron_due(&c, &utc, due, due + 30 * 86_400_000, false);
         assert_eq!(d.late, SKIP_COUNT_MAX);
         assert!(d.next.unwrap() > due + 30 * 86_400_000);
+    }
+
+    #[test]
+    fn cron_stale_due_moves_to_a_valid_day() {
+        // `*/2` in day-of-month: 2 January was due under the old rule but is not an occurrence.
+        let c = parse("0 0 */2 * *").unwrap();
+        let utc = TimeZone::UTC;
+        let stale = ms("2026-01-02T00:00:00Z");
+        let d = cron_due(&c, &utc, stale, stale + 10_000, false);
+        assert_eq!(
+            (d.run, d.late, d.overlap, d.next),
+            (None, 0, 0, Some(ms("2026-01-03T00:00:00Z")))
+        );
     }
 
     #[test]

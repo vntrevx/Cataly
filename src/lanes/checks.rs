@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::time::Instant;
 
+use crate::jobs::owner::gh_list;
 use crate::sys::command::{self, Output, Spec};
 use crate::worker::Place;
 
 /// GitHub reads and commands (EVR req. 57).
-const LIMIT: Duration = Duration::from_secs(120);
+pub(super) const LIMIT: Duration = Duration::from_secs(120);
 const WEB_LIMIT: Duration = Duration::from_secs(30);
 const OUTPUT_CAP: u64 = 2 * 1024 * 1024;
 const DETAIL: usize = 120;
@@ -224,7 +226,16 @@ pub(crate) async fn gh(path: &str, cwd: &Path) -> Result<Value, String> {
 
 /// One bounded `gh` call with the shared environment; the answer is read as JSON.
 pub(crate) async fn gh_args(args: &[&str], cwd: &Path) -> Result<Value, String> {
-    let words: Vec<String> = std::iter::once("gh")
+    gh_command("gh", args, cwd, LIMIT).await
+}
+
+async fn gh_command(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    limit: Duration,
+) -> Result<Value, String> {
+    let words: Vec<String> = std::iter::once(program)
         .chain(args.iter().copied())
         .map(str::to_string)
         .collect();
@@ -237,7 +248,7 @@ pub(crate) async fn gh_args(args: &[&str], cwd: &Path) -> Result<Value, String> 
         argv: &words,
         cwd: Some(cwd),
         env: &env,
-        timeout: LIMIT,
+        timeout: limit,
         kill_grace: command::KILL_GRACE,
         output_cap: OUTPUT_CAP,
         output: Output::Capture,
@@ -245,7 +256,7 @@ pub(crate) async fn gh_args(args: &[&str], cwd: &Path) -> Result<Value, String> 
     .await
     .map_err(|e| e.to_string())?;
     if done.timed_out {
-        return Err(format!("no answer within {} s", LIMIT.as_secs()));
+        return Err(format!("no answer within {} s", limit.as_secs()));
     }
     crate::jobs::owner::gh_answer(args, &done)
 }
@@ -418,15 +429,54 @@ async fn check(
                 _ => Ok(format!("status {want}")),
             }
         }
-        Signal::PrPolicy { repo, number } => policy(repo, *number, hub, identities).await,
+        Signal::PrPolicy { repo, number } => {
+            let gh = PolicyGh {
+                program: "gh",
+                cwd: hub,
+                deadline: Instant::now() + LIMIT,
+            };
+            policy(repo, *number, &gh, identities).await
+        }
     }
+}
+
+/// One deadline covers both PR snapshots and every commit/file page (EVR req. 58).
+struct PolicyGh<'a> {
+    program: &'a str,
+    cwd: &'a Path,
+    deadline: Instant,
+}
+
+impl PolicyGh<'_> {
+    async fn read(&self, path: &str) -> Result<Value, String> {
+        let limit = self.deadline.saturating_duration_since(Instant::now());
+        if !limit.is_zero() {
+            let args = crate::jobs::owner::gh_api(path);
+            let read = gh_command(self.program, &args, self.cwd, limit);
+            // The absolute deadline also bounds process cleanup and pipe draining. Dropping
+            // the runner kills its child; neither cleanup nor another page extends the read.
+            if let Ok(result) = tokio::time::timeout_at(self.deadline, read).await
+                && Instant::now() < self.deadline
+            {
+                return result;
+            }
+        }
+        Err("pull-request policy read deadline reached".into())
+    }
+}
+
+fn policy_count(pr: &Value, field: &str) -> Result<usize, String> {
+    pr.get(field)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| format!("missing or invalid PR {field} count"))
 }
 
 /// The pull-request policy (EVR req. 58).
 async fn policy(
     repo: &str,
     number: u64,
-    cwd: &Path,
+    gh: &PolicyGh<'_>,
     identities: &[(String, String)],
 ) -> Result<String, String> {
     let identity = identities
@@ -435,34 +485,37 @@ async fn policy(
         .map(|(_, e)| e.to_lowercase())
         .ok_or("the repository has no configured identity")?;
     let path = format!("repos/{repo}/pulls/{number}");
-    let before = gh(&path, cwd).await?;
-    let commits = gh(
-        &format!("repos/{repo}/pulls/{number}/commits?per_page=100"),
-        cwd,
-    )
-    .await?;
-    let files = gh(
-        &format!("repos/{repo}/pulls/{number}/files?per_page=100"),
-        cwd,
-    )
-    .await?;
-    let after = gh(&path, cwd).await?;
-    let marks = |v: &Value| {
-        (
-            v.pointer("/head/sha").cloned(),
-            v.get("body").cloned(),
-            v.get("commits").cloned(),
-        )
-    };
-    if marks(&before) != marks(&after) {
-        return Err("moved while being checked".into());
-    }
-    let files = files.as_array().cloned().unwrap_or_default();
-    if files.len() > FILES_MAX {
+    let before = gh.read(&path).await?;
+    let commit_count = policy_count(&before, "commits")?;
+    let file_count = policy_count(&before, "changed_files")?;
+    if file_count > FILES_MAX {
         return Err("more than 3000 files".into());
     }
+    // Bounded by the PR's counts; a short page (GitHub lists at most 250 commits) is checked below.
+    let read = |p: String| async move { gh.read(&p).await };
+    let (commits, _) = gh_list(&format!("{path}/commits"), None, Some(commit_count), read).await?;
+    let (files, _) = gh_list(&format!("{path}/files"), None, Some(file_count), read).await?;
+    let after = gh.read(&path).await?;
+    if before.pointer("/head/sha") != after.pointer("/head/sha")
+        || ["body", "commits", "changed_files"]
+            .iter()
+            .any(|key| before.get(key) != after.get(key))
+    {
+        return Err("moved while being checked".into());
+    }
+    for (name, rows, expected) in [
+        ("commits", &commits, commit_count),
+        ("files", &files, file_count),
+    ] {
+        if rows.len() != expected {
+            return Err(format!(
+                "incomplete {name}: read {}, expected {expected}",
+                rows.len()
+            ));
+        }
+    }
     let mut fix = false;
-    for c in commits.as_array().cloned().unwrap_or_default() {
+    for c in commits {
         let email = |who: &str| {
             c.pointer(&format!("/commit/{who}/email"))
                 .and_then(Value::as_str)
@@ -557,6 +610,95 @@ mod tests {
         assert!(
             err.contains("signal 1") && err.contains("signal 2") && err.contains("signal 3"),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_pages_share_one_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = crate::sys::fs::tests::scratch("policy-deadline");
+        let program = dir.join("gh");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake-gh"),
+            &program,
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let data = dir.join("gh-data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("calls.log"), "").unwrap();
+        let fixture = |suffix: &str, value: &Value| {
+            std::fs::write(
+                data.join(format!("repos_o_r_pulls_7{suffix}.json")),
+                value.to_string(),
+            )
+            .unwrap();
+        };
+        fixture(
+            "",
+            &json!({
+                "head": { "sha": "head" }, "body": "", "commits": 1, "changed_files": 101
+            }),
+        );
+        fixture(
+            "_commits",
+            &json!([{ "commit": {
+            "author": { "email": "owner@example.com" },
+            "committer": { "email": "owner@example.com" },
+            "message": "fix: the edge case"
+        } }]),
+        );
+        let mut files: Vec<Value> = (0..100)
+            .map(|n| json!({ "filename": format!("docs/{n}.md") }))
+            .collect();
+        files[0] = json!({ "filename": "src/fix.rs" });
+        fixture("_files", &json!(files));
+        fixture("_files.page-2", &json!([{ "filename": "tests/fix.rs" }]));
+        let delays = [
+            data.join("repos_o_r_pulls_7_files.json.delay"),
+            data.join("repos_o_r_pulls_7_files.page-2.json.delay"),
+        ];
+        for delay in &delays {
+            std::fs::write(delay, "1\n").unwrap();
+        }
+        // Each real subprocess delays less than the budget, but the two pages together exceed
+        // it. No tight wall-clock assertion: the error and skipped final snapshot prove expiry.
+        let gh = PolicyGh {
+            program: program.to_str().unwrap(),
+            cwd: &dir,
+            deadline: Instant::now() + Duration::from_millis(1500),
+        };
+        let identities = [("o/r".into(), "owner@example.com".into())];
+        let why = policy("o/r", 7, &gh, &identities).await.unwrap_err();
+        assert_eq!(why, "pull-request policy read deadline reached");
+        let calls = std::fs::read_to_string(data.join("calls.log")).unwrap();
+        // Under load, the deadline may expire before even the first snapshot is logged.
+        let snapshots = calls
+            .lines()
+            .filter(|line| line.ends_with("repos/o/r/pulls/7"))
+            .count();
+        assert!(
+            snapshots <= 1,
+            "the final snapshot must not start after the deadline: {calls}"
+        );
+        assert!(gh.read("repos/o/r/pulls/7").await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(data.join("calls.log")).unwrap(),
+            calls
+        );
+
+        // The same complete PR passes without delays under a fresh budget.
+        for delay in delays {
+            std::fs::remove_file(delay).unwrap();
+        }
+        let gh = PolicyGh {
+            deadline: Instant::now() + Duration::from_secs(5),
+            ..gh
+        };
+        assert_eq!(
+            policy("o/r", 7, &gh, &identities).await.unwrap(),
+            "policy holds"
         );
     }
 

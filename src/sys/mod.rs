@@ -78,6 +78,19 @@ pub(crate) fn now_ms() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
 
+/// The XDG homes the hub's own paths come from, as `lookup` gives them, skipping unset, empty and
+/// relative values as path resolution does; the service and OMP children inherit these.
+pub(crate) fn xdg_homes<V: AsRef<std::ffi::OsStr>>(
+    lookup: impl Fn(&str) -> Option<V>,
+) -> impl Iterator<Item = (&'static str, V)> {
+    ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"]
+        .into_iter()
+        .filter_map(move |name| {
+            let value = lookup(name).filter(|v| std::path::Path::new(v).is_absolute())?;
+            Some((name, value))
+        })
+}
+
 /// Lower-case hexadecimal of `bytes`.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;

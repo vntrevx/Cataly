@@ -4,8 +4,11 @@
 //! driven through its own command line under the bounded subprocess rules.
 //!
 //! A service starts with the manager's bare environment, so the definition carries what the hub
-//! needs: a PATH holding the folders of the tools it runs, as found when the service was enabled,
-//! and an owner-only environment file with the provider keys listed in `[sessions] credentials`.
+//! needs: a PATH holding the folders of the tools it runs, absolute XDG config/state/data homes
+//! from the environment at enable or refresh, and an owner-only environment file with the provider
+//! keys listed in `[sessions] credentials`. Absolute non-UTF-8 homes are refused. On Linux a
+//! shell-only `XDG_CONFIG_HOME` remains unsupported: the shell and user manager must agree on the
+//! config home so the manager can find the unit.
 //! systemd reads that file itself (`EnvironmentFile=`); launchd has no such key, so the agent runs
 //! `/bin/sh`, which reads the file and replaces itself with the hub (`exec`, same process).
 //!
@@ -13,8 +16,14 @@
 //! thread the hub's freed memory stayed in a dozen arenas and its RSS kept rising while the live heap
 //! stayed level (`docs/measurements.md`, "Heap slope"). Children never see it: their environment is
 //! built from an allow-list (`sys::command`).
+//!
+//! A stop sends TERM to the hub alone (`KillMode=mixed`, as launchd does): the hub sets its own
+//! stopping mark, then ends its sessions, worker links, job runs and stream jobs itself. What is
+//! left once it exits gets KILL. With systemd's default the whole control group got TERM at once,
+//! so a child could die before the hub knew it was stopping and its exit read as its own.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -82,9 +91,28 @@ pub(crate) fn path_line<'a>(dirs: impl IntoIterator<Item = &'a Path>) -> String 
     parts.join(":")
 }
 
-/// A value for a systemd unit line: `%` doubled so no specifier is expanded.
-fn systemd_escape(text: &str) -> String {
-    text.replace('%', "%%")
+/// A value for a systemd unit line: `%` doubled so no specifier is expanded. A `quoted` value sits
+/// in double quotes, where systemd also expands C escapes, so its quotes, backslashes and control
+/// characters are escaped too.
+fn systemd_escape(text: &str, quoted: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '%' => out.push_str("%%"),
+            '"' | '\\' if quoted => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' if quoted => out.push_str("\\n"),
+            '\r' if quoted => out.push_str("\\r"),
+            '\t' if quoted => out.push_str("\\t"),
+            c if quoted && c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Text for a property list string.
@@ -103,36 +131,75 @@ fn xml_escape(text: &str) -> String {
 }
 
 /// The unit or agent text for `unit`.
-pub(crate) fn definition(unit: &Unit<'_>) -> String {
-    if cfg!(target_os = "macos") {
+pub(crate) fn definition(unit: &Unit<'_>) -> Result<String, String> {
+    definition_with_env(unit, cfg!(target_os = "macos"), |k| std::env::var_os(k))
+}
+
+fn definition_with_env(
+    unit: &Unit<'_>,
+    macos: bool,
+    lookup: impl Fn(&str) -> Option<OsString>,
+) -> Result<String, String> {
+    let xdg = super::xdg_homes(lookup).map(|(name, value)| {
+        value
+            .into_string()
+            .map(|value| (name, value))
+            .map_err(|_| format!("{name} is not valid UTF-8; user service paths must be UTF-8"))
+    });
+    if macos {
         let exe = xml_escape(&unit.command.display().to_string());
         let env_file = xml_escape(&unit.env_file.display().to_string());
         let path = xml_escape(unit.path);
         // `$0` is the environment file and `$1` the command: no value is ever parsed as shell text.
         let script = "set -a; if [ -f \"$0\" ]; then . \"$0\"; fi; set +a; exec \"$1\" hub";
         let script = xml_escape(script);
-        format!(
+        let mut text = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n\
   <key>Label</key><string>{LABEL}</string>\n\
   <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>{script}</string><string>{env_file}</string><string>{exe}</string></array>\n\
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>\n\
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string>"
+        );
+        for entry in xdg {
+            let (name, value) = entry?;
+            let _ = write!(
+                text,
+                "<key>{name}</key><string>{}</string>",
+                xml_escape(&value)
+            );
+        }
+        text.push_str(
+            "</dict>\n\
   <key>RunAtLoad</key><true/>\n\
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
   <key>ThrottleInterval</key><integer>5</integer>\n\
-</dict>\n</plist>\n"
-        )
+</dict>\n</plist>\n",
+        );
+        Ok(text)
     } else {
-        let exe = systemd_escape(&unit.command.display().to_string());
-        let env_file = systemd_escape(&unit.env_file.display().to_string());
-        let path = systemd_escape(unit.path);
-        format!(
+        let exe = systemd_escape(&unit.command.display().to_string(), false);
+        let env_file = systemd_escape(&unit.env_file.display().to_string(), false);
+        let path = systemd_escape(unit.path, true);
+        let mut text = format!(
             "[Unit]\nDescription=Cataly hub\n\n[Service]\nType=notify\nNotifyAccess=main\n\
-Environment=\"PATH={path}\"\nEnvironment=\"MALLOC_ARENA_MAX=1\"\nEnvironmentFile=-{env_file}\n\
-ExecStart={exe} hub\nRestart=on-failure\nRestartSec=5\nWatchdogSec=30\n\n\
+Environment=\"PATH={path}\"\nEnvironment=\"MALLOC_ARENA_MAX=1\"\n"
+        );
+        for entry in xdg {
+            let (name, value) = entry?;
+            let _ = writeln!(
+                text,
+                "Environment=\"{name}={}\"",
+                systemd_escape(&value, true)
+            );
+        }
+        let _ = write!(
+            text,
+            "EnvironmentFile=-{env_file}\n\
+ExecStart={exe} hub\nKillMode=mixed\nRestart=on-failure\nRestartSec=5\nWatchdogSec=30\n\n\
 [Install]\nWantedBy=default.target\n"
-        )
+        );
+        Ok(text)
     }
 }
 
@@ -324,9 +391,10 @@ async fn install(
 }
 
 fn write_definition(path: &Path, unit: &Unit<'_>) -> Result<(), String> {
+    let text = definition(unit)?;
     let dir = path.parent().ok_or("the service file has no folder")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    super::fs::write_atomic(path, definition(unit).as_bytes()).map_err(|e| e.to_string())
+    super::fs::write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Rewrites the service Cataly created with `unit` and has the manager read it again, so the next
@@ -414,7 +482,7 @@ mod tests {
     fn definition_restarts_after_failure_with_path_and_keys() {
         let line = path_line([Path::new("/h/.bun/bin"), Path::new("/opt/homebrew/bin")]);
         let env_file = Path::new("/h/.config/cataly/secrets/service.env");
-        let text = definition(&unit(&line, env_file));
+        let text = definition(&unit(&line, env_file)).unwrap();
         if cfg!(target_os = "macos") {
             assert!(text.contains(
                 "<string>/h/.config/cataly/secrets/service.env</string><string>/h/.local/bin/cataly</string></array>"
@@ -427,7 +495,7 @@ mod tests {
             assert!(text.contains("<key>SuccessfulExit</key><false/>"));
             assert!(text.contains("<integer>5</integer>"));
         } else {
-            assert!(text.contains("ExecStart=/h/.local/bin/cataly hub"));
+            assert!(text.contains("ExecStart=/h/.local/bin/cataly hub\nKillMode=mixed\n"));
             assert!(text.contains("Restart=on-failure\nRestartSec=5"));
             assert!(text.contains(
                 "Environment=\"PATH=/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"\n"
@@ -440,13 +508,95 @@ mod tests {
     #[test]
     fn both_definitions_escape_their_values() {
         let env_file = Path::new("/h/100%/a&b");
-        let text = definition(&unit("/x%y", env_file));
+        let text = definition(&unit("/x%y", env_file)).unwrap();
         if cfg!(target_os = "macos") {
             assert!(text.contains("<string>/h/100%/a&amp;b</string>"));
         } else {
             assert!(text.contains("EnvironmentFile=-/h/100%%/a&b\n"));
             assert!(text.contains("Environment=\"PATH=/x%%y\"\n"));
         }
+    }
+
+    #[test]
+    fn systemd_definition_keeps_absolute_xdg_homes() {
+        check_absolute_xdg_homes(false);
+    }
+
+    #[test]
+    fn launchd_definition_keeps_absolute_xdg_homes() {
+        check_absolute_xdg_homes(true);
+    }
+
+    fn check_absolute_xdg_homes(macos: bool) {
+        let vars = [
+            ("XDG_CONFIG_HOME", "/h/config home"),
+            ("XDG_STATE_HOME", "/h/state"),
+            ("XDG_DATA_HOME", "/h/data"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("SECRET", "do-not-copy"),
+        ];
+        let text = definition_with_env(&unit("/bin", Path::new("/h/service.env")), macos, |name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).into())
+        })
+        .unwrap();
+        for (name, value) in &vars[..3] {
+            let expected = if macos {
+                format!("<key>{name}</key><string>{value}</string>")
+            } else {
+                format!("Environment=\"{name}={value}\"\n")
+            };
+            assert!(text.contains(&expected), "missing {expected:?} in {text}");
+        }
+        assert!(!text.contains("XDG_RUNTIME_DIR"));
+        assert!(!text.contains("SECRET"));
+    }
+
+    #[test]
+    fn definition_ignores_unset_empty_and_relative_xdg_homes() {
+        for macos in [false, true] {
+            for value in [None, Some(""), Some("relative"), Some("~/config")] {
+                let text =
+                    definition_with_env(&unit("/bin", Path::new("/h/service.env")), macos, |_| {
+                        value.map(OsString::from)
+                    })
+                    .unwrap();
+                assert!(!text.contains("XDG_"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn definition_refuses_non_utf8_xdg_homes() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let unit = unit("/bin", Path::new("/h/service.env"));
+        for macos in [false, true] {
+            for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"] {
+                let error = definition_with_env(&unit, macos, |key| {
+                    (key == name).then(|| OsString::from_vec(b"/h/invalid-\xff".to_vec()))
+                })
+                .unwrap_err();
+                assert!(error.contains(name) && error.contains("UTF-8"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn definition_escapes_xdg_homes_for_both_managers() {
+        let unit = unit("/bin", Path::new("/h/service.env"));
+        let lookup =
+            |name: &str| (name == "XDG_STATE_HOME").then(|| "/h/100%/a&b<\"q\">\\x\n\t".into());
+        let systemd = definition_with_env(&unit, false, lookup).unwrap();
+        assert!(
+            systemd.contains("Environment=\"XDG_STATE_HOME=/h/100%%/a&b<\\\"q\\\">\\\\x\\n\\t\"\n"),
+            "{systemd}"
+        );
+        let launchd = definition_with_env(&unit, true, lookup).unwrap();
+        assert!(launchd.contains(
+            "<key>XDG_STATE_HOME</key><string>/h/100%/a&amp;b&lt;&quot;q&quot;&gt;\\x\n\t</string>"
+        ), "{launchd}");
     }
 
     #[test]
@@ -561,7 +711,7 @@ mod tests {
         }
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
-            definition(&unit(&line, &env_file))
+            definition(&unit(&line, &env_file)).unwrap()
         );
         assert_eq!(
             std::fs::read_to_string(&marker).unwrap(),
@@ -631,7 +781,7 @@ mod tests {
         start_with(&manager).await.unwrap();
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
-            definition(&unit(&line, &env_file))
+            definition(&unit(&line, &env_file)).unwrap()
         );
         let calls = std::fs::read_to_string(&log).unwrap();
         if cfg!(target_os = "macos") {

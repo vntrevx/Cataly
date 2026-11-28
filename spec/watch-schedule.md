@@ -230,7 +230,7 @@ lead's OMP session. The new model: **one Rust daemon, one job table, one typed e
 51. The owner (local command line) and the lead (extension tool) may manage jobs. Lanes may not create, change or
     remove jobs. Commands run as the daemon's user.
 52. Cron trigger: five fields plus a required IANA time zone; "?" is not supported; day-of-month and day-of-week
-    combine with OR. Across daylight-saving changes a local time that does not exist does not fire and a repeated
+    combine with OR, or with AND when either field starts with `*` (so `*/2` still restricts its field). Across daylight-saving changes a local time that does not exist does not fire and a repeated
     local time fires once. Invalid cron or zone is refused before anything is saved.
 53. One-shot trigger: an ISO instant with seconds and an explicit offset or Z (never the local zone), in the future
     at creation; a warning is given when it is under two minutes away.
